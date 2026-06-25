@@ -72,7 +72,7 @@ Timestamp sources:
 The current import helper defaults to line mode and inference enabled:
 
 ```bash
-/workspace/.agent-memory/store/venv/bin/mem0-local-ingest-ledger path/to/ledger.md --month 2026-05 --mode line --dry-run
+mem0-local-ingest-ledger path/to/ledger.md --month 2026-05 --mode line --dry-run
 ```
 
 For a raw audit-only import, add `--no-infer` only when the user explicitly asks

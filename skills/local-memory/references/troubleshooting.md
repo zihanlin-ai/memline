@@ -4,14 +4,22 @@
 
 Use `mem0-local` first. It is installed on PATH through:
 
-```text
-/home/l00959355/.local/bin/mem0-local -> /workspace/.agent-memory/bin/mem0-local
+```bash
+command -v mem0-local
+ls -l "$(command -v mem0-local)"
 ```
 
-The wrapper resolves symlinks and runs:
+In a workspace-local install, PATH usually points to a small wrapper under the
+workspace memory directory, for example:
 
 ```text
-/workspace/.agent-memory/store/venv/bin/python
+<home>/.local/bin/mem0-local -> <workspace>/.agent-memory/bin/mem0-local
+```
+
+The wrapper resolves symlinks and runs the configured Python environment, often:
+
+```text
+<workspace>/.agent-memory/store/venv/bin/python
 python -m mem0_local.cli
 ```
 
@@ -19,39 +27,45 @@ The wrapper sets `MEM0_LOCAL_CONFIG` and `PYTHONPATH`, then loads the reusable
 implementation from the Git submodule:
 
 ```text
-/workspace/.agent-memory/projects/mem0-local/src/mem0_local/
-/workspace/.agent-memory/config.toml
+<workspace>/.agent-memory/projects/mem0-local/src/mem0_local/
+<workspace>/.agent-memory/config.toml
 ```
 
 If PATH is missing after a restart, run:
 
 ```bash
-/home/l00959355/.local/bin/mem0-local status
+"$HOME/.local/bin/mem0-local" status
 ```
 
 ## Store Layout
 
-All runtime state is under:
+Find the active store with:
+
+```bash
+mem0-local status --json
+```
+
+For this workspace layout, all runtime state is under:
 
 ```text
-/workspace/.agent-memory/store/
+<workspace>/.agent-memory/store/
 ```
 
 Important paths:
 
-- Qdrant local path: `/workspace/.agent-memory/store/qdrant`
-- Mem0 history DB: `/workspace/.agent-memory/store/history.db`
-- Fastembed cache: `/workspace/.agent-memory/store/model-cache/fastembed`
-- Mem0 redirected home/config: `/workspace/.agent-memory/store/home`, `/workspace/.agent-memory/store/mem0`
-- CLI lock: `/workspace/.agent-memory/store/cli.lock`
-- Secret env file: `/workspace/.agent-memory/store/.env`
+- Qdrant local path: `<store>/qdrant`
+- Mem0 history DB: `<store>/history.db`
+- Fastembed cache: `<store>/model-cache/fastembed`
+- Mem0 redirected home/config: `<store>/home`, `<store>/mem0`
+- CLI lock: `<store>/cli.lock`
+- Secret env file: `<store>/.env`
 
 Never print or copy `.agent-memory/store/.env`.
 
 The active workspace profile is tracked at:
 
 ```text
-/workspace/.agent-memory/config.toml
+<workspace>/.agent-memory/config.toml
 ```
 
 This file contains paths and provider names only; secrets stay in the env file.
@@ -60,8 +74,9 @@ This file contains paths and provider names only; secrets stay in the env file.
 
 The database and runtime files are intentionally not git-managed. `.gitignore` excludes `.agent-memory/store/.env`, `history.db`, `cli.lock`, `venv/`, `home/`, `mem0/`, `model-cache/`, and `qdrant/`.
 
-The git-managed pieces are the CLI wrapper, the `.agent-memory/projects/mem0-local`
-submodule pointer, skill files, workspace config, manifests, and `.gitignore`.
+The git-managed pieces are usually the CLI wrapper, the
+`.agent-memory/projects/mem0-local` submodule pointer, skill files, workspace
+config, manifests, and `.gitignore`.
 
 ## Concurrency
 
@@ -85,8 +100,8 @@ If `mem0-local` is missing, check:
 
 ```bash
 which mem0-local
-ls -l /home/l00959355/.local/bin/mem0-local
-ls -l /workspace/.agent-memory/bin/mem0-local
+ls -l "$HOME/.local/bin/mem0-local"
+ls -l "<workspace>/.agent-memory/bin/mem0-local"
 ```
 
 If API-key-dependent features fail, use `status --json` and check only `api_key_set`; do not print the key.
