@@ -58,3 +58,15 @@ The CLI locates configuration in this order:
 See `examples/config.toml` for a portable template.
 
 Runtime data stays under `.agent-memory/store/` and remains excluded from git.
+
+## Codex Skill
+
+This repository also bundles a Codex skill for agent discovery and operational
+usage guidance:
+
+```text
+skills/local-memory/
+```
+
+Install or copy that skill into a workspace skill directory when agents should
+use `mem0-local` for local memory search, write, audit, and troubleshooting.

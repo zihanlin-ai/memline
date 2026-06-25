@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local Memory"
+  short_description: "Use the workspace local memory CLI"
+  default_prompt: "Use $local-memory to search and update the workspace local memory store."
