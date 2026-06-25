@@ -47,6 +47,28 @@ Routine agents should call `add` with only the memory text. The CLI auto-detects
 
 Use `list --filter ...` for structured audits by metadata fields such as `agent_id`, `run_id`, `source`, `session_id`, `created_at`, or `ingested_at`. Keep `search` for semantic retrieval.
 
+## Optional Daemon
+
+The CLI can use an optional local daemon to avoid paying the Mem0/FastEmbed/ONNX
+cold-start cost for every command. The daemon is a user-local Python process
+that listens on a Unix socket under the configured store directory; it does not
+open a TCP port.
+
+```bash
+mem0-local daemon start
+mem0-local daemon status
+mem0-local daemon stop
+```
+
+When the daemon is running, `add`, `search`, `list`, `get`, `update`, `delete`,
+and `history` automatically use it. If the daemon is not running, commands fall
+back to the direct one-shot CLI path. To force the direct path for debugging,
+stop the daemon first and then run:
+
+```bash
+MEM0_LOCAL_NO_DAEMON=1 mem0-local search "semantic query"
+```
+
 ## Configuration
 
 The CLI locates configuration in this order:

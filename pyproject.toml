@@ -9,6 +9,7 @@ description = "Local-first Mem0 CLI with Qdrant path storage and audit metadata.
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "click",
   "fastembed",
   "mem0ai",
   "python-dotenv",

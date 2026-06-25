@@ -109,6 +109,26 @@ mem0-local list \
   --page-size 100
 ```
 
+## Optional Daemon
+
+If repeated memory commands are slow, start the optional local daemon:
+
+```bash
+mem0-local daemon start
+mem0-local daemon status
+mem0-local daemon stop
+```
+
+The daemon is a local Unix-socket process under the workspace memory store. It
+keeps the Mem0/FastEmbed/ONNX client warm, so `get`, `list`, base `search`, and
+raw writes avoid per-command cold start. Commands fall back to the direct path
+when the daemon is not running. To deliberately use the direct path for
+debugging, stop the daemon first and then run:
+
+```bash
+MEM0_LOCAL_NO_DAEMON=1 mem0-local get <memory_id>
+```
+
 Use metadata fields such as `source` or `session_id` for import/audit queries
 or when the metadata-level value itself is the intended filter:
 

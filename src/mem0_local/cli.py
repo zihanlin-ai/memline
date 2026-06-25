@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import click
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -58,6 +59,8 @@ app = typer.Typer(
     pretty_exceptions_enable=False,
     add_completion=False,
 )
+daemon_app = typer.Typer(help="Manage the optional long-lived local daemon.")
+app.add_typer(daemon_app, name="daemon")
 
 agent_mode = False
 lock_handle = None
@@ -144,6 +147,16 @@ def build_config() -> dict[str, Any]:
 
 def memory_client():
     setup_env()
+    if os.environ.get("MEM0_LOCAL_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
+        try:
+            from mem0_local.daemon import status as daemon_status
+
+            if daemon_status().get("running"):
+                raise click.ClickException("mem0-local daemon is running; stop it before using the direct path")
+        except click.ClickException:
+            raise
+        except Exception:
+            pass
     acquire_cli_lock()
     if not os.environ.get(LLM_API_KEY_ENV):
         raise typer.BadParameter(
@@ -167,6 +180,26 @@ def output(data: Any, *, command: str, fmt: str = "text", scope: dict[str, str] 
     if fmt == "quiet":
         return
     render_text(command, data)
+
+
+def daemon_enabled() -> bool:
+    value = os.environ.get("MEM0_LOCAL_NO_DAEMON", "")
+    return value.lower() not in {"1", "true", "yes", "on"}
+
+
+def maybe_daemon_request(op: str, args: dict[str, Any]) -> tuple[bool, Any]:
+    if not daemon_enabled():
+        return False, None
+    try:
+        from mem0_local.daemon import DaemonUnavailable, request
+    except Exception:
+        return False, None
+    try:
+        return True, request({"op": op, "args": args})
+    except DaemonUnavailable:
+        return False, None
+    except Exception as exc:
+        raise click.ClickException(f"mem0-local daemon {op} failed: {exc}") from exc
 
 
 def chosen_format(output_format: str, json_flag: bool) -> str:
@@ -465,6 +498,43 @@ def main(
     agent_mode = json_output
 
 
+@daemon_app.command("start")
+def daemon_start(
+    wait_seconds: float = typer.Option(90.0, "--wait", help="Seconds to wait for daemon readiness."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Start the optional local daemon."""
+    from mem0_local.daemon import start_daemon
+
+    result = start_daemon(wait_seconds=wait_seconds)
+    output(result, command="daemon-start", fmt=chosen_format(output_format, json_flag))
+
+
+@daemon_app.command("stop")
+def daemon_stop(
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Stop the optional local daemon."""
+    from mem0_local.daemon import stop_daemon
+
+    result = stop_daemon()
+    output(result, command="daemon-stop", fmt=chosen_format(output_format, json_flag))
+
+
+@daemon_app.command("status")
+def daemon_status(
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Show optional local daemon status."""
+    from mem0_local.daemon import status as daemon_status_data
+
+    result = daemon_status_data()
+    output(result, command="daemon-status", fmt=chosen_format(output_format, json_flag))
+
+
 @app.command()
 def status(
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
@@ -547,14 +617,26 @@ def add(
     meta["ledger_timestamp"] = normalize_timestamp(ledger_timestamp) or meta.get("ledger_timestamp") or meta["created_at"]
     meta.setdefault("ingested_at", ingested_at)
 
-    result = memory_client().add(
-        content,
-        user_id=user_id,
-        agent_id=agent_id,
-        run_id=run_id,
-        metadata=meta or None,
-        infer=not no_infer,
+    used_daemon, result = maybe_daemon_request(
+        "add",
+        {
+            "content": content,
+            "user_id": user_id,
+            "agent_id": agent_id,
+            "run_id": run_id,
+            "metadata": meta or None,
+            "infer": not no_infer,
+        },
     )
+    if not used_daemon:
+        result = memory_client().add(
+            content,
+            user_id=user_id,
+            agent_id=agent_id,
+            run_id=run_id,
+            metadata=meta or None,
+            infer=not no_infer,
+        )
     if isinstance(result, dict):
         result.setdefault("duration_ms", int((time.perf_counter() - start) * 1000))
     output(
@@ -587,14 +669,27 @@ def search(
     if top_k < 1:
         raise typer.BadParameter("--top-k must be >= 1.")
 
-    result = memory_client().search(
-        query,
-        top_k=top_k,
-        filters=filters_from_scope(user_id, None, None, None),
-        threshold=threshold,
-        rerank=rerank,
-        explain=explain,
+    filters = filters_from_scope(user_id, None, None, None)
+    used_daemon, result = maybe_daemon_request(
+        "search",
+        {
+            "query": query,
+            "top_k": top_k,
+            "filters": filters,
+            "threshold": threshold,
+            "rerank": rerank,
+            "explain": explain,
+        },
     )
+    if not used_daemon:
+        result = memory_client().search(
+            query,
+            top_k=top_k,
+            filters=filters,
+            threshold=threshold,
+            rerank=rerank,
+            explain=explain,
+        )
     output(
         result,
         command="search",
@@ -620,10 +715,20 @@ def list_memories(
 
     extra = parse_json_or_key_values(filter_json, option_name="--filter")
     filters = filters_from_scope(user_id, None, None, None, extra)
-    raw = memory_client().get_all(filters=filters or None, top_k=page * page_size)
-    items = normalize_items(raw)
     start = (page - 1) * page_size
-    result = items[start : start + page_size]
+    used_daemon, result = maybe_daemon_request(
+        "list",
+        {
+            "filters": filters or None,
+            "top_k": page * page_size,
+            "start": start,
+            "end": start + page_size,
+        },
+    )
+    if not used_daemon:
+        raw = memory_client().get_all(filters=filters or None, top_k=page * page_size)
+        items = normalize_items(raw)
+        result = items[start : start + page_size]
     output(
         result,
         command="list",
@@ -639,7 +744,9 @@ def get(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Get a memory by ID."""
-    result = memory_client().get(memory_id)
+    used_daemon, result = maybe_daemon_request("get", {"memory_id": memory_id})
+    if not used_daemon:
+        result = memory_client().get(memory_id)
     output(result, command="get", fmt=chosen_format(output_format, json_flag))
 
 
@@ -652,8 +759,11 @@ def update(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Update a memory by ID."""
-    client = memory_client()
-    existing = client.get(memory_id)
+    used_daemon, existing = maybe_daemon_request("get", {"memory_id": memory_id})
+    client = None
+    if not used_daemon:
+        client = memory_client()
+        existing = client.get(memory_id)
     existing_meta = existing.get("metadata") or {}
     meta = {**existing_meta, **parse_json_or_key_values(metadata, option_name="--metadata")}
     if existing.get("created_at"):
@@ -666,7 +776,15 @@ def update(
     meta["updated_by_cli_at"] = now_utc_iso()
     meta["last_updated_by_agent_id"] = updater_agent_id
     meta["last_updated_session_id"] = updater_session_id
-    result = client.update(memory_id, text, metadata=meta)
+    if used_daemon:
+        used_update_daemon, result = maybe_daemon_request(
+            "update",
+            {"memory_id": memory_id, "text": text, "metadata": meta},
+        )
+        if not used_update_daemon:
+            raise click.ClickException("mem0-local daemon became unavailable during update")
+    else:
+        result = client.update(memory_id, text, metadata=meta)
     output(result, command="update", fmt=chosen_format(output_format, json_flag))
 
 
@@ -682,11 +800,15 @@ def delete(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Delete one memory, or delete all memories in a scope."""
-    client = memory_client()
     if all_:
         if not force:
             raise typer.BadParameter("--all requires --force.")
-        result = client.delete_all(user_id=user_id, agent_id=agent_id, run_id=run_id)
+        used_daemon, result = maybe_daemon_request(
+            "delete",
+            {"all": True, "user_id": user_id, "agent_id": agent_id, "run_id": run_id},
+        )
+        if not used_daemon:
+            result = memory_client().delete_all(user_id=user_id, agent_id=agent_id, run_id=run_id)
         output(
             result,
             command="delete",
@@ -696,7 +818,9 @@ def delete(
         return
     if not memory_id:
         raise typer.BadParameter("Pass memory_id or --all --force.")
-    result = client.delete(memory_id)
+    used_daemon, result = maybe_daemon_request("delete", {"all": False, "memory_id": memory_id})
+    if not used_daemon:
+        result = memory_client().delete(memory_id)
     output({"id": memory_id, "result": result}, command="delete", fmt=chosen_format(output_format, json_flag))
 
 
@@ -707,7 +831,9 @@ def history(
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Show Mem0 history for a memory when available."""
-    result = memory_client().history(memory_id)
+    used_daemon, result = maybe_daemon_request("history", {"memory_id": memory_id})
+    if not used_daemon:
+        result = memory_client().history(memory_id)
     output(result, command="history", fmt=chosen_format(output_format, json_flag))
 
 

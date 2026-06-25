@@ -58,6 +58,8 @@ Important paths:
 - Fastembed cache: `<store>/model-cache/fastembed`
 - Mem0 redirected home/config: `<store>/home`, `<store>/mem0`
 - CLI lock: `<store>/cli.lock`
+- Optional daemon socket: `<store>/daemon.sock`
+- Optional daemon PID/log: `<store>/daemon.pid`, `<store>/daemon.log`
 - Secret env file: `<store>/.env`
 
 Never print or copy `.agent-memory/store/.env`.
@@ -85,8 +87,32 @@ Qdrant local path mode cannot be opened safely by multiple processes at the same
 Correctness boundary:
 
 - Safe: all agents use `mem0-local` inside this WSL workspace.
+- Safe: a running `mem0-local daemon` owns the local Qdrant path, while normal
+  CLI commands talk to the daemon through `<store>/daemon.sock`.
 - Unsafe: agents directly import Mem0/Qdrant against the same path, or another machine/Windows process opens the same Qdrant directory.
 - For high-throughput concurrent access, switch to Qdrant server mode.
+
+## Optional Daemon Checks
+
+Use the daemon when repeated one-shot CLI commands are dominated by cold start:
+
+```bash
+mem0-local daemon start
+mem0-local daemon status
+mem0-local daemon stop
+```
+
+To use the direct one-shot path for comparison or debugging, stop the daemon
+first and then run:
+
+```bash
+MEM0_LOCAL_NO_DAEMON=1 mem0-local search "test"
+```
+
+If the daemon fails to start, inspect `<store>/daemon.log`. If `daemon status`
+shows a stale socket or PID after a crash, `daemon stop` cleans up missing
+process state; otherwise remove only the stale `<store>/daemon.sock` and
+`<store>/daemon.pid` files.
 
 ## Basic Checks
 
