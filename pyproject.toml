@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mem0-local"
+version = "0.1.0"
+description = "Local-first Mem0 CLI with Qdrant path storage and audit metadata."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastembed",
+  "mem0ai",
+  "python-dotenv",
+  "qdrant-client",
+  "rich",
+  "typer",
+]
+
+[project.scripts]
+mem0-local = "mem0_local.cli:cli_main"
+mem0-local-ingest-ledger = "mem0_local.ingest_ledger:main"
+mem0-local-backfill-metadata = "mem0_local.backfill_metadata:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

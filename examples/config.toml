@@ -1,0 +1,33 @@
+[memory]
+workspace_root = "/path/to/workspace"
+memory_root = "/path/to/workspace/.agent-memory"
+store_dir = "/path/to/workspace/.agent-memory/store"
+collection = "workspace_agent_memory"
+user_id = "workspace"
+schema_version = 2
+
+[paths]
+qdrant_dir = "/path/to/workspace/.agent-memory/store/qdrant"
+history_db = "/path/to/workspace/.agent-memory/store/history.db"
+mem0_dir = "/path/to/workspace/.agent-memory/store/mem0"
+home_dir = "/path/to/workspace/.agent-memory/store/home"
+fastembed_cache = "/path/to/workspace/.agent-memory/store/model-cache/fastembed"
+lock_file = "/path/to/workspace/.agent-memory/store/cli.lock"
+
+[embedder]
+provider = "fastembed"
+model = "jinaai/jina-embeddings-v2-base-zh"
+dims = 768
+
+[llm]
+provider = "openrouter"
+model = "@preset/work"
+base_url = "https://openrouter.ai/api/v1"
+site_url = "http://localhost"
+app_name = "mem0-local"
+api_key_env = "OPENROUTER_API_KEY"
+env_file = "/path/to/workspace/.agent-memory/store/.env"
+
+[metadata]
+manual_source = "manual"
+manual_session = "manual-session"
