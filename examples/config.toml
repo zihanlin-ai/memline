@@ -13,6 +13,8 @@ mem0_dir = "/path/to/workspace/.agent-memory/store/mem0"
 home_dir = "/path/to/workspace/.agent-memory/store/home"
 fastembed_cache = "/path/to/workspace/.agent-memory/store/model-cache/fastembed"
 lock_file = "/path/to/workspace/.agent-memory/store/cli.lock"
+manifest_dir = "/path/to/workspace/.agent-memory/manifests"
+manifest_lock = "/path/to/workspace/.agent-memory/store/manifest.lock"
 
 [embedder]
 provider = "fastembed"

@@ -18,6 +18,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from mem0_local.audit import append_live_audit
 from mem0_local.config import (
     COLLECTION,
     CONFIG_PATH,
@@ -616,6 +617,7 @@ def add(
 ) -> None:
     """Add a memory from text, messages, file, or stdin."""
     start = time.perf_counter()
+    started_at = now_utc_iso()
     content = read_content(text, messages, file)
     meta = parse_json_or_key_values(metadata, option_name="--metadata")
     auto_context = detect_writer_context()
@@ -662,6 +664,23 @@ def add(
         )
     if isinstance(result, dict):
         result.setdefault("duration_ms", int((time.perf_counter() - start) * 1000))
+    finished_at = now_utc_iso()
+    append_live_audit(
+        operation="add",
+        input_payload={
+            "text": text,
+            "messages": messages,
+            "file": str(file) if file else None,
+            "content": content,
+            "infer": not no_infer,
+        },
+        metadata=meta,
+        result=result,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        scope=scope_dict(user_id, agent_id, app_id, run_id),
+    )
     output(
         result,
         command="add",
@@ -782,6 +801,8 @@ def update(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Update a memory by ID."""
+    start = time.perf_counter()
+    started_at = now_utc_iso()
     used_daemon, existing = maybe_daemon_request("get", {"memory_id": memory_id})
     client = None
     if not used_daemon:
@@ -808,6 +829,22 @@ def update(
             raise click.ClickException("mem0-local daemon became unavailable during update")
     else:
         result = client.update(memory_id, text, metadata=meta)
+    finished_at = now_utc_iso()
+    append_live_audit(
+        operation="update",
+        input_payload={
+            "memory_id": memory_id,
+            "text": text,
+            "metadata_options": metadata,
+            "existing": existing,
+        },
+        metadata=meta,
+        result=result,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        scope=scope_dict(existing.get("user_id"), existing.get("agent_id"), None, existing.get("run_id")),
+    )
     output(result, command="update", fmt=chosen_format(output_format, json_flag))
 
 
@@ -823,6 +860,8 @@ def delete(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Delete one memory, or delete all memories in a scope."""
+    start = time.perf_counter()
+    started_at = now_utc_iso()
     if all_:
         if not force:
             raise typer.BadParameter("--all requires --force.")
@@ -832,6 +871,17 @@ def delete(
         )
         if not used_daemon:
             result = memory_client().delete_all(user_id=user_id, agent_id=agent_id, run_id=run_id)
+        finished_at = now_utc_iso()
+        append_live_audit(
+            operation="delete_all",
+            input_payload={"all": True, "force": force},
+            metadata=None,
+            result=result,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=int((time.perf_counter() - start) * 1000),
+            scope=scope_dict(user_id, agent_id, None, run_id),
+        )
         output(
             result,
             command="delete",
@@ -841,10 +891,32 @@ def delete(
         return
     if not memory_id:
         raise typer.BadParameter("Pass memory_id or --all --force.")
+    used_get_daemon, existing = maybe_daemon_request("get", {"memory_id": memory_id})
+    client = None
+    if not used_get_daemon:
+        client = memory_client()
+        existing = client.get(memory_id)
     used_daemon, result = maybe_daemon_request("delete", {"all": False, "memory_id": memory_id})
     if not used_daemon:
-        result = memory_client().delete(memory_id)
-    output({"id": memory_id, "result": result}, command="delete", fmt=chosen_format(output_format, json_flag))
+        result = (client or memory_client()).delete(memory_id)
+    wrapped_result = {"id": memory_id, "result": result}
+    finished_at = now_utc_iso()
+    append_live_audit(
+        operation="delete",
+        input_payload={"memory_id": memory_id, "existing": existing},
+        metadata=(existing.get("metadata") if isinstance(existing, dict) else None),
+        result=wrapped_result,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        scope=scope_dict(
+            existing.get("user_id") if isinstance(existing, dict) else None,
+            existing.get("agent_id") if isinstance(existing, dict) else None,
+            None,
+            existing.get("run_id") if isinstance(existing, dict) else None,
+        ),
+    )
+    output(wrapped_result, command="delete", fmt=chosen_format(output_format, json_flag))
 
 
 @app.command()

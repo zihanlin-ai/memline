@@ -46,6 +46,11 @@ adds. The only required work is writing accurate, atomic memory text.
 mem0-local add "memory text"
 ```
 
+Every successful live `add` appends one external audit row to
+`.agent-memory/manifests/live-YYYY-MM.jsonl`. The row includes the raw input
+content, infer mode, automatic metadata, scope, Mem0 result, memory ids/result
+memories, timings, and payload hash. Agents do not need extra flags for this.
+
 Override auto-detection only when it is missing or wrong:
 
 ```bash
@@ -189,6 +194,8 @@ mem0-local delete <memory_id>
 
 If Claude wrote a memory and Codex corrects it, the memory remains scoped to
 Claude as the original writer; the metadata records Codex as the latest updater.
+The update also appends a live audit row containing the existing memory snapshot,
+replacement text, merged metadata, and Mem0 update result.
 
 Routine updates only need the memory id and corrected text. Add `--metadata
 reason=...` only when it helps human audit.
@@ -198,6 +205,10 @@ Use destructive wipes only when explicitly requested:
 ```bash
 mem0-local delete --all --force --user-id workspace
 ```
+
+Deletes append live audit rows too. A single-memory delete records the existing
+memory snapshot before deletion; `delete --all --force` records the requested
+scope and Mem0 result.
 
 ## Diagnostics
 

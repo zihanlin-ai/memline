@@ -75,6 +75,8 @@ MEM0_DIR = path_value("paths", "mem0_dir", STORE_DIR / "mem0")
 MEM0_HOME = path_value("paths", "home_dir", STORE_DIR / "home")
 FASTEMBED_CACHE = path_value("paths", "fastembed_cache", STORE_DIR / "model-cache" / "fastembed")
 HISTORY_DB = path_value("paths", "history_db", STORE_DIR / "history.db")
+MANIFEST_DIR = path_value("paths", "manifest_dir", MEMORY_ROOT / "manifests")
+MANIFEST_LOCK = path_value("paths", "manifest_lock", STORE_DIR / "manifest.lock")
 ENV_FILE = path_value("llm", "env_file", STORE_DIR / ".env")
 LOCK_FILE = path_value("paths", "lock_file", STORE_DIR / "cli.lock")
 
@@ -95,4 +97,3 @@ LLM_API_KEY_ENV = str(value("llm", "api_key_env", "OPENROUTER_API_KEY"))
 
 MANUAL_SOURCE = str(value("metadata", "manual_source", "manual"))
 MANUAL_SESSION = str(value("metadata", "manual_session", "manual-session"))
-

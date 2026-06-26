@@ -80,6 +80,17 @@ The git-managed pieces are usually the CLI wrapper, the
 `.agent-memory/projects/mem0-local` submodule pointer, skill files, workspace
 config, manifests, and `.gitignore`.
 
+External audit manifests live under:
+
+```text
+<workspace>/.agent-memory/manifests/
+```
+
+Live `add`, `update`, and `delete` operations append monthly
+`live-YYYY-MM.jsonl` rows. Historical imports and metadata backfills use
+`ledger-YYYY-MM.jsonl` and `metadata-backfill-*.jsonl`. These JSONL files are
+the git-friendly audit source; the database remains a runtime index.
+
 ## Concurrency
 
 Qdrant local path mode cannot be opened safely by multiple processes at the same time. `mem0-local` serializes commands with `cli.lock`; if a command waits, another memory command is active.

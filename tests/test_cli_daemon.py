@@ -56,6 +56,38 @@ class CliDaemonTests(unittest.TestCase):
         with patch.dict(cli.os.environ, {"MEM0_LOCAL_DAEMON_TIMEOUT": "bad"}, clear=False):
             self.assertEqual(cli.daemon_operation_timeout("search", {"rerank": False}), 30.0)
 
+    def test_add_appends_live_audit_after_successful_daemon_add(self):
+        result = {"results": [{"id": "memory-1", "memory": "Keep audit manifests.", "event": "ADD"}]}
+        with (
+            patch.dict(cli.os.environ, {}, clear=False),
+            patch.object(cli, "maybe_daemon_request", return_value=(True, result)),
+            patch.object(cli, "append_live_audit") as append_live_audit,
+            patch.object(cli, "output") as output,
+        ):
+            cli.add(
+                text="Keep audit manifests.",
+                user_id="workspace",
+                agent_id=None,
+                app_id=None,
+                run_id=None,
+                messages=None,
+                file=None,
+                metadata=[],
+                timestamp=None,
+                ledger_timestamp=None,
+                no_infer=False,
+                json_flag=True,
+                output_format="json",
+            )
+
+        append_live_audit.assert_called_once()
+        kwargs = append_live_audit.call_args.kwargs
+        self.assertEqual(kwargs["operation"], "add")
+        self.assertEqual(kwargs["input_payload"]["content"], "Keep audit manifests.")
+        self.assertTrue(kwargs["input_payload"]["infer"])
+        self.assertEqual(kwargs["result"]["results"][0]["id"], "memory-1")
+        output.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -90,6 +90,24 @@ See `examples/config.toml` for a portable template.
 
 Runtime data stays under `.agent-memory/store/` and remains excluded from git.
 
+## Audit Manifests
+
+Live mutations append external audit rows under the configured manifest
+directory, usually:
+
+```text
+.agent-memory/manifests/live-YYYY-MM.jsonl
+```
+
+`add`, `update`, `delete`, and `delete --all --force` write one JSONL row per
+operation. Each row records the raw CLI input payload, automatic metadata,
+scope, Mem0 result, memory ids/result memories when available, timings, and a
+payload hash. These manifests are intended to be git-managed human audit logs.
+
+Historical ledger imports and metadata backfills use the same manifest
+directory with separate file names such as `ledger-YYYY-MM.jsonl` and
+`metadata-backfill-*.jsonl`.
+
 ## Codex Skill
 
 This repository also bundles a Codex skill for agent discovery and operational
