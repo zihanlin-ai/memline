@@ -110,9 +110,28 @@ MEM0_LOCAL_NO_DAEMON=1 mem0-local search "test"
 ```
 
 If the daemon fails to start, inspect `<store>/daemon.log`. If `daemon status`
-shows a stale socket or PID after a crash, `daemon stop` cleans up missing
-process state; otherwise remove only the stale `<store>/daemon.sock` and
-`<store>/daemon.pid` files.
+shows a stale socket or PID after a crash, run `mem0-local daemon stop` first;
+newer `daemon start` also tries to recover a stale daemon pid automatically.
+Do not manually remove runtime files unless `daemon stop` cannot run and the
+process is confirmed gone.
+
+Some managed agent sandboxes can see `<store>/daemon.sock` but are not allowed
+to connect to it (`PermissionError: Operation not permitted`). In that case,
+stop the daemon before using the direct path, or run the memory command outside
+the sandbox. Do not leave an unreachable daemon running, because it owns the
+local Qdrant lock and direct commands will wait behind it.
+
+Recovery checklist:
+
+```bash
+mem0-local daemon status --json
+mem0-local daemon stop
+MEM0_LOCAL_NO_DAEMON=1 mem0-local search "health check"
+```
+
+If a command still waits after stopping the daemon, inspect which process owns
+`<store>/cli.lock`; only terminate processes you can identify as stale
+`mem0_local.daemon --serve` instances or abandoned `mem0-local` commands.
 
 ## Basic Checks
 

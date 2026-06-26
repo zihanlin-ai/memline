@@ -191,15 +191,38 @@ def maybe_daemon_request(op: str, args: dict[str, Any]) -> tuple[bool, Any]:
     if not daemon_enabled():
         return False, None
     try:
-        from mem0_local.daemon import DaemonUnavailable, request
+        from mem0_local.daemon import DaemonUnavailable, PID_PATH, SOCKET_PATH, request
     except Exception:
         return False, None
     try:
-        return True, request({"op": op, "args": args})
-    except DaemonUnavailable:
+        return True, request({"op": op, "args": args}, timeout=daemon_operation_timeout(op, args))
+    except DaemonUnavailable as exc:
+        if SOCKET_PATH.exists() or PID_PATH.exists():
+            raise click.ClickException(
+                "mem0-local daemon appears to be configured but is not reachable "
+                f"({exc}). Run `mem0-local daemon status`; if it is stale, run "
+                "`mem0-local daemon stop` and retry, or set MEM0_LOCAL_NO_DAEMON=1 "
+                "for the direct path."
+            ) from exc
         return False, None
     except Exception as exc:
         raise click.ClickException(f"mem0-local daemon {op} failed: {exc}") from exc
+
+
+def daemon_operation_timeout(op: str, args: dict[str, Any]) -> float:
+    raw = os.environ.get("MEM0_LOCAL_DAEMON_TIMEOUT")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    if op == "search":
+        return 180.0 if args.get("rerank") else 30.0
+    if op == "add":
+        return 300.0 if args.get("infer") else 30.0
+    if op in {"get", "list", "delete", "history"}:
+        return 30.0
+    return 300.0
 
 
 def chosen_format(output_format: str, json_flag: bool) -> str:

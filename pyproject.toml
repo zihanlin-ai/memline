@@ -25,3 +25,7 @@ mem0-local-backfill-metadata = "mem0_local.backfill_metadata:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

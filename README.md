@@ -31,6 +31,15 @@ For development from a checkout:
 
 Put provider secrets in the configured env file, for example `.agent-memory/store/.env`. Do not commit that file.
 
+## Tests
+
+The daemon and CLI safety behavior is covered by standard-library `unittest`
+tests, so no test dependency is required:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -v
+```
+
 ## Commands
 
 ```bash

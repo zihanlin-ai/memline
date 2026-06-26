@@ -214,8 +214,12 @@ def read_json_line(conn: socket.socket) -> dict[str, Any]:
     return json.loads(raw.decode())
 
 
-def write_json_line(conn: socket.socket, payload: dict[str, Any]) -> None:
-    conn.sendall(json.dumps(payload, default=str).encode() + b"\n")
+def write_json_line(conn: socket.socket, payload: dict[str, Any]) -> bool:
+    try:
+        conn.sendall(json.dumps(payload, default=str).encode() + b"\n")
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        return False
+    return True
 
 
 def serve() -> None:
@@ -261,14 +265,21 @@ def serve() -> None:
                 pass
 
 
-def request(payload: dict[str, Any], *, timeout: float = REQUEST_TIMEOUT_SECONDS) -> Any:
+def request(
+    payload: dict[str, Any],
+    *,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+    connect_timeout: float = CONNECT_TIMEOUT_SECONDS,
+) -> Any:
     if not SOCKET_PATH.exists():
         raise DaemonUnavailable("daemon socket does not exist")
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(timeout)
+            client.settimeout(connect_timeout)
             client.connect(str(SOCKET_PATH))
-            write_json_line(client, payload)
+            client.settimeout(timeout)
+            if not write_json_line(client, payload):
+                raise DaemonUnavailable("failed to write request to daemon")
             response = read_json_line(client)
     except OSError as exc:
         raise DaemonUnavailable(str(exc)) from exc
@@ -278,6 +289,18 @@ def request(payload: dict[str, Any], *, timeout: float = REQUEST_TIMEOUT_SECONDS
     return response.get("result")
 
 
+def pid_state(pid: int) -> str | None:
+    try:
+        status = (Path("/proc") / str(pid) / "status").read_text()
+    except OSError:
+        return None
+    for line in status.splitlines():
+        if line.startswith("State:"):
+            parts = line.split()
+            return parts[1] if len(parts) > 1 else None
+    return None
+
+
 def is_pid_running(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -285,6 +308,67 @@ def is_pid_running(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    return pid_state(pid) != "Z"
+
+
+def read_pid_cmdline(pid: int) -> str:
+    try:
+        return (Path("/proc") / str(pid) / "cmdline").read_bytes().replace(b"\x00", b" ").decode(errors="replace")
+    except OSError:
+        return ""
+
+
+def is_daemon_pid(pid: int) -> bool:
+    return "mem0_local.daemon" in read_pid_cmdline(pid)
+
+
+def unlink_runtime_files() -> None:
+    for path in (SOCKET_PATH, PID_PATH):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def terminate_daemon_pid(pid: int, *, wait_seconds: float = 5.0, force: bool = False) -> bool:
+    if not is_pid_running(pid):
+        return True
+    if not is_daemon_pid(pid):
+        return False
+
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        if not is_pid_running(pid):
+            return True
+        time.sleep(0.2)
+
+    if force and is_pid_running(pid):
+        os.kill(pid, signal.SIGKILL)
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if not is_pid_running(pid):
+                return True
+            time.sleep(0.1)
+
+    return not is_pid_running(pid)
+
+
+def terminate_process(proc: subprocess.Popen[Any], *, wait_seconds: float = 5.0, force: bool = True) -> bool:
+    if proc.poll() is not None:
+        return True
+    proc.terminate()
+    try:
+        proc.wait(timeout=wait_seconds)
+        return True
+    except subprocess.TimeoutExpired:
+        if not force:
+            return False
+    proc.kill()
+    try:
+        proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        return False
     return True
 
 
@@ -308,8 +392,23 @@ def start_daemon(wait_seconds: float = 90.0) -> dict[str, Any]:
         return {"started": False, **existing}
 
     STORE_DIR.mkdir(parents=True, exist_ok=True)
+    pid = read_pid()
+    recovered_stale_pid: int | None = None
+    if pid is not None:
+        if is_pid_running(pid) and is_daemon_pid(pid):
+            recovered = terminate_daemon_pid(pid, wait_seconds=5.0, force=True)
+            if not recovered:
+                raise RuntimeError(f"stale daemon pid {pid} is running but not responding")
+            recovered_stale_pid = pid
+        elif not is_pid_running(pid):
+            recovered_stale_pid = pid
+        else:
+            recovered_stale_pid = pid
+    if SOCKET_PATH.exists() or recovered_stale_pid is not None:
+        unlink_runtime_files()
+
     log = LOG_PATH.open("ab")
-    subprocess.Popen(
+    proc = subprocess.Popen(
         [sys.executable, "-m", "mem0_local.daemon", "--serve"],
         stdin=subprocess.DEVNULL,
         stdout=log,
@@ -323,7 +422,12 @@ def start_daemon(wait_seconds: float = 90.0) -> dict[str, Any]:
         current = ping()
         if current:
             return {"started": True, **current}
+        if proc.poll() is not None:
+            raise RuntimeError(f"daemon exited during startup with code {proc.returncode}; see {LOG_PATH}")
         time.sleep(0.5)
+    terminate_process(proc, wait_seconds=5.0, force=True)
+    if read_pid() == proc.pid:
+        unlink_runtime_files()
     raise TimeoutError(f"daemon did not become ready within {wait_seconds:.0f}s; see {LOG_PATH}")
 
 
@@ -335,26 +439,16 @@ def stop_daemon(wait_seconds: float = 10.0) -> dict[str, Any]:
         return {"stopped": False, "reason": "pid file missing"}
 
     if not is_pid_running(pid):
-        for path in (SOCKET_PATH, PID_PATH):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
+        unlink_runtime_files()
         return {"stopped": False, "pid": pid, "reason": "process was not running"}
 
-    os.kill(pid, signal.SIGTERM)
-    deadline = time.time() + wait_seconds
-    while time.time() < deadline:
-        if not is_pid_running(pid):
-            break
-        time.sleep(0.2)
-    stopped = not is_pid_running(pid)
+    if not is_daemon_pid(pid):
+        unlink_runtime_files()
+        return {"stopped": False, "pid": pid, "reason": "pid file did not point to mem0-local daemon"}
+
+    stopped = terminate_daemon_pid(pid, wait_seconds=wait_seconds, force=False)
     if stopped:
-        for path in (SOCKET_PATH, PID_PATH):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
+        unlink_runtime_files()
     return {"stopped": stopped, "pid": pid}
 
 
@@ -365,6 +459,7 @@ def status() -> dict[str, Any]:
         "running": bool(pong),
         "pid": pid,
         "pid_running": is_pid_running(pid) if pid is not None else False,
+        "pid_is_daemon": is_daemon_pid(pid) if pid is not None and is_pid_running(pid) else False,
         "socket_path": str(SOCKET_PATH),
         "socket_exists": SOCKET_PATH.exists(),
         "log_path": str(LOG_PATH),
