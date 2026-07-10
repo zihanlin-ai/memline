@@ -642,26 +642,31 @@ def add(
     meta["ledger_timestamp"] = normalize_timestamp(ledger_timestamp) or meta.get("ledger_timestamp") or meta["created_at"]
     meta.setdefault("ingested_at", ingested_at)
 
-    used_daemon, result = maybe_daemon_request(
-        "add",
-        {
-            "content": content,
-            "user_id": user_id,
-            "agent_id": agent_id,
-            "run_id": run_id,
-            "metadata": meta or None,
-            "infer": not no_infer,
-        },
-    )
-    if not used_daemon:
-        result = memory_client().add(
-            content,
-            user_id=user_id,
-            agent_id=agent_id,
-            run_id=run_id,
-            metadata=meta or None,
-            infer=not no_infer,
+    result: Any = None
+    add_error: Optional[Exception] = None
+    try:
+        used_daemon, result = maybe_daemon_request(
+            "add",
+            {
+                "content": content,
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "run_id": run_id,
+                "metadata": meta or None,
+                "infer": not no_infer,
+            },
         )
+        if not used_daemon:
+            result = memory_client().add(
+                content,
+                user_id=user_id,
+                agent_id=agent_id,
+                run_id=run_id,
+                metadata=meta or None,
+                infer=not no_infer,
+            )
+    except Exception as exc:  # mem0ai>=2.0.11 raises on extraction failure; audit it before surfacing.
+        add_error = exc
     if isinstance(result, dict):
         result.setdefault("duration_ms", int((time.perf_counter() - start) * 1000))
     finished_at = now_utc_iso()
@@ -675,12 +680,16 @@ def add(
             "infer": not no_infer,
         },
         metadata=meta,
-        result=result,
+        result={"error": str(add_error)} if add_error is not None else result,
         started_at=started_at,
         finished_at=finished_at,
         duration_ms=int((time.perf_counter() - start) * 1000),
         scope=scope_dict(user_id, agent_id, app_id, run_id),
     )
+    if add_error is not None:
+        if isinstance(add_error, click.ClickException):
+            raise add_error
+        raise click.ClickException(f"add failed in mem0 backend: {add_error}") from add_error
     output(
         result,
         command="add",

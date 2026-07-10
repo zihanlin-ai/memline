@@ -162,6 +162,15 @@ ls -l "<workspace>/.agent-memory/bin/mem0-local"
 
 If API-key-dependent features fail, use `status --json` and check only `api_key_set`; do not print the key.
 
+## Add Failures vs Empty Results
+
+With `mem0ai>=2.0.11`, LLM-extraction failures during `add` raise instead of silently returning empty `results`:
+
+- CLI error / exit code 1 (`add failed in mem0 backend: ...` or `mem0-local daemon add failed: ...`): the LLM call or extraction parsing failed. Check the LLM provider key/network, then retry; split long or dense input into shorter atomic entries.
+- Success envelope with `"results": []`: the backend processed the input but stored nothing — the fact was deduplicated against an existing memory or contained nothing extractable. This is not an error.
+
+Failed `add` attempts still append an audit row to `.agent-memory/manifests/live-YYYY-MM.jsonl` with an `{"error": ...}` result payload, so audits distinguish failed writes from empty ones.
+
 ## Rollback Checks
 
 To confirm interrupted ledger imports are gone:
