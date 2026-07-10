@@ -91,3 +91,10 @@ interrupted, verify residual entries with:
 ```bash
 mem0-local list --filter source=agent-memory-ledger --page-size 5 --json
 ```
+
+## Extraction Failures Abort, Re-run to Resume
+
+With `mem0ai>=2.0.11`, an LLM-extraction failure on one entry aborts the import
+before that entry's manifest row is written, instead of silently importing
+nothing for it. This is resume-safe: re-run the same import command and the
+manifest skips already-completed entries and retries from the failed one.
