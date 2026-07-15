@@ -44,6 +44,7 @@ PID_PATH = STORE_DIR / "daemon.pid"
 LOG_PATH = STORE_DIR / "daemon.log"
 REQUEST_TIMEOUT_SECONDS = 300
 CONNECT_TIMEOUT_SECONDS = 1
+CPU_SAMPLE_SECONDS = 0.05
 
 _lock_handle = None
 
@@ -322,6 +323,33 @@ def is_daemon_pid(pid: int) -> bool:
     return "mem0_local.daemon" in read_pid_cmdline(pid)
 
 
+def process_cpu_seconds(pid: int) -> float | None:
+    try:
+        raw = (Path("/proc") / str(pid) / "stat").read_text()
+        fields_after_comm = raw[raw.rfind(")") + 2 :].split()
+        utime = int(fields_after_comm[11])
+        stime = int(fields_after_comm[12])
+        ticks_per_second = os.sysconf("SC_CLK_TCK")
+    except (FileNotFoundError, IndexError, OSError, ValueError):
+        return None
+    return (utime + stime) / ticks_per_second
+
+
+def sample_process_cpu_percent(pid: int | None, *, sample_seconds: float = CPU_SAMPLE_SECONDS) -> float | None:
+    if pid is None or not is_pid_running(pid):
+        return None
+    start_cpu = process_cpu_seconds(pid)
+    start_wall = time.monotonic()
+    if start_cpu is None:
+        return None
+    time.sleep(sample_seconds)
+    end_cpu = process_cpu_seconds(pid)
+    end_wall = time.monotonic()
+    if end_cpu is None or end_wall <= start_wall:
+        return None
+    return round(((end_cpu - start_cpu) / (end_wall - start_wall)) * 100, 3)
+
+
 def unlink_runtime_files() -> None:
     for path in (SOCKET_PATH, PID_PATH):
         try:
@@ -455,11 +483,17 @@ def stop_daemon(wait_seconds: float = 10.0) -> dict[str, Any]:
 def status() -> dict[str, Any]:
     pid = read_pid()
     pong = ping()
+    pid_running = is_pid_running(pid) if pid is not None else False
+    pid_is_daemon = is_daemon_pid(pid) if pid is not None and pid_running else False
+    cpu_percent = sample_process_cpu_percent(pid) if pid_running else None
     return {
-        "running": bool(pong),
+        "running": pid_running and pid_is_daemon,
+        "responsive": bool(pong),
         "pid": pid,
-        "pid_running": is_pid_running(pid) if pid is not None else False,
-        "pid_is_daemon": is_daemon_pid(pid) if pid is not None and is_pid_running(pid) else False,
+        "pid_running": pid_running,
+        "pid_is_daemon": pid_is_daemon,
+        "cpu_percent": cpu_percent,
+        "cpu_sample_seconds": CPU_SAMPLE_SECONDS if cpu_percent is not None else None,
         "socket_path": str(SOCKET_PATH),
         "socket_exists": SOCKET_PATH.exists(),
         "log_path": str(LOG_PATH),

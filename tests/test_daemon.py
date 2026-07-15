@@ -100,6 +100,51 @@ class DaemonRequestTests(unittest.TestCase):
 
 
 class DaemonLifecycleTests(unittest.TestCase):
+    def test_status_includes_short_window_cpu_sample(self):
+        with (
+            patch.object(daemon, "read_pid", return_value=123),
+            patch.object(daemon, "ping", return_value={"pid": 123, "socket": "sock"}),
+            patch.object(daemon, "is_pid_running", return_value=True),
+            patch.object(daemon, "is_daemon_pid", return_value=True),
+            patch.object(daemon, "sample_process_cpu_percent", return_value=0.0) as sample_process_cpu_percent,
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/mem0-local.sock", exists=True)),
+            patch.object(daemon, "LOG_PATH", FakePath("/tmp/mem0-local.log", exists=True)),
+        ):
+            result = daemon.status()
+
+        self.assertTrue(result["running"])
+        self.assertTrue(result["responsive"])
+        self.assertEqual(result["cpu_percent"], 0.0)
+        self.assertEqual(result["cpu_sample_seconds"], daemon.CPU_SAMPLE_SECONDS)
+        sample_process_cpu_percent.assert_called_once_with(123)
+
+    def test_status_reports_running_process_even_when_ping_is_busy(self):
+        with (
+            patch.object(daemon, "read_pid", return_value=123),
+            patch.object(daemon, "ping", return_value=None),
+            patch.object(daemon, "is_pid_running", return_value=True),
+            patch.object(daemon, "is_daemon_pid", return_value=True),
+            patch.object(daemon, "sample_process_cpu_percent", return_value=0.0),
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/mem0-local.sock", exists=True)),
+            patch.object(daemon, "LOG_PATH", FakePath("/tmp/mem0-local.log", exists=True)),
+        ):
+            result = daemon.status()
+
+        self.assertTrue(result["running"])
+        self.assertFalse(result["responsive"])
+
+    def test_sample_process_cpu_percent_uses_cpu_delta_not_lifetime_average(self):
+        with (
+            patch.object(daemon, "is_pid_running", return_value=True),
+            patch.object(daemon, "process_cpu_seconds", side_effect=[10.0, 10.25]),
+            patch.object(daemon.time, "monotonic", side_effect=[100.0, 100.5]),
+            patch.object(daemon.time, "sleep") as sleep,
+        ):
+            result = daemon.sample_process_cpu_percent(123, sample_seconds=0.5)
+
+        self.assertEqual(result, 50.0)
+        sleep.assert_called_once_with(0.5)
+
     def test_start_daemon_recovers_stale_daemon_pid_and_unlinks_runtime_files(self):
         popen = SimpleNamespace(pid=42, poll=Mock(side_effect=[None, None]))
         with (
