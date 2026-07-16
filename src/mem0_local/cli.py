@@ -67,6 +67,10 @@ app = typer.Typer(
 )
 daemon_app = typer.Typer(help="Manage the optional long-lived local daemon.")
 app.add_typer(daemon_app, name="daemon")
+entity_app = typer.Typer(help="Inspect and manage the local entity graph.")
+app.add_typer(entity_app, name="entity")
+event_app = typer.Typer(help="Inspect background add-processing events (async queue).")
+app.add_typer(event_app, name="event")
 
 agent_mode = False
 lock_handle = None
@@ -185,11 +189,46 @@ def daemon_enabled() -> bool:
     return value.lower() not in {"1", "true", "yes", "on"}
 
 
+def autostart_enabled() -> bool:
+    return os.environ.get("MEM0_LOCAL_NO_AUTOSTART", "").lower() not in {"1", "true", "yes", "on"}
+
+
+def daemon_spawn_safe() -> bool:
+    """Heuristic gate: only auto-spawn the daemon from a host-visible context.
+
+    From an isolated sandbox namespace, a spawned daemon lives in an overlay
+    (invisible to other processes, dies with the sandbox) and may try to start
+    a duplicate qdrant against the shared storage. Signals used:
+    - qdrant reachable over TCP -> host network visible, spawning is safe;
+    - qdrant process visible but TCP unreachable -> network-isolated, refuse;
+    - neither -> genuine cold host if pid 1 is the real init, else refuse.
+    """
+    import subprocess
+
+    try:
+        from mem0_local.daemon import _qdrant_reachable
+        from mem0_local.config import VECTOR_STORE_MODE
+
+        if VECTOR_STORE_MODE == "qdrant-server":
+            if _qdrant_reachable():
+                return True
+            if subprocess.run(["pgrep", "-x", "qdrant"], capture_output=True, timeout=5).returncode == 0:
+                return False
+        comm = Path("/proc/1/comm").read_text().strip().lower()
+        return comm.startswith(("init", "systemd"))
+    except Exception:  # noqa: BLE001 - when unsure, do not spawn.
+        return False
+
+
+_autostart_attempted = False
+
+
 def maybe_daemon_request(op: str, args: dict[str, Any]) -> tuple[bool, Any]:
+    global _autostart_attempted
     if not daemon_enabled():
         return False, None
     try:
-        from mem0_local.daemon import DaemonUnavailable, PID_PATH, SOCKET_PATH, request
+        from mem0_local.daemon import DaemonUnavailable, PID_PATH, SOCKET_PATH, request, start_daemon
     except Exception:
         return False, None
     try:
@@ -202,7 +241,35 @@ def maybe_daemon_request(op: str, args: dict[str, Any]) -> tuple[bool, Any]:
                 "`mem0-local daemon stop` and retry, or set MEM0_LOCAL_NO_DAEMON=1 "
                 "for the direct path."
             ) from exc
-        return False, None
+        if not autostart_enabled() or _autostart_attempted:
+            return False, None
+        if not daemon_spawn_safe():
+            err_console.print(
+                "[dim]mem0-local: daemon not running and this context cannot safely spawn it "
+                "(isolated sandbox?); using direct path. After a reboot, run "
+                "`mem0-local daemon start` from a normal shell.[/dim]"
+            )
+            return False, None
+        # Lazy auto-start: bring the daemon (and, via its startup, the qdrant
+        # server) up on first use instead of requiring a manual start after
+        # every WSL reboot. Concurrent CLI callers serialize on the daemon
+        # start lock; losers find the winner's socket via ping.
+        _autostart_attempted = True
+        err_console.print("[dim]mem0-local: daemon not running; auto-starting (may take ~15s after a reboot)...[/dim]")
+        try:
+            start_daemon(wait_seconds=90.0)
+        except Exception as start_exc:  # noqa: BLE001 - degrade to direct path.
+            err_console.print(
+                f"[yellow]mem0-local: daemon auto-start failed ({start_exc}); "
+                "falling back to the direct path. Set MEM0_LOCAL_NO_AUTOSTART=1 to silence.[/yellow]"
+            )
+            return False, None
+        try:
+            return True, request({"op": op, "args": args}, timeout=daemon_operation_timeout(op, args))
+        except Exception as retry_exc:
+            raise click.ClickException(
+                f"mem0-local daemon {op} failed after auto-start: {retry_exc}"
+            ) from retry_exc
     except Exception as exc:
         raise click.ClickException(f"mem0-local daemon {op} failed: {exc}") from exc
 
@@ -218,9 +285,57 @@ def daemon_operation_timeout(op: str, args: dict[str, Any]) -> float:
         return 180.0 if args.get("rerank") else 30.0
     if op == "add":
         return 300.0 if args.get("infer") else 30.0
-    if op in {"get", "list", "delete", "history"}:
+    if op in {
+        "get",
+        "list",
+        "delete",
+        "history",
+        "entity_list",
+        "entity_get",
+        "entity_delete",
+        "event_list",
+        "event_get",
+        "event_retry",
+        "event_ack",
+    }:
         return 30.0
     return 300.0
+
+
+def confirm_destructive(prompt: str, force: bool) -> None:
+    """Official-CLI-style guard: confirm on a TTY, require --force otherwise."""
+    if force:
+        return
+    if sys.stdin.isatty() and sys.stderr.isatty():
+        if not typer.confirm(prompt):
+            raise typer.Abort()
+        return
+    raise click.ClickException(
+        "Refusing destructive operation in non-interactive mode without --force "
+        "(use --dry-run to preview)."
+    )
+
+
+def project_fields(result: Any, fields: Optional[str]) -> Any:
+    """Project each result item to the requested comma-separated fields (id is always kept)."""
+    if not fields:
+        return result
+    wanted = [f.strip() for f in fields.split(",") if f.strip()]
+
+    def proj(item: dict[str, Any]) -> dict[str, Any]:
+        projected: dict[str, Any] = {"id": item.get("id")}
+        for key in wanted:
+            if key != "id":
+                projected[key] = item.get(key)
+        return projected
+
+    if isinstance(result, dict) and isinstance(result.get("results"), list):
+        projected_result = dict(result)
+        projected_result["results"] = [proj(x) for x in result["results"] if isinstance(x, dict)]
+        return projected_result
+    if isinstance(result, list):
+        return [proj(x) for x in result if isinstance(x, dict)]
+    return result
 
 
 def chosen_format(output_format: str, json_flag: bool) -> str:
@@ -410,6 +525,40 @@ def render_text(command: str, data: Any) -> None:
         console.print_json(json.dumps(data, default=str))
         return
 
+    if command == "event-list":
+        items = data if isinstance(data, list) else []
+        if not items:
+            console.print("No events found.")
+            return
+        table = Table("Event", "Status", "Attempts", "Updated", "Content", "Error")
+        for item in items:
+            table.add_row(
+                str(item.get("event_id", ""))[:12],
+                str(item.get("status") or ""),
+                str(item.get("attempts") or 0),
+                str(item.get("updated_at") or "")[:19],
+                str(item.get("content_preview") or "")[:60],
+                str(item.get("error") or "")[:40],
+            )
+        console.print(table)
+        return
+
+    if command == "entity-list":
+        items = data if isinstance(data, list) else []
+        if not items:
+            console.print("No entities found.")
+            return
+        table = Table("ID", "Type", "Entity", "Links")
+        for item in items:
+            table.add_row(
+                str(item.get("id", ""))[:12],
+                str(item.get("entity_type") or ""),
+                str(item.get("data") or ""),
+                str(len(item.get("linked_memory_ids") or [])),
+            )
+        console.print(table)
+        return
+
     if command in {"search", "list"}:
         items = normalize_items(data)
         if not items:
@@ -581,6 +730,18 @@ def main(
 ) -> None:
     global agent_mode
     agent_mode = json_output
+    try:
+        from mem0_local.queue import read_alerts
+
+        alerts = read_alerts()
+        if alerts and alerts.get("failed_unacked"):
+            err_console.print(
+                f"[yellow]mem0-local: {alerts['failed_unacked']} queued add(s) FAILED. "
+                "Inspect with `mem0-local event list --status failed`, then "
+                "`mem0-local event retry <event_id>` or `mem0-local event ack --all`.[/yellow]"
+            )
+    except Exception:  # noqa: BLE001 - the banner must never break a command.
+        pass
 
 
 @daemon_app.command("start")
@@ -677,13 +838,30 @@ def add(
         "--ledger-timestamp",
         help="Original ledger/event timestamp; defaults to --timestamp.",
     ),
-    no_infer: bool = typer.Option(False, "--no-infer", help="Store raw text without LLM extraction."),
+    infer_opt: Optional[bool] = typer.Option(
+        None,
+        "--infer/--no-infer",
+        help="Force LLM extraction on/off. Default: raw storage for plain text; extraction for --messages/--file.",
+    ),
+    wait: bool = typer.Option(
+        False,
+        "--wait",
+        help="For extraction adds: wait synchronously instead of queueing (raw adds are always synchronous).",
+    ),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
-    """Add a memory from text, messages, file, or stdin."""
+    """Add a memory from text, messages, file, or stdin.
+
+    Plain-text adds store the exact text verbatim (fast, synchronous, returns
+    the memory id; exact re-fires dedup, semantic near-dups are annotated).
+    Conversation input (--messages/--file) defaults to LLM extraction, which
+    is queued in the background — check with `mem0-local event status <id>`,
+    or pass --wait for the synchronous path.
+    """
     start = time.perf_counter()
     started_at = now_utc_iso()
+    infer = infer_opt if infer_opt is not None else bool(messages or file)
     content = read_content(text, messages, file)
     meta = parse_json_or_key_values(metadata, option_name="--metadata")
     auto_context = detect_writer_context()
@@ -708,6 +886,32 @@ def add(
     meta["ledger_timestamp"] = normalize_timestamp(ledger_timestamp) or meta.get("ledger_timestamp") or meta["created_at"]
     meta.setdefault("ingested_at", ingested_at)
 
+    if infer and not wait:
+        used_daemon, queued = maybe_daemon_request(
+            "add",
+            {
+                "content": content,
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "run_id": run_id,
+                "metadata": meta or None,
+                "infer": True,
+                "async": True,
+            },
+        )
+        if used_daemon:
+            # The daemon worker writes the manifest row at completion; the
+            # enqueue ack itself is not a store mutation.
+            if isinstance(queued, dict):
+                queued.setdefault("duration_ms", int((time.perf_counter() - start) * 1000))
+            output(
+                queued,
+                command="add",
+                fmt=chosen_format(output_format, json_flag),
+                scope=scope_dict(user_id, agent_id, app_id, run_id),
+            )
+            return
+
     result: Any = None
     add_error: Optional[Exception] = None
     try:
@@ -719,7 +923,7 @@ def add(
                 "agent_id": agent_id,
                 "run_id": run_id,
                 "metadata": meta or None,
-                "infer": not no_infer,
+                "infer": infer,
             },
         )
         if not used_daemon:
@@ -729,7 +933,7 @@ def add(
                 agent_id=agent_id,
                 run_id=run_id,
                 metadata=meta or None,
-                infer=not no_infer,
+                infer=infer,
             )
     except Exception as exc:  # mem0ai>=2.0.11 raises on extraction failure; audit it before surfacing.
         add_error = exc
@@ -743,7 +947,7 @@ def add(
             "messages": messages,
             "file": str(file) if file else None,
             "content": content,
-            "infer": not no_infer,
+            "infer": infer,
         },
         metadata=meta,
         result={"error": str(add_error)} if add_error is not None else result,
@@ -769,16 +973,19 @@ def search(
     query: Optional[str] = typer.Argument(None, help="Search query."),
     user_id: str = typer.Option(DEFAULT_USER_ID, "--user-id", "-u", help="Workspace user scope."),
     top_k: int = typer.Option(10, "--top-k", "-k", "--limit", help="Number of results."),
-    threshold: float = typer.Option(0.1, "--threshold", help="Minimum score threshold."),
+    threshold: float = typer.Option(
+        0.1,
+        "--threshold",
+        help="Minimum score threshold. Local default 0.1 (official CLI uses 0.3): intentional — hybrid vector+BM25 scores here are distributed lower than Platform scores.",
+    ),
     rerank: bool = typer.Option(False, "--rerank", help="Use configured OpenRouter LLM reranker."),
-    keyword: bool = typer.Option(False, "--keyword", help="Accepted for official CLI compatibility."),
-    fields: Optional[str] = typer.Option(None, "--fields", help="Accepted for official CLI compatibility."),
+    keyword: bool = typer.Option(False, "--keyword", help="Pure BM25 keyword retrieval instead of hybrid semantic search."),
+    fields: Optional[str] = typer.Option(None, "--fields", help="Comma-separated result fields to return (id always kept)."),
     explain: bool = typer.Option(False, "--explain", help="Return retrieval explanation when supported."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, table, quiet"),
 ) -> None:
-    """Query local memory using semantic or hybrid retrieval."""
-    del keyword, fields
+    """Query local memory using hybrid semantic (default) or pure keyword retrieval."""
     if query is None and stdin_is_piped():
         query = sys.stdin.read().strip()
     if not query:
@@ -795,6 +1002,7 @@ def search(
             "filters": filters,
             "threshold": threshold,
             "rerank": rerank,
+            "keyword": keyword,
             "explain": explain,
         },
     )
@@ -805,8 +1013,10 @@ def search(
             filters=filters,
             threshold=threshold,
             rerank=rerank,
+            keyword=keyword,
             explain=explain,
         )
+    result = project_fields(result, fields)
     output(
         result,
         command="search",
@@ -930,7 +1140,8 @@ def delete(
     user_id: str = typer.Option(DEFAULT_USER_ID, "--user-id", "-u", help="Scope to user."),
     agent_id: Optional[str] = typer.Option(None, "--agent-id", help="Scope to agent."),
     run_id: Optional[str] = typer.Option(None, "--run-id", help="Scope to run."),
-    force: bool = typer.Option(False, "--force", help="Required for --all."),
+    force: bool = typer.Option(False, "--force", help="Skip confirmation (required non-interactively; always required for --all)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted without deleting."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
@@ -938,6 +1149,29 @@ def delete(
     start = time.perf_counter()
     started_at = now_utc_iso()
     if all_:
+        if dry_run:
+            filters = filters_from_scope(user_id, agent_id, None, run_id)
+            used_daemon, matches = maybe_daemon_request(
+                "list",
+                {"filters": filters or None, "top_k": 10000, "start": 0, "end": 10000},
+            )
+            if not used_daemon:
+                matches = normalize_items(memory_client().get_all(filters=filters or None, top_k=10000))
+            matches = normalize_items(matches) or (matches if isinstance(matches, list) else [])
+            output(
+                {
+                    "dry_run": True,
+                    "would_delete_count": len(matches),
+                    "sample": [
+                        {"id": m.get("id"), "memory": m.get("memory") or m.get("data")}
+                        for m in matches[:10]
+                    ],
+                },
+                command="delete",
+                fmt=chosen_format(output_format, json_flag),
+                scope=scope_dict(user_id, agent_id, None, run_id),
+            )
+            return
         if not force:
             raise typer.BadParameter("--all requires --force.")
         used_daemon, result = maybe_daemon_request(
@@ -971,6 +1205,17 @@ def delete(
     if not used_get_daemon:
         client = memory_client()
         existing = client.get(memory_id)
+    if dry_run:
+        output(
+            {"dry_run": True, "would_delete": existing},
+            command="delete",
+            fmt=chosen_format(output_format, json_flag),
+        )
+        return
+    preview = ""
+    if isinstance(existing, dict):
+        preview = str(existing.get("memory") or existing.get("data") or "")[:80]
+    confirm_destructive(f"Delete memory {memory_id} ({preview!r})?", force)
     used_daemon, result = maybe_daemon_request("delete", {"all": False, "memory_id": memory_id})
     if not used_daemon:
         result = (client or memory_client()).delete(memory_id)
@@ -1005,6 +1250,171 @@ def history(
     if not used_daemon:
         result = memory_client().history(memory_id)
     output(result, command="history", fmt=chosen_format(output_format, json_flag))
+
+
+@entity_app.command("list")
+def entity_list(
+    entity_type: Optional[str] = typer.Option(None, "--type", help="Filter by entity type (PROPER, TOPIC, QUOTED, IDENTIFIER)."),
+    contains: Optional[str] = typer.Option(None, "--contains", help="Case-insensitive substring filter on entity text."),
+    page: int = typer.Option(1, "--page", help="Page number."),
+    page_size: int = typer.Option(50, "--page-size", help="Results per page."),
+    scan_limit: int = typer.Option(50000, "--scan-limit", help="Max entity rows scanned before filtering."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("table", "--output", "-o", help="text, json, table, quiet"),
+) -> None:
+    """List entity-graph rows, most-linked first."""
+    if page < 1:
+        raise typer.BadParameter("--page must be >= 1.")
+    if page_size < 1:
+        raise typer.BadParameter("--page-size must be >= 1.")
+    start = (page - 1) * page_size
+    used_daemon, result = maybe_daemon_request(
+        "entity_list",
+        {
+            "entity_type": entity_type,
+            "contains": contains,
+            "scan_limit": scan_limit,
+            "start": start,
+            "end": start + page_size,
+        },
+    )
+    if not used_daemon:
+        from mem0_local.entity_ops import list_entities
+
+        rows = list_entities(
+            memory_client().entity_store,
+            entity_type=entity_type,
+            contains=contains,
+            scan_limit=scan_limit,
+        )
+        result = rows[start : start + page_size]
+    output(result, command="entity-list", fmt=chosen_format(output_format, json_flag))
+
+
+@entity_app.command("delete")
+def entity_delete(
+    entity_id: str = typer.Argument(..., help="Entity ID to delete from the entity graph."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted without deleting."),
+    force: bool = typer.Option(False, "--force", help="Skip confirmation (required non-interactively)."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Delete one entity-graph row (memories themselves are not touched)."""
+    start = time.perf_counter()
+    started_at = now_utc_iso()
+    used_get_daemon, row = maybe_daemon_request("entity_get", {"entity_id": entity_id})
+    client = None
+    if not used_get_daemon:
+        from mem0_local.entity_ops import row_to_dict
+
+        client = memory_client()
+        raw = client.entity_store.get(entity_id)
+        row = row_to_dict(raw) if raw else None
+    if not row:
+        raise click.ClickException(f"Entity not found: {entity_id}")
+    if dry_run:
+        output(
+            {"dry_run": True, "would_delete": row},
+            command="entity-delete",
+            fmt=chosen_format(output_format, json_flag),
+        )
+        return
+    linked = len(row.get("linked_memory_ids") or [])
+    confirm_destructive(
+        f"Delete entity {entity_id} ({row.get('data')!r}, {linked} linked memories)?", force
+    )
+    used_daemon, result = maybe_daemon_request("entity_delete", {"entity_id": entity_id})
+    if not used_daemon:
+        (client or memory_client()).entity_store.delete(entity_id)
+        result = {"id": entity_id, "deleted": True}
+    finished_at = now_utc_iso()
+    append_live_audit(
+        operation="entity_delete",
+        input_payload={"entity_id": entity_id, "existing": row},
+        metadata=None,
+        result=result,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        scope={},
+    )
+    output(result, command="entity-delete", fmt=chosen_format(output_format, json_flag))
+
+
+def _event_queue_direct():
+    from mem0_local.queue import EventQueue
+
+    return EventQueue()
+
+
+@event_app.command("list")
+def event_list(
+    status: Optional[str] = typer.Option(None, "--status", help="Filter: queued, processing, done, failed."),
+    page: int = typer.Option(1, "--page", help="Page number."),
+    page_size: int = typer.Option(50, "--page-size", help="Results per page."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("table", "--output", "-o", help="text, json, table, quiet"),
+) -> None:
+    """List background add events, newest first."""
+    if status and status not in {"queued", "processing", "done", "failed"}:
+        raise typer.BadParameter("--status must be one of: queued, processing, done, failed.")
+    offset = (page - 1) * page_size
+    used_daemon, result = maybe_daemon_request(
+        "event_list", {"status": status, "limit": page_size, "offset": offset}
+    )
+    if not used_daemon:
+        result = _event_queue_direct().list(status=status, limit=page_size, offset=offset)
+    output(result, command="event-list", fmt=chosen_format(output_format, json_flag))
+
+
+@event_app.command("status")
+def event_status(
+    event_id: str = typer.Argument(..., help="Event ID returned by an async add."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Show one background event, including its result or error."""
+    used_daemon, result = maybe_daemon_request("event_get", {"event_id": event_id})
+    if not used_daemon:
+        result = _event_queue_direct().get(event_id)
+    if not result:
+        raise click.ClickException(f"Event not found: {event_id}")
+    output(result, command="event-status", fmt=chosen_format(output_format, json_flag))
+
+
+@event_app.command("retry")
+def event_retry(
+    event_id: str = typer.Argument(..., help="Failed event ID to requeue."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Requeue a failed event with its original input."""
+    used_daemon, result = maybe_daemon_request("event_retry", {"event_id": event_id})
+    if not used_daemon:
+        queue = _event_queue_direct()
+        result = {"event_id": event_id, "retried": queue.retry(event_id)}
+        queue.refresh_alerts()
+    output(result, command="event-retry", fmt=chosen_format(output_format, json_flag))
+
+
+@event_app.command("ack")
+def event_ack(
+    event_id: Optional[str] = typer.Argument(None, help="Failed event ID to acknowledge."),
+    all_: bool = typer.Option(False, "--all", help="Acknowledge all failed events."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Acknowledge failed events so the CLI warning banner clears."""
+    if not event_id and not all_:
+        raise typer.BadParameter("Pass an event ID or --all.")
+    used_daemon, result = maybe_daemon_request(
+        "event_ack", {"event_id": None if all_ else event_id}
+    )
+    if not used_daemon:
+        queue = _event_queue_direct()
+        result = {"acked": queue.ack(None if all_ else event_id)}
+        queue.refresh_alerts()
+    output(result, command="event-ack", fmt=chosen_format(output_format, json_flag))
 
 
 @app.command("embed-test")

@@ -8,17 +8,21 @@ FastEmbed/ONNX cold-start cost for every command.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
 from typing import Any
 
+from mem0_local.audit import append_live_audit
+from mem0_local.queue import EventQueue
 from mem0_local.config import (
     EMBEDDING_DIMS,
     EMBEDDING_MODEL,
@@ -36,6 +40,9 @@ from mem0_local.config import (
     MEM0_HOME,
     QDRANT_DIR,
     STORE_DIR,
+    VECTOR_STORE_HOST,
+    VECTOR_STORE_MODE,
+    VECTOR_STORE_PORT,
     vector_store_config,
 )
 
@@ -45,8 +52,151 @@ LOG_PATH = STORE_DIR / "daemon.log"
 REQUEST_TIMEOUT_SECONDS = 300
 CONNECT_TIMEOUT_SECONDS = 1
 CPU_SAMPLE_SECONDS = 0.05
+# Workers are cheap (network-wait bound), so the pool is sized well above the
+# LLM semaphore: adds waiting for an LLM slot occupy workers, and reads must
+# still find a free one instead of queueing behind a write burst.
+MAX_WORKERS = int(os.environ.get("MEM0_LOCAL_DAEMON_WORKERS", "32"))
+LLM_CONCURRENCY = int(os.environ.get("MEM0_LOCAL_LLM_CONCURRENCY", "4"))
+ASYNC_WORKERS = int(os.environ.get("MEM0_LOCAL_ASYNC_WORKERS", "2"))
 
 _lock_handle = None
+_lifetime_lock_handle = None
+_event_queue: EventQueue | None = None
+
+
+class _RWGate:
+    """Shared/exclusive gate over the memory store.
+
+    Normal operations (reads and writes alike) take the shared side and run
+    concurrently; only ``delete --all`` takes the exclusive side so it cannot
+    interleave with in-flight writes. Exclusive acquisition waits for current
+    shared holders but does not block new ones from queueing behind it being
+    rare; delete-all is an infrequent, human-triggered operation.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._shared = 0
+        self._exclusive = False
+
+    def acquire_shared(self) -> None:
+        with self._cond:
+            while self._exclusive:
+                self._cond.wait()
+            self._shared += 1
+
+    def release_shared(self) -> None:
+        with self._cond:
+            self._shared -= 1
+            if self._shared == 0:
+                self._cond.notify_all()
+
+    def acquire_exclusive(self) -> None:
+        with self._cond:
+            while self._exclusive or self._shared:
+                self._cond.wait()
+            self._exclusive = True
+
+    def release_exclusive(self) -> None:
+        with self._cond:
+            self._exclusive = False
+            self._cond.notify_all()
+
+
+_store_gate = _RWGate()
+# Caps concurrent OpenRouter-bound operations (add-with-infer, rerank search)
+# so parallel agent writes do not trip provider rate limits.
+_llm_slots = threading.BoundedSemaphore(LLM_CONCURRENCY)
+
+
+def _serialize_spacy_inference() -> None:
+    """Wrap shared-spaCy-singleton entry points with one inference lock.
+
+    spaCy ``Language`` objects are not guaranteed safe for concurrent calls on
+    the same instance. mem0 imports these functions by name into its own
+    namespaces, so both the defining modules and ``mem0.memory.main`` must be
+    patched. Calls are millisecond-scale, so one lock costs nothing.
+    """
+    lock = threading.Lock()
+
+    def locked(fn):
+        def wrapper(*args, **kwargs):
+            with lock:
+                return fn(*args, **kwargs)
+
+        wrapper.__name__ = getattr(fn, "__name__", "spacy_call")
+        return wrapper
+
+    import mem0.memory.main as mem0_main
+    import mem0.utils.entity_extraction as mem0_entities
+    import mem0.utils.lemmatization as mem0_lemma
+
+    for module, name in (
+        (mem0_lemma, "lemmatize_for_bm25"),
+        (mem0_entities, "extract_entities"),
+        (mem0_entities, "extract_entities_batch"),
+        (mem0_main, "lemmatize_for_bm25"),
+        (mem0_main, "extract_entities"),
+        (mem0_main, "extract_entities_batch"),
+    ):
+        fn = getattr(module, name, None)
+        if callable(fn):
+            setattr(module, name, locked(fn))
+
+
+def _qdrant_reachable(timeout: float = 1.0) -> bool:
+    try:
+        with socket.create_connection((str(VECTOR_STORE_HOST), int(VECTOR_STORE_PORT)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _ensure_qdrant() -> None:
+    """Best-effort self-healing: bring the local qdrant server up if it is
+    down (e.g. after a WSL restart). No-op in local-path mode or when the
+    managed control script is absent."""
+    if VECTOR_STORE_MODE != "qdrant-server" or _qdrant_reachable():
+        return
+    # A qdrant process that exists but is unreachable means we are in a
+    # network-isolated context (e.g. a sandbox namespace). Starting a second
+    # qdrant against the same storage directory is the one genuinely hazardous
+    # outcome here — refuse to continue instead.
+    try:
+        if subprocess.run(["pgrep", "-x", "qdrant"], capture_output=True, timeout=5).returncode == 0:
+            print(
+                "qdrant process exists but is unreachable (network-isolated context?); refusing to start a duplicate",
+                file=sys.stderr,
+                flush=True,
+            )
+            sys.exit(1)
+    except (subprocess.SubprocessError, OSError):
+        pass
+    ctl = STORE_DIR / "qdrant-server" / "qdrantctl.sh"
+    if not ctl.exists():
+        print(f"qdrant server {VECTOR_STORE_HOST}:{VECTOR_STORE_PORT} unreachable and {ctl} missing", file=sys.stderr, flush=True)
+        return
+    print("qdrant server down; starting via qdrantctl.sh ...", file=sys.stderr, flush=True)
+    try:
+        subprocess.run(["bash", str(ctl), "start"], check=True, timeout=60, capture_output=True)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"qdrant auto-start failed: {exc}", file=sys.stderr, flush=True)
+
+
+def _prewarm(client: Any) -> None:
+    """Eagerly initialize lazy singletons so worker threads never race on them
+    and the first request does not pay their load cost."""
+    try:
+        client.entity_store
+    except Exception as exc:  # noqa: BLE001 - prewarm is best-effort.
+        print(f"prewarm: entity_store init failed: {exc}", file=sys.stderr, flush=True)
+    try:
+        from mem0.utils.spacy_models import get_nlp_full, get_nlp_lemma
+
+        get_nlp_full()
+        get_nlp_lemma()
+    except Exception as exc:  # noqa: BLE001
+        print(f"prewarm: spaCy load failed: {exc}", file=sys.stderr, flush=True)
 
 
 class DaemonUnavailable(RuntimeError):
@@ -143,11 +293,58 @@ def normalize_items(data: Any) -> list[dict[str, Any]]:
 def handle_request(client: Any, request: dict[str, Any]) -> dict[str, Any]:
     op = request.get("op")
     args = request.get("args") or {}
-    started = time.perf_counter()
 
     if op == "ping":
-        result: Any = {"pid": os.getpid(), "socket": str(SOCKET_PATH)}
-    elif op == "get":
+        return {"status": "ok", "result": {"pid": os.getpid(), "socket": str(SOCKET_PATH)}}
+
+    # Queue-plane ops never touch the memory store: no gate, no LLM slot.
+    if op == "add" and args.get("async"):
+        if _event_queue is None:
+            raise RuntimeError("event queue unavailable; use --wait for the synchronous path")
+        payload = {k: v for k, v in args.items() if k != "async"}
+        event_id = _event_queue.enqueue("add", payload)
+        return {"status": "ok", "result": {"event_id": event_id, "status": "queued"}}
+    if op in {"event_list", "event_get", "event_retry", "event_ack"}:
+        queue = _event_queue or EventQueue()
+        if op == "event_list":
+            result: Any = queue.list(
+                status=args.get("status"),
+                limit=args.get("limit", 50),
+                offset=args.get("offset", 0),
+            )
+        elif op == "event_get":
+            result = queue.get(args["event_id"])
+        elif op == "event_retry":
+            result = {"event_id": args["event_id"], "retried": queue.retry(args["event_id"])}
+            queue.refresh_alerts()
+        else:
+            result = {"acked": queue.ack(args.get("event_id"))}
+            queue.refresh_alerts()
+        return {"status": "ok", "result": result}
+
+    exclusive = op == "delete" and bool(args.get("all"))
+    llm_bound = (op == "add" and args.get("infer", True)) or (op == "search" and args.get("rerank"))
+
+    if exclusive:
+        _store_gate.acquire_exclusive()
+    else:
+        _store_gate.acquire_shared()
+    try:
+        if llm_bound:
+            with _llm_slots:
+                return _dispatch(client, op, args)
+        return _dispatch(client, op, args)
+    finally:
+        if exclusive:
+            _store_gate.release_exclusive()
+        else:
+            _store_gate.release_shared()
+
+
+def _dispatch(client: Any, op: str, args: dict[str, Any]) -> dict[str, Any]:
+    started = time.perf_counter()
+
+    if op == "get":
         result = client.get(args["memory_id"])
     elif op == "search":
         result = client.search(
@@ -156,6 +353,7 @@ def handle_request(client: Any, request: dict[str, Any]) -> dict[str, Any]:
             filters=args["filters"],
             threshold=args["threshold"],
             rerank=args["rerank"],
+            keyword=args.get("keyword", False),
             explain=args["explain"],
         )
     elif op == "list":
@@ -186,6 +384,24 @@ def handle_request(client: Any, request: dict[str, Any]) -> dict[str, Any]:
             result = client.delete(args["memory_id"])
     elif op == "history":
         result = client.history(args["memory_id"])
+    elif op == "entity_list":
+        from mem0_local.entity_ops import list_entities
+
+        rows = list_entities(
+            client.entity_store,
+            entity_type=args.get("entity_type"),
+            contains=args.get("contains"),
+            scan_limit=args.get("scan_limit", 50000),
+        )
+        result = rows[args.get("start", 0) : args.get("end")]
+    elif op == "entity_get":
+        from mem0_local.entity_ops import row_to_dict
+
+        row = client.entity_store.get(args["entity_id"])
+        result = row_to_dict(row) if row else None
+    elif op == "entity_delete":
+        client.entity_store.delete(args["entity_id"])
+        result = {"id": args["entity_id"], "deleted": True}
     else:
         raise ValueError(f"Unsupported daemon op: {op}")
 
@@ -215,47 +431,193 @@ def write_json_line(conn: socket.socket, payload: dict[str, Any]) -> bool:
     return True
 
 
+def _process_event(client: Any, queue: EventQueue, item: dict[str, Any]) -> None:
+    args = item["args"]
+    started = time.perf_counter()
+    started_at = _utc_now_iso()
+    result: Any = None
+    error: str | None = None
+
+    _store_gate.acquire_shared()
+    try:
+        if args.get("infer", True):
+            with _llm_slots:
+                result = _dispatch(client, "add", args)
+        else:
+            result = _dispatch(client, "add", args)
+        result = result.get("result") if isinstance(result, dict) and "result" in result else result
+    except Exception as exc:  # noqa: BLE001 - failures become event state.
+        error = str(exc)
+    finally:
+        _store_gate.release_shared()
+
+    finished_at = _utc_now_iso()
+    terminal = True
+    if error is None:
+        queue.complete(item["id"], result)
+    else:
+        terminal = queue.fail(item["id"], error, item["attempts"])
+    queue.refresh_alerts()
+
+    # One manifest row per terminal outcome, mirroring the synchronous CLI path.
+    if error is None or terminal:
+        try:
+            metadata = args.get("metadata") or {}
+            append_live_audit(
+                operation="add",
+                input_payload={
+                    "content": args.get("content"),
+                    "infer": args.get("infer", True),
+                    "event_id": item["id"],
+                    "attempts": item["attempts"],
+                },
+                metadata=metadata,
+                result={"error": error} if error is not None else result,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                scope={
+                    k: v
+                    for k, v in {
+                        "user_id": args.get("user_id"),
+                        "agent_id": args.get("agent_id"),
+                        "run_id": args.get("run_id"),
+                    }.items()
+                    if v
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"async add audit failed for {item['id']}: {exc}", file=sys.stderr, flush=True)
+
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _worker_loop(client: Any, queue: EventQueue, stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
+        item = queue.claim_next()
+        if item is None:
+            with queue.notify:
+                queue.notify.wait(timeout=1.0)
+            continue
+        _process_event(client, queue, item)
+
+
+def _serve_connection(client: Any, conn: socket.socket) -> None:
+    with conn:
+        try:
+            request = read_json_line(conn)
+            response = handle_request(client, request)
+        except Exception as exc:  # noqa: BLE001 - daemon must return errors.
+            response = {
+                "status": "error",
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+        write_json_line(conn, response)
+
+
 def serve() -> None:
     STORE_DIR.mkdir(parents=True, exist_ok=True)
+    # Lifetime lock: exactly one daemon may hold it. It is released by the
+    # kernel on process death (crash-safe), so a holder is alive or gone —
+    # never stale. Spurious extra spawns exit here before touching anything.
+    global _lifetime_lock_handle
+    _lifetime_lock_handle = (STORE_DIR / "daemon.lock").open("a+")
+    try:
+        import fcntl
+
+        fcntl.flock(_lifetime_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("another mem0-local daemon is running or initializing; exiting", file=sys.stderr, flush=True)
+        sys.exit(0)
+    except ImportError:
+        pass
+
+    # Holding the lifetime lock, any existing socket file is stale by
+    # definition; bind() failing anyway (EADDRINUSE) is the kernel backstop.
     if SOCKET_PATH.exists():
         SOCKET_PATH.unlink()
-    client = memory_client()
-    PID_PATH.write_text(str(os.getpid()))
-
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(str(SOCKET_PATH))
+    try:
+        server.bind(str(SOCKET_PATH))
+    except OSError as exc:
+        print(f"could not bind daemon socket ({exc}); exiting", file=sys.stderr, flush=True)
+        sys.exit(0)
     SOCKET_PATH.chmod(0o600)
-    server.listen(16)
+
+    _ensure_qdrant()
+    client = memory_client()
+    _serialize_spacy_inference()
+    _prewarm(client)
+
+    global _event_queue
+    _event_queue = EventQueue()
+    recovered = _event_queue.recover_stale()
+    if recovered:
+        print(f"requeued {recovered} stale in-flight events", file=sys.stderr, flush=True)
+    purged = _event_queue.purge()
+    if purged:
+        print(f"purged {purged} terminal queue rows past retention", file=sys.stderr, flush=True)
+    _event_queue.refresh_alerts()
+    worker_stop = threading.Event()
+    workers = [
+        threading.Thread(
+            target=_worker_loop,
+            args=(client, _event_queue, worker_stop),
+            daemon=True,
+            name=f"mem0-event-{i}",
+        )
+        for i in range(ASYNC_WORKERS)
+    ]
+    for worker in workers:
+        worker.start()
+
+    PID_PATH.write_text(str(os.getpid()))
+    server.listen(64)
+
+    stop_event = threading.Event()
 
     def shutdown(_signum: int, _frame: Any) -> None:
-        raise KeyboardInterrupt
+        # Closing the socket unblocks accept(); in-flight requests drain below.
+        stop_event.set()
+        server.close()
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=MAX_WORKERS, thread_name_prefix="mem0-req"
+    )
     try:
-        while True:
-            conn, _ = server.accept()
-            with conn:
-                try:
-                    request = read_json_line(conn)
-                    response = handle_request(client, request)
-                except Exception as exc:  # noqa: BLE001 - daemon must return errors.
-                    response = {
-                        "status": "error",
-                        "error": str(exc),
-                        "traceback": traceback.format_exc(),
-                    }
-                write_json_line(conn, response)
-    except KeyboardInterrupt:
-        pass
+        while not stop_event.is_set():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                if stop_event.is_set():
+                    break
+                raise
+            executor.submit(_serve_connection, client, conn)
     finally:
-        server.close()
+        # Unlink the socket first so new CLI calls fall back to the direct
+        # path instead of queueing on a draining daemon.
         for path in (SOCKET_PATH, PID_PATH):
             try:
                 path.unlink()
             except FileNotFoundError:
                 pass
+        executor.shutdown(wait=True)
+        # Give event workers a grace window; anything still 'processing' after
+        # exit is requeued by recover_stale() on the next start.
+        worker_stop.set()
+        with _event_queue.notify:
+            _event_queue.notify.notify_all()
+        for worker in workers:
+            worker.join(timeout=30.0)
+        server.close()
 
 
 def request(
@@ -399,9 +761,12 @@ def read_pid() -> int | None:
         return None
 
 
-def ping() -> dict[str, Any] | None:
+def ping(timeout: float = 5.0) -> dict[str, Any] | None:
+    # A generous read timeout matters: a busy-but-alive daemon answering ping
+    # slowly must not be mistaken for a dead one (that misdiagnosis is what
+    # causes spurious extra spawns).
     try:
-        return request({"op": "ping"}, timeout=CONNECT_TIMEOUT_SECONDS)
+        return request({"op": "ping"}, timeout=timeout)
     except Exception:
         return None
 
@@ -412,6 +777,25 @@ def start_daemon(wait_seconds: float = 90.0) -> dict[str, Any]:
         return {"started": False, **existing}
 
     STORE_DIR.mkdir(parents=True, exist_ok=True)
+    # Serialize concurrent starters (e.g. parallel CLI calls auto-starting
+    # after a reboot): one spawns, the rest wait here and find it via ping.
+    start_lock = (STORE_DIR / "daemon-start.lock").open("a+")
+    try:
+        import fcntl
+
+        fcntl.flock(start_lock.fileno(), fcntl.LOCK_EX)
+    except ImportError:
+        pass
+    try:
+        existing = ping()
+        if existing:
+            return {"started": False, **existing}
+        return _start_daemon_locked(wait_seconds)
+    finally:
+        start_lock.close()
+
+
+def _start_daemon_locked(wait_seconds: float) -> dict[str, Any]:
     pid = read_pid()
     recovered_stale_pid: int | None = None
     if pid is not None:
@@ -441,6 +825,11 @@ def start_daemon(wait_seconds: float = 90.0) -> dict[str, Any]:
     while time.time() < deadline:
         current = ping()
         if current:
+            if current.get("pid") != proc.pid and proc.poll() is None:
+                # Another daemon answered: ours is a redundant spawn — reap it
+                # so it cannot linger blocked on shared locks.
+                terminate_process(proc, wait_seconds=5.0, force=True)
+                return {"started": False, **current}
             return {"started": True, **current}
         if proc.poll() is not None:
             raise RuntimeError(f"daemon exited during startup with code {proc.returncode}; see {LOG_PATH}")
