@@ -20,7 +20,8 @@ mem0-local search "query"
 mem0-local list
 mem0-local get <memory_id>
 mem0-local update <memory_id> "updated memory text"
-mem0-local delete <memory_id>
+mem0-local delete <memory_id> --force
+mem0-local entity list --contains "<text>"
 ```
 
 When called from Codex/Claude contexts, output defaults to agent-readable JSON.
@@ -57,18 +58,20 @@ Override auto-detection only when it is missing or wrong:
 mem0-local add "memory text" --metadata source=agent-memory-ledger --metadata session_id=manual-import
 ```
 
-Advanced only: use `--no-infer` for exact audit entries when the user
-explicitly asks for raw wording, or when normal inference repeatedly distorts the
-fact. Do not use it for routine memory writes.
+Plain-text adds store the exact wording verbatim by default (raw mode, since
+2026-07-16). LLM extraction runs for `--messages`/`--file` input or when
+`--infer` is passed explicitly; extraction adds queue asynchronously and
+return an `event_id` (see `event list/status/retry/ack`).
 
 ```bash
-mem0-local add "exact ledger entry" --metadata source=agent-memory-ledger --no-infer
+mem0-local add "exact ledger entry" --metadata source=agent-memory-ledger
+mem0-local add --infer "dense multi-fact paragraph worth splitting into atomic memories"
 ```
 
 Historical imports may override event time:
 
 ```bash
-mem0-local add "old memory text" --timestamp "2026-05-18T00:00:15+08:00" --no-infer
+mem0-local add "old memory text" --timestamp "2026-05-18T00:00:15+08:00"
 ```
 
 ## Search
@@ -183,8 +186,13 @@ mem0-local get <memory_id>
 mem0-local list --filter agent_id=codex
 mem0-local list --filter run_id=<session_id>
 mem0-local update <memory_id> "new text" --metadata reason=correction
-mem0-local delete <memory_id>
+mem0-local delete <memory_id> --force
 ```
+
+Destructive commands (`delete`, `entity delete`) confirm interactively on a
+TTY; in non-interactive agent contexts they refuse without `--force`. Use
+`--dry-run` first to preview what would be deleted (`delete --all --dry-run`
+needs no `--force`).
 
 `update` preserves the original writer scope (`agent_id`/`run_id` and
 `metadata.writer_agent_id`/`metadata.session_id`) plus original `created_at` and
