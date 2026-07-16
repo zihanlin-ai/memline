@@ -150,7 +150,9 @@ class DaemonLifecycleTests(unittest.TestCase):
         with (
             patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/mem0-local.sock", exists=False)),
             patch.object(daemon, "LOG_PATH", FakePath("/tmp/mem0-local.log", exists=True)),
-            patch.object(daemon, "ping", side_effect=[None, {"pid": 42, "socket": "sock"}]),
+            # Three pings: initial probe, re-probe under the start lock, and
+            # the post-spawn readiness poll that finds our own child (pid 42).
+            patch.object(daemon, "ping", side_effect=[None, None, {"pid": 42, "socket": "sock"}]),
             patch.object(daemon, "read_pid", return_value=7),
             patch.object(daemon, "is_pid_running", return_value=True),
             patch.object(daemon, "is_daemon_pid", return_value=True),

@@ -75,7 +75,8 @@ class CliDaemonTests(unittest.TestCase):
                 metadata=[],
                 timestamp=None,
                 ledger_timestamp=None,
-                no_infer=False,
+                infer_opt=None,
+                wait=False,
                 json_flag=True,
                 output_format="json",
             )
@@ -84,7 +85,9 @@ class CliDaemonTests(unittest.TestCase):
         kwargs = append_live_audit.call_args.kwargs
         self.assertEqual(kwargs["operation"], "add")
         self.assertEqual(kwargs["input_payload"]["content"], "Keep audit manifests.")
-        self.assertTrue(kwargs["input_payload"]["infer"])
+        # Plain-text adds store raw verbatim by default since 2026-07-16;
+        # extraction requires --infer or --messages/--file input.
+        self.assertFalse(kwargs["input_payload"]["infer"])
         self.assertEqual(kwargs["result"]["results"][0]["id"], "memory-1")
         output.assert_called_once()
 
