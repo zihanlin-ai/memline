@@ -1,6 +1,6 @@
 # mem0-local
 
-`mem0-local` is a local-first Mem0 CLI wrapper. It keeps runtime state under a configured local store, uses Qdrant local path mode, and writes audit metadata for timestamps, writer identity, sessions, schema version, and updates.
+`mem0-local` is a local-first Mem0 CLI wrapper. It keeps runtime state under a configured local store, backs vectors with Qdrant (embedded local path mode by default, or a local Qdrant server via `[vector_store]`), and writes audit metadata for timestamps, writer identity, sessions, schema version, and updates.
 
 ## Architecture
 
@@ -87,6 +87,21 @@ The CLI locates configuration in this order:
 3. `~/.config/mem0-local/config.toml`
 
 See `examples/config.toml` for a portable template.
+
+By default vectors live in the embedded Qdrant local-path store. Embedded mode
+does not scale past ~20k points (brute-force search, single-process file lock,
+no payload indexes); for larger stores run a real Qdrant server and point the
+CLI at it:
+
+```toml
+[vector_store]
+host = "127.0.0.1"
+port = 6333
+```
+
+`examples/qdrant-server/` holds a `qdrantctl.sh` control script and a config
+template for running the official Qdrant binary next to the store. When
+`[vector_store]` is set, that server must be running before any memory command.
 
 Runtime data stays under `.agent-memory/store/` and remains excluded from git.
 

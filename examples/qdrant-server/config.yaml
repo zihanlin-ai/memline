@@ -1,0 +1,15 @@
+# Qdrant server config template for mem0-local server mode.
+# Place next to qdrantctl.sh under <store>/qdrant-server/ together with the
+# official qdrant binary in ./bin/, and replace the paths below.
+log_level: INFO
+
+service:
+  host: 127.0.0.1
+  http_port: 6333
+  grpc_port: 6334
+
+storage:
+  storage_path: /path/to/workspace/.agent-memory/store/qdrant-server/storage
+  snapshots_path: /path/to/workspace/.agent-memory/store/qdrant-server/snapshots
+
+telemetry_disabled: true

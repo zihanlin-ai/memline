@@ -45,7 +45,11 @@ from mem0_local.config import (
     MEM0_HOME,
     QDRANT_DIR,
     STORE_DIR,
+    VECTOR_STORE_HOST,
+    VECTOR_STORE_MODE,
+    VECTOR_STORE_PORT,
     WORKSPACE_ROOT,
+    vector_store_config,
 )
 
 ROOT = WORKSPACE_ROOT
@@ -117,15 +121,7 @@ def build_config() -> dict[str, Any]:
     }
 
     return {
-        "vector_store": {
-            "provider": "qdrant",
-            "config": {
-                "collection_name": COLLECTION,
-                "path": str(QDRANT_DIR),
-                "embedding_model_dims": EMBEDDING_DIMS,
-                "on_disk": True,
-            },
-        },
+        "vector_store": vector_store_config(),
         "embedder": {
             "provider": EMBEDDING_PROVIDER,
             "config": {
@@ -636,7 +632,12 @@ def status(
         "root": str(ROOT),
         "config_path": str(CONFIG_PATH) if CONFIG_PATH else None,
         "collection": COLLECTION,
-        "vector_store": "qdrant-local-path",
+        "vector_store": VECTOR_STORE_MODE,
+        "qdrant_server": (
+            f"{VECTOR_STORE_HOST}:{VECTOR_STORE_PORT}"
+            if VECTOR_STORE_MODE == "qdrant-server"
+            else None
+        ),
         "qdrant_path": str(QDRANT_DIR),
         "history_db_path": str(HISTORY_DB),
         "mem0_dir": os.environ["MEM0_DIR"],

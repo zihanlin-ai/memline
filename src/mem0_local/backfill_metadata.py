@@ -12,6 +12,7 @@ from typing import Any
 from qdrant_client import QdrantClient
 
 from mem0_local import cli as mem0_memory
+from mem0_local.config import VECTOR_STORE_MODE, vector_store_config
 
 
 MANIFEST_DIR = mem0_memory.MEMORY_ROOT / "manifests"
@@ -112,7 +113,11 @@ def main() -> None:
 
     mem0_memory.setup_env()
     mem0_memory.acquire_cli_lock()
-    client = QdrantClient(path=str(mem0_memory.QDRANT_DIR))
+    if VECTOR_STORE_MODE == "qdrant-server":
+        vs = vector_store_config()["config"]
+        client = QdrantClient(host=vs["host"], port=vs["port"])
+    else:
+        client = QdrantClient(path=str(mem0_memory.QDRANT_DIR))
 
     backfilled_at = datetime.now(timezone.utc).isoformat()
     manifest = args.manifest

@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 from mem0_local.config import (
-    COLLECTION,
     EMBEDDING_DIMS,
     EMBEDDING_MODEL,
     EMBEDDING_PROVIDER,
@@ -37,6 +36,7 @@ from mem0_local.config import (
     MEM0_HOME,
     QDRANT_DIR,
     STORE_DIR,
+    vector_store_config,
 )
 
 SOCKET_PATH = STORE_DIR / "daemon.sock"
@@ -99,15 +99,7 @@ def build_config() -> dict[str, Any]:
     }
 
     return {
-        "vector_store": {
-            "provider": "qdrant",
-            "config": {
-                "collection_name": COLLECTION,
-                "path": str(QDRANT_DIR),
-                "embedding_model_dims": EMBEDDING_DIMS,
-                "on_disk": True,
-            },
-        },
+        "vector_store": vector_store_config(),
         "embedder": {
             "provider": EMBEDDING_PROVIDER,
             "config": {

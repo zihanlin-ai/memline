@@ -33,3 +33,9 @@ env_file = "/path/to/workspace/.agent-memory/store/.env"
 [metadata]
 manual_source = "manual"
 manual_session = "manual-session"
+
+# Optional: back vectors with a running qdrant server instead of the embedded
+# local-path store (recommended past ~20k points). See examples/qdrant-server/.
+# [vector_store]
+# host = "127.0.0.1"
+# port = 6333

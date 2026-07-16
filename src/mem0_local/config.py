@@ -97,3 +97,26 @@ LLM_API_KEY_ENV = str(value("llm", "api_key_env", "OPENROUTER_API_KEY"))
 
 MANUAL_SOURCE = str(value("metadata", "manual_source", "manual"))
 MANUAL_SESSION = str(value("metadata", "manual_session", "manual-session"))
+
+# Optional qdrant server mode: set [vector_store] host/port to use a running
+# qdrant server instead of the embedded local-path store.
+VECTOR_STORE_HOST = value("vector_store", "host", None)
+VECTOR_STORE_PORT = value("vector_store", "port", None)
+VECTOR_STORE_MODE = (
+    "qdrant-server" if VECTOR_STORE_HOST and VECTOR_STORE_PORT else "qdrant-local-path"
+)
+
+
+def vector_store_config() -> dict[str, Any]:
+    """Mem0 vector_store block for the active mode (server or local path)."""
+    config: dict[str, Any] = {
+        "collection_name": COLLECTION,
+        "embedding_model_dims": EMBEDDING_DIMS,
+        "on_disk": True,
+    }
+    if VECTOR_STORE_MODE == "qdrant-server":
+        config["host"] = str(VECTOR_STORE_HOST)
+        config["port"] = int(VECTOR_STORE_PORT)
+    else:
+        config["path"] = str(QDRANT_DIR)
+    return {"provider": "qdrant", "config": config}

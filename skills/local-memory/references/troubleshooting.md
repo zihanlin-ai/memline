@@ -53,7 +53,10 @@ For this workspace layout, all runtime state is under:
 
 Important paths:
 
-- Qdrant local path: `<store>/qdrant`
+- Qdrant server deployment (used when `[vector_store]` host/port is set):
+  `<store>/qdrant-server/` — binary, `config.yaml`, data, log, and the
+  `qdrantctl.sh {start|stop|status}` control script; HTTP on `127.0.0.1:6333`
+- Embedded qdrant local path (fallback when `[vector_store]` is unset): `<store>/qdrant`
 - Mem0 history DB: `<store>/history.db`
 - Fastembed cache: `<store>/model-cache/fastembed`
 - Mem0 redirected home/config: `<store>/home`, `<store>/mem0`
@@ -93,15 +96,15 @@ the git-friendly audit source; the database remains a runtime index.
 
 ## Concurrency
 
-Qdrant local path mode cannot be opened safely by multiple processes at the same time. `mem0-local` serializes commands with `cli.lock`; if a command waits, another memory command is active.
+Server mode (`[vector_store]` host/port set in `config.toml`): the qdrant server natively supports concurrent clients. `mem0-local` still serializes commands with `cli.lock` for history/manifest consistency; if a command waits, another memory command is active. The server process must be running (`qdrantctl.sh status`); after a machine/WSL restart, start it before any memory command.
+
+Local-path mode (no `[vector_store]` section): the embedded store cannot be opened safely by multiple processes at the same time; `cli.lock` and the optional daemon serialize access.
 
 Correctness boundary:
 
 - Safe: all agents use `mem0-local` inside this WSL workspace.
-- Safe: a running `mem0-local daemon` owns the local Qdrant path, while normal
-  CLI commands talk to the daemon through `<store>/daemon.sock`.
-- Unsafe: agents directly import Mem0/Qdrant against the same path, or another machine/Windows process opens the same Qdrant directory.
-- For high-throughput concurrent access, switch to Qdrant server mode.
+- Unsafe (local-path mode): agents directly import Mem0/Qdrant against the same path, or another machine/Windows process opens the same Qdrant directory.
+- Removing `[vector_store]` from `config.toml` silently switches to whatever data `<store>/qdrant` holds — after a workspace has migrated to server mode that directory is an empty stub, so do not remove the section casually; migration and rollback specifics are recorded in mem0.
 
 ## Optional Daemon Checks
 
