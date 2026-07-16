@@ -1,10 +1,11 @@
 # Cumulative local patches to venv mem0ai 2.0.11 (re-apply after any reinstall)
 # 1. memory/main.py: full unified diff below (concurrency locks, parse-raise,
-#    no-infer hash-dedup + entity-link + near_duplicate_of, keyword-only search).
+#    raw-add hash-dedup + entity-link + near_duplicate_of, keyword-only search,
+#    user-scoped entity dedup instead of per-session).
 # 2. vector_stores/qdrant.py: in keyword_search(), add 'with_payload=True' to
 #    the client.query_points(...) call (needed by keyword-only search).
 --- /tmp/claude-1000/-workspace/1a7b0e31-0dc7-45c7-9c71-2b74b4287e47/scratchpad/main.py.orig	2026-07-16 17:00:06.891600298 +0800
-+++ /workspace/.agent-memory/store/venv/lib/python3.12/site-packages/mem0/memory/main.py	2026-07-16 17:37:47.617013900 +0800
++++ /workspace/.agent-memory/store/venv/lib/python3.12/site-packages/mem0/memory/main.py	2026-07-16 19:34:26.141237700 +0800
 @@ -2,6 +2,7 @@
  import concurrent.futures
  import gc
@@ -30,7 +31,27 @@
  # Initialize logger early for util functions
  logger = logging.getLogger(__name__)
  
-@@ -672,15 +683,16 @@
+@@ -563,7 +574,9 @@
+         """Upsert an entity into the entity store, linking it to a memory."""
+         try:
+             entity_embedding = self.embedding_model.embed(entity_text, "add")
+-            search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
++            # Entities are a user-scoped retrieval structure: scoping dedup by
++            # agent/run (session) would recreate every entity once per session.
++            search_filters = {k: v for k, v in filters.items() if k == "user_id" and v}
+             exact_match = self._existing_entities_by_text(search_filters).get(self._normalize_entity_text(entity_text))
+ 
+             existing = []
+@@ -621,7 +634,7 @@
+         """
+         if self._entity_store is None:
+             return
+-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
++        search_filters = {k: v for k, v in filters.items() if k == "user_id" and v}
+         try:
+             listed = self.entity_store.list(filters=search_filters, top_k=10000)
+             rows = listed[0] if isinstance(listed, (list, tuple)) and listed and isinstance(listed[0], list) else listed
+@@ -672,15 +685,16 @@
              if not entities:
                  return
              seen = set()
@@ -56,7 +77,7 @@
          except Exception as e:
              logger.warning(f"Entity linking failed for memory_id={memory_id}: {e}")
  
-@@ -831,6 +843,7 @@
+@@ -831,6 +845,7 @@
      def _add_to_vector_store(self, messages, metadata, filters, infer, prompt=None):
          if not infer:
              returned_memories = []
@@ -64,7 +85,7 @@
              for message_dict in messages:
                  if (
                      not isinstance(message_dict, dict)
-@@ -851,18 +864,69 @@
+@@ -851,18 +866,69 @@
                      per_msg_meta["actor_id"] = actor_name
  
                  msg_content = message_dict["content"]
@@ -144,7 +165,7 @@
              return returned_memories
  
          # === V3 PHASED BATCH PIPELINE ===
-@@ -920,7 +984,12 @@
+@@ -920,7 +986,12 @@
              logger.error(f"LLM extraction failed: {e}")
              raise LLMError(f"LLM extraction failed: {e}") from e
  
@@ -158,7 +179,7 @@
          try:
              response = remove_code_blocks(response)
              if not response or not response.strip():
-@@ -933,7 +1002,9 @@
+@@ -933,7 +1004,9 @@
                      extracted_memories = json.loads(extracted_json, strict=False).get("memory", [])
          except Exception as e:
              logger.error(f"Error parsing extraction response: {e}")
@@ -169,7 +190,7 @@
  
          if not extracted_memories:
              # Save messages even if nothing extracted
-@@ -1036,6 +1107,7 @@
+@@ -1036,6 +1109,7 @@
                      logger.error(f"Failed to add history for {hr['memory_id']}: {e}")
  
          # Phase 7: Batch entity linking
@@ -177,7 +198,37 @@
          try:
              all_texts = [r[1] for r in records]
              all_entities = extract_entities_batch(all_texts)
-@@ -1140,6 +1212,8 @@
+@@ -1083,7 +1157,10 @@
+                 if valid:
+                     valid_indices, valid_keys = zip(*valid)
+                     valid_vectors = [entity_embeddings[i] for i in valid_indices]
+-                    exact_matches = self._existing_entities_by_text(search_filters)
++                    # Entity dedup is user-scoped (session-scoped dedup would
++                    # recreate every entity once per run_id).
++                    entity_scope = {k: v for k, v in search_filters.items() if k == "user_id"}
++                    exact_matches = self._existing_entities_by_text(entity_scope)
+ 
+                     # 7c: Batch search for existing entities
+                     valid_texts = [global_entities[k][1] for k in valid_keys]
+@@ -1091,7 +1168,7 @@
+                         queries=valid_texts,
+                         vectors_list=valid_vectors,
+                         top_k=1,
+-                        filters=search_filters,
++                        filters=entity_scope,
+                     )
+ 
+                     # 7d: Separate into inserts vs updates
+@@ -1125,7 +1202,7 @@
+                                 "data": entity_text,
+                                 "entity_type": entity_type,
+                                 "linked_memory_ids": sorted(memory_ids),
+-                                **search_filters,
++                                **entity_scope,
+                             })
+ 
+                     # 7e: Single batch insert for all new entities
+@@ -1140,6 +1217,8 @@
                              logger.warning(f"Batch entity insert failed: {e}")
          except Exception as e:
              logger.warning(f"Batch entity linking failed: {e}")
@@ -186,7 +237,7 @@
  
          # Phase 8: Save messages + return
          self.db.save_messages(messages, session_scope)
-@@ -1336,6 +1410,7 @@
+@@ -1336,6 +1415,7 @@
          filters: Optional[Dict[str, Any]] = None,
          threshold: float = 0.1,
          rerank: bool = False,
@@ -194,7 +245,7 @@
          explain: bool = False,
          reference_date: Optional[Any] = None,
          show_expired: bool = False,
-@@ -1443,9 +1518,14 @@
+@@ -1443,9 +1523,14 @@
          )
  
          search_start = time.perf_counter()
@@ -212,12 +263,10 @@
          search_elapsed_seconds = time.perf_counter() - search_start
  
          # Apply reranking if enabled and reranker is available
-@@ -1680,6 +1760,78 @@
+@@ -1682,6 +1767,78 @@
  
-             original_memories.append(memory_item_dict)
+         return original_memories
  
-+        return original_memories
-+
 +    def _search_keyword_store(self, query, filters, limit, threshold=0.1, show_expired=False):
 +        """Pure BM25 keyword retrieval (official CLI ``--keyword`` semantics).
 +
@@ -288,6 +337,82 @@
 +
 +            original_memories.append(memory_item_dict)
 +
-         return original_memories
- 
++        return original_memories
++
      def _compute_entity_boosts(self, query_entities, filters):
+         """Compute per-memory entity boosts from entity store search.
+ 
+@@ -1705,7 +1862,7 @@
+         if not deduped:
+             return {}
+ 
+-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
++        search_filters = {k: v for k, v in filters.items() if k == "user_id" and v}
+         memory_boosts = {}
+ 
+         try:
+@@ -2193,7 +2350,7 @@
+         """Async variant of `_upsert_entity` — per-entity search-then-update-or-insert."""
+         try:
+             entity_embedding = await asyncio.to_thread(self.embedding_model.embed, entity_text, "add")
+-            search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
++            search_filters = {k: v for k, v in filters.items() if k == "user_id" and v}
+             exact_match = (
+                 await asyncio.to_thread(self._existing_entities_by_text, search_filters)
+             ).get(self._normalize_entity_text(entity_text))
+@@ -2248,7 +2405,7 @@
+         """
+         if self._entity_store is None:
+             return
+-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
++        search_filters = {k: v for k, v in filters.items() if k == "user_id" and v}
+         try:
+             listed = await asyncio.to_thread(self.entity_store.list, filters=search_filters, top_k=10000)
+             rows = listed[0] if isinstance(listed, (list, tuple)) and listed and isinstance(listed[0], list) else listed
+@@ -2264,7 +2421,7 @@
+         """Async variant of `Memory._remove_memory_from_entity_store`."""
+         if self._entity_store is None:
+             return
+-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
++        search_filters = {k: v for k, v in filters.items() if k == "user_id" and v}
+         try:
+             listed = await asyncio.to_thread(self.entity_store.list, filters=search_filters, top_k=10000)
+             rows = listed[0] if isinstance(listed, (list, tuple)) and listed and isinstance(listed[0], list) else listed
+@@ -2705,7 +2862,9 @@
+                 if valid:
+                     valid_indices, valid_keys = zip(*valid)
+                     valid_vectors = [entity_embeddings[i] for i in valid_indices]
+-                    exact_matches = await asyncio.to_thread(self._existing_entities_by_text, search_filters)
++                    # Entity dedup is user-scoped (see sync Phase 7).
++                    entity_scope = {k: v for k, v in search_filters.items() if k == "user_id"}
++                    exact_matches = await asyncio.to_thread(self._existing_entities_by_text, entity_scope)
+ 
+                     # 7c: Batch search for existing entities
+                     valid_texts = [global_entities[k][1] for k in valid_keys]
+@@ -2714,7 +2873,7 @@
+                         queries=valid_texts,
+                         vectors_list=valid_vectors,
+                         top_k=1,
+-                        filters=search_filters,
++                        filters=entity_scope,
+                     )
+ 
+                     # 7d: Separate into inserts vs updates
+@@ -2747,7 +2906,7 @@
+                                 "data": entity_text,
+                                 "entity_type": entity_type,
+                                 "linked_memory_ids": sorted(memory_ids),
+-                                **search_filters,
++                                **entity_scope,
+                             })
+ 
+                     # 7e: Batch insert new entities
+@@ -3323,7 +3482,7 @@
+         if not deduped:
+             return {}
+ 
+-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
++        search_filters = {k: v for k, v in filters.items() if k == "user_id" and v}
+         memory_boosts = {}
+ 
+         try:
