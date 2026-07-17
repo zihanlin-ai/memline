@@ -269,6 +269,18 @@ class RunStaleCheckTests(unittest.TestCase):
         self.assertEqual(again["cached"], 2)
         self.assertEqual(llm.calls, 1)
 
+    def test_judged_either_covers_both_orientations(self) -> None:
+        store = staleness.pair_store()
+        store.record_judgment(
+            new_id="newer", old_id="oldprobe", old_text="v-old",
+            verdict="SUPERSEDED", confidence=0.9, reason="",
+        )
+        # Probing from the other side sees the pair as already judged.
+        judged = store.judged_either("oldprobe", "v-old", [("newer", "whatever")])
+        self.assertEqual(judged, {"newer"})
+        # Unrelated candidate is not covered.
+        self.assertEqual(store.judged_either("oldprobe", "v-old", [("x", "t")]), set())
+
     def test_skips_missing_or_invalidated_new_entry(self) -> None:
         client = self._client()
         self.assertIn("skipped", staleness.run_stale_check(client, "ghost", llm=FakeLlm([])))

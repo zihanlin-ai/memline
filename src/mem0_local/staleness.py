@@ -424,7 +424,9 @@ def run_stale_check(
             break
 
     store = pair_store()
-    already = store.judged_pairs(new_id, [(c["id"], c["text"]) for c in candidates])
+    already = store.judged_either(
+        new_id, new_text, [(c["id"], c["text"]) for c in candidates]
+    )
     candidates = [c for c in candidates if c["id"] not in already]
     if not candidates:
         return {"new_id": new_id, "judged": 0, "opened": 0, "cached": len(already)}
@@ -580,6 +582,25 @@ class PairStore:
                 )
                 if cur.fetchone():
                     judged.add(old_id)
+        return judged
+
+    def judged_either(
+        self, probe_id: str, probe_text: str, candidates: list[tuple[str, str]]
+    ) -> set[str]:
+        """Candidate ids already judged against the probe in EITHER direction
+        (probe-displaces-candidate or candidate-displaces-probe), version-scoped."""
+        probe_hash = text_hash(probe_text)
+        judged: set[str] = set()
+        with self._lock:
+            for cand_id, cand_text in candidates:
+                cur = self._conn.execute(
+                    "SELECT 1 FROM pairs WHERE "
+                    "(new_id=? AND old_id=? AND old_text_hash=?) OR "
+                    "(new_id=? AND old_id=? AND old_text_hash=?)",
+                    (probe_id, cand_id, text_hash(cand_text), cand_id, probe_id, probe_hash),
+                )
+                if cur.fetchone():
+                    judged.add(cand_id)
         return judged
 
     def open_for_old_ids(self, old_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
