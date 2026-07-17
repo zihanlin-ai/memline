@@ -357,6 +357,109 @@ def annotate_suspected(items: list[dict[str, Any]]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Background stale-check (queue worker entry point)
+# ---------------------------------------------------------------------------
+
+STALE_CHECK_TOP_K = 10
+
+
+def run_stale_check(
+    client: Any,
+    new_id: str,
+    *,
+    session_id: str | None = None,
+    top_k: int = STALE_CHECK_TOP_K,
+    llm: Any = None,
+    judge_model: str | None = None,
+) -> dict[str, Any]:
+    """Judge one new entry against its top-k active neighbors (advisory only).
+
+    Produces suspicion-pair evidence rows; never changes memory state. Safe
+    to re-run: the pair cache skips already-judged (old_id, text-version)
+    combinations.
+    """
+    payload = _point_payload(client, new_id)
+    if payload is None:
+        return {"new_id": new_id, "skipped": "memory no longer exists"}
+    if is_invalidated(payload):
+        return {"new_id": new_id, "skipped": "memory already invalidated"}
+    new_text = str(payload.get("data") or "")
+    if not new_text:
+        return {"new_id": new_id, "skipped": "empty text"}
+
+    filters = {"user_id": payload["user_id"]} if payload.get("user_id") else None
+    raw = client.search(
+        new_text,
+        top_k=max(top_k * 2, top_k + 10),
+        filters=filters,
+        threshold=0.1,
+        rerank=False,
+        keyword=False,
+        explain=False,
+    )
+    items = raw.get("results") if isinstance(raw, dict) else []
+    candidates: list[dict[str, Any]] = []
+    for item in items or []:
+        cand_id = str(item.get("id") or "")
+        meta = item.get("metadata") or {}
+        if (
+            not cand_id
+            or cand_id == new_id
+            or result_item_superseded(item)
+            or meta.get(STALE_PIN)
+            or item.get(STALE_PIN)
+        ):
+            continue
+        candidates.append(
+            {
+                "id": cand_id,
+                "text": str(item.get("memory") or ""),
+                "date": str(item.get("created_at") or "")[:10],
+            }
+        )
+        if len(candidates) >= top_k:
+            break
+
+    store = pair_store()
+    already = store.judged_pairs(new_id, [(c["id"], c["text"]) for c in candidates])
+    candidates = [c for c in candidates if c["id"] not in already]
+    if not candidates:
+        return {"new_id": new_id, "judged": 0, "opened": 0, "cached": len(already)}
+
+    from mem0_local.judge import judge as judge_fn
+
+    llm = llm or client.llm
+    new_entry = {
+        "id": new_id,
+        "text": new_text,
+        "date": str(payload.get("created_at") or "")[:10],
+    }
+    judgments = judge_fn(llm, new_entry, candidates)
+
+    text_by_id = {c["id"]: c["text"] for c in candidates}
+    opened = 0
+    for verdict in judgments:
+        row = store.record_judgment(
+            new_id=new_id,
+            old_id=verdict["id"],
+            old_text=text_by_id.get(verdict["id"], ""),
+            verdict=verdict["verdict"],
+            confidence=verdict["confidence"],
+            reason=verdict["reason"],
+            judge_model=judge_model,
+            new_session_id=session_id,
+        )
+        if row["disposition"] == "open" and row["inserted"]:
+            opened += 1
+    return {
+        "new_id": new_id,
+        "judged": len(judgments),
+        "opened": opened,
+        "cached": len(already),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Suspicion-pair evidence store
 # ---------------------------------------------------------------------------
 
@@ -552,6 +655,27 @@ class PairStore:
             )
             self._conn.commit()
         return cursor.rowcount
+
+    def close_for_deleted_memory(self, memory_id: str) -> int:
+        """Close open pairs referencing a deleted memory.
+
+        Pairs targeting it are moot (``obsoleted``); pairs whose *new* side
+        was deleted lose their evidence source (``expired``).
+        """
+        now = _now_iso()
+        with self._lock:
+            a = self._conn.execute(
+                "UPDATE pairs SET disposition='obsoleted', disposed_at=? "
+                "WHERE old_id=? AND disposition='open'",
+                (now, memory_id),
+            )
+            b = self._conn.execute(
+                "UPDATE pairs SET disposition='expired', disposed_at=? "
+                "WHERE new_id=? AND disposition='open'",
+                (now, memory_id),
+            )
+            self._conn.commit()
+        return a.rowcount + b.rowcount
 
     def get(self, pair_id: str) -> dict[str, Any] | None:
         with self._lock:

@@ -205,6 +205,77 @@ class SearchFilteringTests(unittest.TestCase):
         self.assertEqual(hit["suspicions"][0]["reason"], "same slot: probe TPS")
 
 
+class FakeLlm:
+    def __init__(self, judgments: list[dict]) -> None:
+        self._judgments = judgments
+        self.calls = 0
+
+    def generate_response(self, messages, response_format=None):
+        self.calls += 1
+        import json as _json
+
+        return _json.dumps({"judgments": self._judgments})
+
+
+class RunStaleCheckTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        staleness._pair_store = PairStore(Path(self._tmp.name) / "stale.db")
+
+    def tearDown(self) -> None:
+        staleness._pair_store = None
+        self._tmp.cleanup()
+
+    def _client(self) -> FakeClient:
+        items = [
+            {"id": "new1", "memory": "probe is 2.0 TPS", "created_at": "2026-07-17"},
+            {"id": "old1", "memory": "probe is 1.0 TPS", "created_at": "2026-06-26"},
+            {"id": "gone", "memory": "x", "metadata": {"superseded_by": ["y"]}},
+            {"id": "pinned", "memory": "method note", "metadata": {"stale_check_pin": True}},
+            {"id": "old2", "memory": "unrelated fact", "created_at": "2026-05-01"},
+        ]
+        client = FakeClient(
+            {"new1": {"data": "probe is 2.0 TPS", "user_id": "workspace",
+                      "created_at": "2026-07-17T00:00:00+00:00"}},
+            search_items=items,
+        )
+        return client
+
+    def test_judges_filtered_candidates_and_records_pairs(self) -> None:
+        client = self._client()
+        llm = FakeLlm([
+            {"id": "old1", "verdict": "SUPERSEDED", "confidence": 0.9, "reason": "same slot"},
+            {"id": "old2", "verdict": "KEPT", "confidence": 0.8, "reason": "different"},
+        ])
+        result = staleness.run_stale_check(client, "new1", session_id="s1", llm=llm)
+        self.assertEqual(result["judged"], 2)
+        self.assertEqual(result["opened"], 1)
+        store = staleness.pair_store()
+        self.assertEqual(store.open_count(), 1)
+        open_pair = store.open_pairs(session_id="s1")[0]
+        self.assertEqual(open_pair["old_id"], "old1")
+        # Self, invalidated, and pinned entries were never sent to the judge.
+        self.assertEqual(llm.calls, 1)
+
+    def test_rerun_hits_pair_cache(self) -> None:
+        client = self._client()
+        llm = FakeLlm([
+            {"id": "old1", "verdict": "SUPERSEDED", "confidence": 0.9, "reason": "r"},
+            {"id": "old2", "verdict": "KEPT", "confidence": 0.8, "reason": "r"},
+        ])
+        staleness.run_stale_check(client, "new1", llm=llm)
+        again = staleness.run_stale_check(client, "new1", llm=llm)
+        self.assertEqual(again["judged"], 0)
+        self.assertEqual(again["cached"], 2)
+        self.assertEqual(llm.calls, 1)
+
+    def test_skips_missing_or_invalidated_new_entry(self) -> None:
+        client = self._client()
+        self.assertIn("skipped", staleness.run_stale_check(client, "ghost", llm=FakeLlm([])))
+        client.vector_store.payloads["new1"]["superseded_by"] = ["z"]
+        self.assertIn("skipped", staleness.run_stale_check(client, "new1", llm=FakeLlm([])))
+
+
 class PairStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

@@ -1125,6 +1125,24 @@ def add(
                 )
             if isinstance(result, dict):
                 result["supersedes"] = outcomes
+    if not infer:
+        # Advisory background staleness check for the new entry. Queued only —
+        # the daemon judges it later; enqueue failure must never break the add.
+        new_id = next(
+            (item.get("id") for item in normalize_items(result) if item.get("id")), None
+        )
+        if new_id:
+            try:
+                from mem0_local.queue import EventQueue
+
+                stale_event = EventQueue().enqueue(
+                    "stale_check",
+                    {"new_id": str(new_id), "session_id": meta.get("session_id")},
+                )
+                if isinstance(result, dict):
+                    result["stale_check_event"] = stale_event
+            except Exception:  # noqa: BLE001
+                pass
     output(
         result,
         command="add",
@@ -1404,6 +1422,12 @@ def delete(
     used_daemon, result = maybe_daemon_request("delete", {"all": False, "memory_id": memory_id})
     if not used_daemon:
         result = (client or memory_client()).delete(memory_id)
+    try:
+        from mem0_local.staleness import pair_store
+
+        pair_store().close_for_deleted_memory(memory_id)
+    except Exception:  # noqa: BLE001 - pair hygiene must never break delete.
+        pass
     wrapped_result = {"id": memory_id, "result": result}
     finished_at = now_utc_iso()
     append_live_audit(

@@ -465,6 +465,9 @@ def write_json_line(conn: socket.socket, payload: dict[str, Any]) -> bool:
 
 
 def _process_event(client: Any, queue: EventQueue, item: dict[str, Any]) -> None:
+    if item.get("op") == "stale_check":
+        _process_stale_check(client, queue, item)
+        return
     args = item["args"]
     started = time.perf_counter()
     started_at = _utc_now_iso()
@@ -521,6 +524,34 @@ def _process_event(client: Any, queue: EventQueue, item: dict[str, Any]) -> None
             )
         except Exception as exc:  # noqa: BLE001
             print(f"async add audit failed for {item['id']}: {exc}", file=sys.stderr, flush=True)
+
+
+def _process_stale_check(client: Any, queue: EventQueue, item: dict[str, Any]) -> None:
+    """Advisory judging of one new entry vs its neighbors: evidence rows only,
+    never a store mutation, hence no manifest row."""
+    from mem0_local.config import LLM_MODEL
+    from mem0_local.staleness import run_stale_check
+
+    args = item["args"]
+    _store_gate.acquire_shared()
+    try:
+        with _llm_slots:
+            result = run_stale_check(
+                client,
+                args["new_id"],
+                session_id=args.get("session_id"),
+                judge_model=LLM_MODEL,
+            )
+        error = None
+    except Exception as exc:  # noqa: BLE001 - failures become event state.
+        result, error = None, str(exc)
+    finally:
+        _store_gate.release_shared()
+    if error is None:
+        queue.complete(item["id"], result)
+    else:
+        queue.fail(item["id"], error, item["attempts"])
+    queue.refresh_alerts()
 
 
 def _utc_now_iso() -> str:
