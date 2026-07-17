@@ -58,12 +58,16 @@ class CliDaemonTests(unittest.TestCase):
 
     def test_add_appends_live_audit_after_successful_daemon_add(self):
         result = {"results": [{"id": "memory-1", "memory": "Keep audit manifests.", "event": "ADD"}]}
+        from mem0_local import queue as queue_mod
+
         with (
             patch.dict(cli.os.environ, {}, clear=False),
             patch.object(cli, "maybe_daemon_request", return_value=(True, result)),
             patch.object(cli, "append_live_audit") as append_live_audit,
             patch.object(cli, "output") as output,
+            patch.object(queue_mod, "EventQueue") as event_queue,
         ):
+            event_queue.return_value.enqueue.return_value = "test-event"
             cli.add(
                 text="Keep audit manifests.",
                 user_id="workspace",

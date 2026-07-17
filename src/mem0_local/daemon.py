@@ -408,6 +408,11 @@ def _dispatch(client: Any, op: str, args: dict[str, Any]) -> dict[str, Any]:
             actor_id=args.get("actor_id"),
             session_id=args.get("session_id"),
         )
+    elif op == "stale_pin":
+        client.vector_store.update(
+            vector_id=args["memory_id"], vector=None, payload={"stale_check_pin": True}
+        )
+        result = {"id": args["memory_id"], "pinned": True}
     elif op == "resolve_head":
         from mem0_local.staleness import resolve_head
 

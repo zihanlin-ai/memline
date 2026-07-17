@@ -71,6 +71,8 @@ entity_app = typer.Typer(help="Inspect and manage the local entity graph.")
 app.add_typer(entity_app, name="entity")
 event_app = typer.Typer(help="Inspect background add-processing events (async queue).")
 app.add_typer(event_app, name="event")
+stale_app = typer.Typer(help="Inspect and dispose staleness suspicions (advisory judge output).")
+app.add_typer(stale_app, name="stale")
 
 agent_mode = False
 lock_handle = None
@@ -293,6 +295,7 @@ def daemon_operation_timeout(op: str, args: dict[str, Any]) -> float:
         "invalidate",
         "revive",
         "resolve_head",
+        "stale_pin",
         "entity_list",
         "entity_get",
         "entity_delete",
@@ -739,9 +742,21 @@ def main(
         alerts = read_alerts()
         if alerts and alerts.get("failed_unacked"):
             err_console.print(
-                f"[yellow]mem0-local: {alerts['failed_unacked']} queued add(s) FAILED. "
+                f"[yellow]mem0-local: {alerts['failed_unacked']} queued event(s) FAILED. "
                 "Inspect with `mem0-local event list --status failed`, then "
                 "`mem0-local event retry <event_id>` or `mem0-local event ack --all`.[/yellow]"
+            )
+    except Exception:  # noqa: BLE001 - the banner must never break a command.
+        pass
+    try:
+        from mem0_local.staleness import pair_store
+
+        open_pairs = pair_store().open_count()
+        if open_pairs:
+            err_console.print(
+                f"[yellow]mem0-local: {open_pairs} open staleness suspicion(s) await review. "
+                "List with `mem0-local stale list`; dispose with "
+                "`mem0-local stale confirm|dismiss <pair_id>` or `mem0-local review`.[/yellow]"
             )
     except Exception:  # noqa: BLE001 - the banner must never break a command.
         pass
@@ -950,6 +965,196 @@ def revive(
         scope={},
     )
     output(result, command="revive", fmt=chosen_format(output_format, json_flag))
+
+
+def _interactive_tty() -> bool:
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _fetch_memory(memory_id: str) -> dict[str, Any] | None:
+    try:
+        used_daemon, row = maybe_daemon_request("get", {"memory_id": memory_id})
+        if not used_daemon:
+            row = memory_client().get(memory_id)
+        return row if isinstance(row, dict) else None
+    except Exception:  # noqa: BLE001 - preview only.
+        return None
+
+
+def _enrich_pairs(pairs: list[dict[str, Any]], *, preview_chars: int = 160) -> list[dict[str, Any]]:
+    enriched = []
+    for pair in pairs:
+        item = dict(pair)
+        for side in ("old", "new"):
+            row = _fetch_memory(pair[f"{side}_id"])
+            item[f"{side}_memory"] = (
+                str(row.get("memory") or "")[:preview_chars] if row else "<deleted>"
+            )
+        enriched.append(item)
+    return enriched
+
+
+@stale_app.command("list")
+def stale_list(
+    session: Optional[str] = typer.Option(None, "--session", help="Only pairs raised by this session's writes."),
+    limit: int = typer.Option(100, "--limit", help="Max pairs returned."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """List open staleness suspicions (advisory; dispose with confirm/dismiss)."""
+    from mem0_local.staleness import pair_store
+
+    pairs = pair_store().open_pairs(session_id=session, limit=limit)
+    output(_enrich_pairs(pairs), command="stale-list", fmt=chosen_format(output_format, json_flag))
+
+
+@stale_app.command("confirm")
+def stale_confirm(
+    pair_id: str = typer.Argument(..., help="Open suspicion pair id (see `stale list`)."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Confirm a suspicion: invalidate the old memory (superseded by the new one).
+
+    Non-interactive callers may only confirm pairs raised by their own
+    session's writes; cross-session backlog needs an interactive session.
+    """
+    from mem0_local.staleness import pair_store
+
+    store = pair_store()
+    pair = store.get(pair_id)
+    if not pair:
+        raise click.ClickException(f"pair not found: {pair_id}")
+    if pair["disposition"] != "open":
+        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    context = detect_writer_context()
+    if not _interactive_tty():
+        own_session = context.get("session_id")
+        if not own_session or pair.get("new_session_id") != own_session:
+            raise click.ClickException(
+                "confirm denied: non-interactive sessions may only confirm suspicions "
+                "raised by their own writes (design: disposition authority). "
+                "Ask the user to confirm this pair from an interactive session."
+            )
+    actor = context.get("source") or MANUAL_SOURCE
+    store.dispose(pair_id, "confirmed", disposed_by=actor)
+    result = run_invalidate(
+        pair["old_id"],
+        [pair["new_id"]],
+        reason=pair.get("reason") or f"confirmed staleness suspicion {pair_id}",
+        raise_on_error=True,
+    )
+    output(
+        {"pair_id": pair_id, "disposition": "confirmed", "invalidate": result},
+        command="stale-confirm",
+        fmt=chosen_format(output_format, json_flag),
+    )
+
+
+@stale_app.command("dismiss")
+def stale_dismiss(
+    pair_id: str = typer.Argument(..., help="Open suspicion pair id."),
+    pin: bool = typer.Option(False, "--pin", help="Also pin the target memory: never judge it again."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Dismiss a suspicion (pair-level, permanent). --pin exempts the memory entirely."""
+    from mem0_local.staleness import pair_store
+
+    store = pair_store()
+    pair = store.get(pair_id)
+    if not pair:
+        raise click.ClickException(f"pair not found: {pair_id}")
+    context = detect_writer_context()
+    actor = context.get("source") or MANUAL_SOURCE
+    if not store.dispose(pair_id, "dismissed", disposed_by=actor):
+        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    result: dict[str, Any] = {"pair_id": pair_id, "disposition": "dismissed"}
+    if pin:
+        started_at = now_utc_iso()
+        start = time.perf_counter()
+        used_daemon, _ = maybe_daemon_request("stale_pin", {"memory_id": pair["old_id"]})
+        if not used_daemon:
+            memory_client().vector_store.update(
+                vector_id=pair["old_id"], vector=None, payload={"stale_check_pin": True}
+            )
+        append_live_audit(
+            operation="stale_pin",
+            input_payload={"memory_id": pair["old_id"], "pair_id": pair_id},
+            metadata=None,
+            result={"pinned": True},
+            started_at=started_at,
+            finished_at=now_utc_iso(),
+            duration_ms=int((time.perf_counter() - start) * 1000),
+            scope={},
+        )
+        result["pinned"] = pair["old_id"]
+    output(result, command="stale-dismiss", fmt=chosen_format(output_format, json_flag))
+
+
+@app.command()
+def review(
+    session: Optional[str] = typer.Option(None, "--session", help="Session id; defaults to the detected current session."),
+    wait: bool = typer.Option(False, "--wait", help="Wait (up to 120s) for pending background judgments first."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Handoff review: this session's writes plus the suspicions they raised.
+
+    Dispose each listed pair with `stale confirm <pair_id>` /
+    `stale dismiss <pair_id> [--pin]`, or correct the old memory with
+    `update`. Undisposed pairs persist and surface via the CLI banner.
+    """
+    from mem0_local.staleness import pair_store
+
+    session = session or detect_writer_context().get("session_id")
+    if not session:
+        raise typer.BadParameter("No session id detected; pass --session explicitly.")
+
+    def pending_stale_checks() -> int:
+        queue = _event_queue_direct()
+        count = 0
+        for row in queue.list(limit=500):
+            if row["op"] == "stale_check" and row["status"] in {"queued", "processing"}:
+                args = queue.get_args(row["event_id"]) or {}
+                if args.get("session_id") == session:
+                    count += 1
+        return count
+
+    pending = pending_stale_checks()
+    if wait:
+        deadline = time.time() + 120
+        while pending and time.time() < deadline:
+            time.sleep(3)
+            pending = pending_stale_checks()
+
+    filters = {"user_id": DEFAULT_USER_ID, "run_id": session}
+    used_daemon, writes = maybe_daemon_request(
+        "list", {"filters": filters, "top_k": 500, "start": 0, "end": 500}
+    )
+    if not used_daemon:
+        writes = memory_client().get_all(filters=filters, top_k=500)
+    write_items = normalize_items(writes) or (writes if isinstance(writes, list) else [])
+
+    pairs = _enrich_pairs(pair_store().open_pairs(session_id=session))
+    output(
+        {
+            "session": session,
+            "writes_count": len(write_items),
+            "writes": [
+                {"id": w.get("id"), "memory": str(w.get("memory") or "")[:160]}
+                for w in write_items
+            ],
+            "pending_stale_checks": pending,
+            "open_pairs": pairs,
+            "how_to_dispose": (
+                "stale confirm <pair_id> | stale dismiss <pair_id> [--pin] | "
+                "update <old_id> '<corrected text>'"
+            ),
+        },
+        command="review",
+        fmt=chosen_format(output_format, json_flag),
+    )
 
 
 @app.command()

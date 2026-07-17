@@ -85,7 +85,10 @@ def result_item_superseded(item: dict[str, Any]) -> list[str]:
 
 
 def _point_payload(client: Any, memory_id: str) -> dict[str, Any] | None:
-    point = client.vector_store.get(memory_id)
+    try:
+        point = client.vector_store.get(memory_id)
+    except Exception:  # noqa: BLE001 - malformed/unknown ids read as missing.
+        return None
     if point is None:
         return None
     payload = getattr(point, "payload", None)
