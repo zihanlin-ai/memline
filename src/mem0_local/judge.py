@@ -113,22 +113,34 @@ def build_user_message(
 
 
 def parse_judgments(
-    response: str,
+    response: str | None,
     allowed_ids: set[str],
 ) -> list[dict[str, Any]]:
-    """Parse and validate the judge's JSON; drop hallucinated ids, clamp fields."""
+    """Parse and validate the judge's JSON; drop hallucinated ids, clamp fields.
+
+    Tolerates truncated output (max_tokens cut-offs) by salvaging every
+    complete judgment object — a partial batch is still useful evidence and
+    the missed candidates stay unjudged (re-judgeable later).
+    """
+    if not response:
+        raise ValueError("judge returned an empty response")
     text = response.strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\n|```$", "", text).strip()
+    raw: Any = None
     try:
         data = json.loads(text, strict=False)
+        raw = data.get("judgments") if isinstance(data, dict) else None
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        if not match:
+        # Salvage complete objects from truncated/malformed output.
+        raw = [
+            obj
+            for chunk in re.findall(r"\{[^{}]*?\"verdict\"[^{}]*?\}", text, flags=re.DOTALL)
+            for obj in [_try_json(chunk)]
+            if obj is not None
+        ]
+        if not raw:
             raise ValueError(f"judge returned non-JSON output: {text[:200]}")
-        data = json.loads(match.group(0), strict=False)
-
-    raw = data.get("judgments") if isinstance(data, dict) else None
     if not isinstance(raw, list):
         raise ValueError("judge output missing 'judgments' list")
 
@@ -153,6 +165,13 @@ def parse_judgments(
             }
         )
     return judgments
+
+
+def _try_json(chunk: str) -> Any:
+    try:
+        return json.loads(chunk, strict=False)
+    except json.JSONDecodeError:
+        return None
 
 
 def judge(

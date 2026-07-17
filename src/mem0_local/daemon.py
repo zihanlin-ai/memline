@@ -531,6 +531,35 @@ def _process_event(client: Any, queue: EventQueue, item: dict[str, Any]) -> None
             print(f"async add audit failed for {item['id']}: {exc}", file=sys.stderr, flush=True)
 
 
+_judge_llm: Any = None
+_judge_llm_lock = threading.Lock()
+
+
+def _get_judge_llm() -> Any:
+    """Dedicated judge LLM: same model as [llm] but with headroom for a full
+    K-candidate judgment batch (the shared client.llm's max_tokens=2000
+    truncated 10-candidate outputs into invalid JSON)."""
+    global _judge_llm
+    with _judge_llm_lock:
+        if _judge_llm is None:
+            from mem0.utils.factory import LlmFactory
+
+            _judge_llm = LlmFactory.create(
+                "openai",
+                {
+                    "model": LLM_MODEL,
+                    "openrouter_base_url": LLM_BASE_URL,
+                    "site_url": LLM_SITE_URL,
+                    "app_name": LLM_APP_NAME,
+                    "temperature": 0.0,
+                    "max_tokens": 4096,
+                    "top_p": 0.1,
+                    "is_reasoning_model": False,
+                },
+            )
+        return _judge_llm
+
+
 def _process_stale_check(client: Any, queue: EventQueue, item: dict[str, Any]) -> None:
     """Advisory judging of one new entry vs its neighbors: evidence rows only,
     never a store mutation, hence no manifest row."""
@@ -545,6 +574,7 @@ def _process_stale_check(client: Any, queue: EventQueue, item: dict[str, Any]) -
                 client,
                 args["new_id"],
                 session_id=args.get("session_id"),
+                llm=_get_judge_llm(),
                 judge_model=LLM_MODEL,
             )
         error = None
