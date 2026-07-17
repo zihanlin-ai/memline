@@ -347,14 +347,18 @@ def _dispatch(client: Any, op: str, args: dict[str, Any]) -> dict[str, Any]:
     if op == "get":
         result = client.get(args["memory_id"])
     elif op == "search":
-        result = client.search(
-            args["query"],
+        from mem0_local.staleness import search_with_staleness
+
+        result = search_with_staleness(
+            client,
+            query=args["query"],
             top_k=args["top_k"],
             filters=args["filters"],
             threshold=args["threshold"],
             rerank=args["rerank"],
             keyword=args.get("keyword", False),
             explain=args["explain"],
+            include_superseded=args.get("include_superseded", False),
         )
     elif op == "list":
         raw = client.get_all(filters=args["filters"], top_k=args["top_k"])
@@ -384,6 +388,35 @@ def _dispatch(client: Any, op: str, args: dict[str, Any]) -> dict[str, Any]:
             result = client.delete(args["memory_id"])
     elif op == "history":
         result = client.history(args["memory_id"])
+    elif op == "invalidate":
+        from mem0_local.staleness import invalidate
+
+        result = invalidate(
+            client,
+            args["memory_id"],
+            args["by_ids"],
+            reason=args.get("reason"),
+            actor_id=args.get("actor_id"),
+            session_id=args.get("session_id"),
+        )
+    elif op == "revive":
+        from mem0_local.staleness import revive
+
+        result = revive(
+            client,
+            args["memory_id"],
+            actor_id=args.get("actor_id"),
+            session_id=args.get("session_id"),
+        )
+    elif op == "resolve_head":
+        from mem0_local.staleness import resolve_head
+
+        def _payload(mid: str):
+            point = client.vector_store.get(mid)
+            payload = getattr(point, "payload", None) if point is not None else None
+            return dict(payload) if payload else ({} if point is not None else None)
+
+        result = resolve_head(_payload, args["memory_id"])
     elif op == "entity_list":
         from mem0_local.entity_ops import list_entities
 

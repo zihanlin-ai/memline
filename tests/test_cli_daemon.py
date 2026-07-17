@@ -76,6 +76,7 @@ class CliDaemonTests(unittest.TestCase):
                 timestamp=None,
                 ledger_timestamp=None,
                 infer_opt=None,
+                supersedes=None,
                 wait=False,
                 json_flag=True,
                 output_format="json",

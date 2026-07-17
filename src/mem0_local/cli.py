@@ -290,6 +290,9 @@ def daemon_operation_timeout(op: str, args: dict[str, Any]) -> float:
         "list",
         "delete",
         "history",
+        "invalidate",
+        "revive",
+        "resolve_head",
         "entity_list",
         "entity_get",
         "entity_delete",
@@ -817,6 +820,138 @@ def status(
     output(data, command="status", fmt=chosen_format(output_format, json_flag))
 
 
+def run_staleness_op(op: str, args: dict[str, Any]) -> Any:
+    """Route a staleness op through the daemon, falling back to the direct path."""
+    used_daemon, result = maybe_daemon_request(op, args)
+    if used_daemon:
+        return result
+    from mem0_local import staleness
+
+    client = memory_client()
+    if op == "invalidate":
+        return staleness.invalidate(
+            client,
+            args["memory_id"],
+            args["by_ids"],
+            reason=args.get("reason"),
+            actor_id=args.get("actor_id"),
+            session_id=args.get("session_id"),
+        )
+    if op == "revive":
+        return staleness.revive(
+            client,
+            args["memory_id"],
+            actor_id=args.get("actor_id"),
+            session_id=args.get("session_id"),
+        )
+    if op == "resolve_head":
+        def _payload(mid: str):
+            point = client.vector_store.get(mid)
+            payload = getattr(point, "payload", None) if point is not None else None
+            return dict(payload) if payload else ({} if point is not None else None)
+
+        return staleness.resolve_head(_payload, args["memory_id"])
+    raise click.ClickException(f"unsupported staleness op: {op}")
+
+
+def run_invalidate(
+    memory_id: str,
+    by_ids: list[str],
+    *,
+    reason: str | None = None,
+    raise_on_error: bool = False,
+) -> dict[str, Any]:
+    """Invalidate one memory, audited; per-id errors become result rows unless raising."""
+    start = time.perf_counter()
+    started_at = now_utc_iso()
+    context = detect_writer_context()
+    actor_id = context.get("source") or MANUAL_SOURCE
+    session_id = context.get("session_id") or MANUAL_SESSION
+    op_args = {
+        "memory_id": memory_id,
+        "by_ids": by_ids,
+        "reason": reason,
+        "actor_id": actor_id,
+        "session_id": session_id,
+    }
+    error: Exception | None = None
+    try:
+        result = run_staleness_op("invalidate", op_args)
+    except Exception as exc:  # noqa: BLE001 - audited below, surfaced per flag.
+        error = exc
+        result = {"id": memory_id, "invalidated": False, "error": str(exc)}
+    finished_at = now_utc_iso()
+    append_live_audit(
+        operation="invalidate",
+        input_payload=op_args,
+        metadata=None,
+        result=result,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        scope={},
+    )
+    if error is not None and raise_on_error:
+        if isinstance(error, click.ClickException):
+            raise error
+        raise click.ClickException(str(error)) from error
+    return result
+
+
+@app.command()
+def invalidate(
+    memory_id: str = typer.Argument(..., help="Memory ID to mark as superseded."),
+    by: str = typer.Option(..., "--by", help="Comma-separated superseding memory id(s)."),
+    reason: Optional[str] = typer.Option(None, "--reason", help="Short human/agent-readable reason."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Mark a memory as superseded: it leaves the default search pool.
+
+    Text, history, and manifests are preserved; reverse with `revive`.
+    """
+    by_ids = [s.strip() for s in by.split(",") if s.strip()]
+    if not by_ids:
+        raise typer.BadParameter("--by requires at least one memory id.")
+    result = run_invalidate(memory_id, by_ids, reason=reason, raise_on_error=True)
+    output(result, command="invalidate", fmt=chosen_format(output_format, json_flag))
+
+
+@app.command()
+def revive(
+    memory_id: str = typer.Argument(..., help="Invalidated memory ID to restore."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Clear supersession state so a memory re-enters the default search pool."""
+    start = time.perf_counter()
+    started_at = now_utc_iso()
+    context = detect_writer_context()
+    op_args = {
+        "memory_id": memory_id,
+        "actor_id": context.get("source") or MANUAL_SOURCE,
+        "session_id": context.get("session_id") or MANUAL_SESSION,
+    }
+    try:
+        result = run_staleness_op("revive", op_args)
+    except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, click.ClickException):
+            raise
+        raise click.ClickException(str(exc)) from exc
+    finished_at = now_utc_iso()
+    append_live_audit(
+        operation="revive",
+        input_payload=op_args,
+        metadata=None,
+        result=result,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        scope={},
+    )
+    output(result, command="revive", fmt=chosen_format(output_format, json_flag))
+
+
 @app.command()
 def add(
     text: Optional[str] = typer.Argument(None, help="Text content to add."),
@@ -843,6 +978,11 @@ def add(
         "--infer/--no-infer",
         help="Force LLM extraction on/off. Default: raw storage for plain text; extraction for --messages/--file.",
     ),
+    supersedes: Optional[str] = typer.Option(
+        None,
+        "--supersedes",
+        help="Comma-separated memory ids this new entry supersedes (raw adds only): they are invalidated with superseded_by=<new id>.",
+    ),
     wait: bool = typer.Option(
         False,
         "--wait",
@@ -862,6 +1002,11 @@ def add(
     start = time.perf_counter()
     started_at = now_utc_iso()
     infer = infer_opt if infer_opt is not None else bool(messages or file)
+    supersede_ids = [s.strip() for s in (supersedes or "").split(",") if s.strip()]
+    if supersede_ids and infer:
+        raise typer.BadParameter(
+            "--supersedes requires the raw add path (extraction adds are async and have no id yet)."
+        )
     content = read_content(text, messages, file)
     meta = parse_json_or_key_values(metadata, option_name="--metadata")
     auto_context = detect_writer_context()
@@ -960,6 +1105,26 @@ def add(
         if isinstance(add_error, click.ClickException):
             raise add_error
         raise click.ClickException(f"add failed in mem0 backend: {add_error}") from add_error
+    if supersede_ids:
+        new_id = next(
+            (item.get("id") for item in normalize_items(result) if item.get("id")), None
+        )
+        if new_id is None:
+            result_note = {"error": "no new memory id in add result; nothing invalidated"}
+            if isinstance(result, dict):
+                result["supersedes"] = result_note
+        else:
+            outcomes = []
+            for old_id in supersede_ids:
+                outcomes.append(
+                    run_invalidate(
+                        old_id,
+                        [str(new_id)],
+                        reason=f"superseded at write time by {new_id}",
+                    )
+                )
+            if isinstance(result, dict):
+                result["supersedes"] = outcomes
     output(
         result,
         command="add",
@@ -980,6 +1145,11 @@ def search(
     ),
     rerank: bool = typer.Option(False, "--rerank", help="Use configured OpenRouter LLM reranker."),
     keyword: bool = typer.Option(False, "--keyword", help="Pure BM25 keyword retrieval instead of hybrid semantic search."),
+    include_superseded: bool = typer.Option(
+        False,
+        "--include-superseded",
+        help="Also return invalidated (superseded) memories; default search filters them out.",
+    ),
     fields: Optional[str] = typer.Option(None, "--fields", help="Comma-separated result fields to return (id always kept)."),
     explain: bool = typer.Option(False, "--explain", help="Return retrieval explanation when supported."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
@@ -1004,17 +1174,22 @@ def search(
             "rerank": rerank,
             "keyword": keyword,
             "explain": explain,
+            "include_superseded": include_superseded,
         },
     )
     if not used_daemon:
-        result = memory_client().search(
-            query,
+        from mem0_local.staleness import search_with_staleness
+
+        result = search_with_staleness(
+            memory_client(),
+            query=query,
             top_k=top_k,
             filters=filters,
             threshold=threshold,
             rerank=rerank,
             keyword=keyword,
             explain=explain,
+            include_superseded=include_superseded,
         )
     result = project_fields(result, fields)
     output(
@@ -1067,6 +1242,11 @@ def list_memories(
 @app.command()
 def get(
     memory_id: str = typer.Argument(..., help="Memory ID to retrieve."),
+    resolve_head: bool = typer.Option(
+        False,
+        "--resolve-head",
+        help="Follow superseded_by pointers and also return the current active head(s).",
+    ),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
@@ -1074,6 +1254,11 @@ def get(
     used_daemon, result = maybe_daemon_request("get", {"memory_id": memory_id})
     if not used_daemon:
         result = memory_client().get(memory_id)
+    if resolve_head and isinstance(result, dict):
+        try:
+            result["head"] = run_staleness_op("resolve_head", {"memory_id": memory_id})
+        except Exception as exc:  # noqa: BLE001 - head resolution must not mask the get.
+            result["head"] = {"error": str(exc)}
     output(result, command="get", fmt=chosen_format(output_format, json_flag))
 
 
