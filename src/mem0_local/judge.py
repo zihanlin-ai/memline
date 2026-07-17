@@ -59,6 +59,10 @@ Never SUPERSEDED:
   style) displaces an old entry only if the old entry answers that
   same aspect; entries recording the tool's purpose, location, or
   other aspects are KEPT.
+- Two COMPLETED, valid measurement runs of the same config are
+  variance references and coexist (KEPT). Only interrupted, invalid,
+  or explicitly preliminary runs are displaced by their completed or
+  corrected re-run.
 
 Rules:
 - Mentally name each entry's slot before comparing: SUPERSEDED requires

@@ -57,6 +57,7 @@ LABELED_PAIRS: list[tuple[str, str, str, str]] = [
     ("2f93c334", "001363de", "KEPT", "128K workload vs agentic workload: different slot"),
     ("fb59a3bc", "f5b53c0b", "KEPT", "unrelated topics (MTP root cause vs pd-cap methodology)"),
     ("221788b6", "26544c6e", "KEPT", "unrelated topics (tokenizer vs dashboard)"),
+    ("addb1990", "2f150285", "KEPT", "two completed same-config runs coexist as variance references (user policy 2026-07-18)"),
 ]
 
 

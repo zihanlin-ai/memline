@@ -1011,13 +1011,15 @@ def stale_list(
 @stale_app.command("confirm")
 def stale_confirm(
     pair_id: str = typer.Argument(..., help="Open suspicion pair id (see `stale list`)."),
+    force: bool = typer.Option(False, "--force", help="The user approved this disposition out-of-band; skips the interactive-session gate."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Confirm a suspicion: invalidate the old memory (superseded by the new one).
 
     Non-interactive callers may only confirm pairs raised by their own
-    session's writes; cross-session backlog needs an interactive session.
+    session's writes; cross-session backlog needs an interactive session or
+    explicit user approval recorded via --force.
     """
     from mem0_local.staleness import pair_store
 
@@ -1028,13 +1030,14 @@ def stale_confirm(
     if pair["disposition"] != "open":
         raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
     context = detect_writer_context()
-    if not _interactive_tty():
+    if not force and not _interactive_tty():
         own_session = context.get("session_id")
         if not own_session or pair.get("new_session_id") != own_session:
             raise click.ClickException(
                 "confirm denied: non-interactive sessions may only confirm suspicions "
                 "raised by their own writes (design: disposition authority). "
-                "Ask the user to confirm this pair from an interactive session."
+                "Ask the user to confirm this pair from an interactive session, or "
+                "pass --force when the user has approved it out-of-band."
             )
     actor = context.get("source") or MANUAL_SOURCE
     store.dispose(pair_id, "confirmed", disposed_by=actor)
@@ -1096,6 +1099,7 @@ def stale_dismiss(
 def stale_merge(
     pair_id: str = typer.Argument(..., help="Open suspicion pair id."),
     merged_text: str = typer.Argument(..., help="Consolidated text carrying both entries' still-valid facts."),
+    force: bool = typer.Option(False, "--force", help="The user approved this disposition out-of-band; skips the interactive-session gate."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
@@ -1115,12 +1119,13 @@ def stale_merge(
     if pair["disposition"] != "open":
         raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
     context = detect_writer_context()
-    if not _interactive_tty():
+    if not force and not _interactive_tty():
         own_session = context.get("session_id")
         if not own_session or pair.get("new_session_id") != own_session:
             raise click.ClickException(
                 "merge denied: non-interactive sessions may only dispose suspicions "
-                "raised by their own writes (design: disposition authority)."
+                "raised by their own writes (design: disposition authority); pass "
+                "--force when the user has approved it out-of-band."
             )
     new_id, old_id = pair["new_id"], pair["old_id"]
     # Mirrors the update command's metadata handling: preserve creation
