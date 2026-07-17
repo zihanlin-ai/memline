@@ -1,11 +1,10 @@
 # Staleness & Supersession Design for mem0-local
 
-Status: steps 1-4 IMPLEMENTED 2026-07-17 on branch
-`feature/staleness-supersession` of `.agent-memory/projects/mem0-local`
-(4 commits, e07eeab..acc4192); the running daemon serves this code. Step 5
-(full-store backlog pass) not started. SKILL.md intentionally not yet
-updated — skill exposure of the new verbs awaits explicit user approval.
-Judge eval gate: 24 labeled real pairs, accuracy 87.5%, SUPERSEDED
+Status: steps 1-4 implemented, MERGED to main of
+`.agent-memory/projects/mem0-local` (merge 0d5e8a1) and EXPOSED in the
+local-memory SKILL.md + MEMORY.md rules on 2026-07-17; the running daemon
+serves this code. Step 5 (full-store backlog pass over ~5.6k entries) not
+started. Judge eval gate: 24 labeled real pairs, accuracy 87.5%, SUPERSEDED
 precision 90% / recall 81.8% (`tools/stale_judge_eval.py`).
 This file is the behavioral spec; update it if the design changes.
 
@@ -142,6 +141,9 @@ disposed_by, disposed_at
    writes).
 3. Agent disposes each pair:
    - `confirm` → invalidate target (`superseded_by` = new id)
+   - `merge "<consolidated text>"` → for additive-detail pairs (added
+     2026-07-18): the newer memory is updated to carry both entries'
+     still-valid facts, the older is invalidated pointing at it
    - `update <id> "..."` → correct the old entry instead (clears its open
      suspicions; pair cache resets via text hash)
    - `dismiss` → pair-level permanent closure

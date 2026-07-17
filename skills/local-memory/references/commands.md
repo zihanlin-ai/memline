@@ -237,7 +237,14 @@ mem0-local review [--session <id>] [--wait]                    # handoff: writes
 mem0-local stale list [--session <id>]
 mem0-local stale confirm <pair_id>
 mem0-local stale dismiss <pair_id> [--pin]
+mem0-local stale merge <pair_id> "<consolidated text>"
 ```
+
+`stale merge` is for pairs where the new entry ADDS detail rather than
+replacing the old answer: the newer memory is updated to the consolidated
+text (both entries' still-valid facts), the older memory is invalidated
+pointing at it, and the pair closes as `merged`. Same authority rule as
+`confirm`.
 
 Rules that matter in practice:
 

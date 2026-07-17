@@ -648,7 +648,7 @@ class PairStore:
         *,
         disposed_by: str | None = None,
     ) -> bool:
-        if disposition not in {"confirmed", "dismissed", "obsoleted", "expired"}:
+        if disposition not in {"confirmed", "dismissed", "obsoleted", "expired", "merged"}:
             raise StalenessError(f"invalid disposition: {disposition}")
         with self._lock:
             cursor = self._conn.execute(

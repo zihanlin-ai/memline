@@ -1092,6 +1092,92 @@ def stale_dismiss(
     output(result, command="stale-dismiss", fmt=chosen_format(output_format, json_flag))
 
 
+@stale_app.command("merge")
+def stale_merge(
+    pair_id: str = typer.Argument(..., help="Open suspicion pair id."),
+    merged_text: str = typer.Argument(..., help="Consolidated text carrying both entries' still-valid facts."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Merge a pair: the newer memory is updated to the consolidated text and
+    the older memory is invalidated (superseded by it).
+
+    For suspicions where the new entry adds detail rather than replacing the
+    old answer: one consolidated entry stays in the pool, the old original is
+    preserved in history/manifests as usual. Same authority rule as confirm.
+    """
+    from mem0_local.staleness import pair_store
+
+    store = pair_store()
+    pair = store.get(pair_id)
+    if not pair:
+        raise click.ClickException(f"pair not found: {pair_id}")
+    if pair["disposition"] != "open":
+        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    context = detect_writer_context()
+    if not _interactive_tty():
+        own_session = context.get("session_id")
+        if not own_session or pair.get("new_session_id") != own_session:
+            raise click.ClickException(
+                "merge denied: non-interactive sessions may only dispose suspicions "
+                "raised by their own writes (design: disposition authority)."
+            )
+    new_id, old_id = pair["new_id"], pair["old_id"]
+    # Mirrors the update command's metadata handling: preserve creation
+    # timestamps, record the updater; audited as an update.
+    start = time.perf_counter()
+    started_at = now_utc_iso()
+    used_daemon, existing = maybe_daemon_request("get", {"memory_id": new_id})
+    client = None
+    if not used_daemon:
+        client = memory_client()
+        existing = client.get(new_id)
+    if not isinstance(existing, dict):
+        raise click.ClickException(f"memory not found: {new_id}")
+    existing_meta = existing.get("metadata") or {}
+    meta = dict(existing_meta)
+    if existing.get("created_at"):
+        meta["created_at"] = existing["created_at"]
+    meta.setdefault("ledger_timestamp", existing_meta.get("ledger_timestamp") or existing.get("created_at") or now_utc_iso())
+    meta["updated_by_cli_at"] = now_utc_iso()
+    meta["last_updated_by_agent_id"] = context.get("source") or MANUAL_SOURCE
+    meta["last_updated_session_id"] = context.get("session_id") or MANUAL_SESSION
+    meta["merged_from"] = old_id
+    if used_daemon:
+        used_update_daemon, update_result = maybe_daemon_request(
+            "update", {"memory_id": new_id, "text": merged_text, "metadata": meta}
+        )
+        if not used_update_daemon:
+            raise click.ClickException("mem0-local daemon became unavailable during merge")
+    else:
+        update_result = client.update(new_id, merged_text, metadata=meta)
+    append_live_audit(
+        operation="update",
+        input_payload={"memory_id": new_id, "text": merged_text, "merge_pair_id": pair_id, "existing": existing},
+        metadata=meta,
+        result=update_result,
+        started_at=started_at,
+        finished_at=now_utc_iso(),
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        scope=scope_dict(existing.get("user_id"), existing.get("agent_id"), None, existing.get("run_id")),
+    )
+    actor = context.get("source") or MANUAL_SOURCE
+    store.dispose(pair_id, "merged", disposed_by=actor)
+    invalidate_result = run_invalidate(
+        old_id, [new_id], reason=f"merged into {new_id} (pair {pair_id})", raise_on_error=True
+    )
+    output(
+        {
+            "pair_id": pair_id,
+            "disposition": "merged",
+            "updated": new_id,
+            "invalidate": invalidate_result,
+        },
+        command="stale-merge",
+        fmt=chosen_format(output_format, json_flag),
+    )
+
+
 @app.command()
 def review(
     session: Optional[str] = typer.Option(None, "--session", help="Session id; defaults to the detected current session."),
@@ -1149,6 +1235,7 @@ def review(
             "open_pairs": pairs,
             "how_to_dispose": (
                 "stale confirm <pair_id> | stale dismiss <pair_id> [--pin] | "
+                "stale merge <pair_id> '<consolidated text>' | "
                 "update <old_id> '<corrected text>'"
             ),
         },
