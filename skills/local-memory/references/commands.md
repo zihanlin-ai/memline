@@ -218,6 +218,42 @@ Deletes append live audit rows too. A single-memory delete records the existing
 memory snapshot before deletion; `delete --all --force` records the requested
 scope and Mem0 result.
 
+## Staleness / Supersession
+
+Full semantics: `.agents/skills/local-memory/references/staleness-design.md`.
+Invalidation is metadata-only (`superseded_by` list on the memory), reversible,
+and audited; invalidated entries leave the default search pool but keep text,
+history, and manifest rows. Every raw add also queues an advisory background
+judge (`stale_check` event) whose output is suspicion pairs — never a state
+change.
+
+```bash
+mem0-local add "newer fact" --supersedes <old_id>[,<old_id2>]  # invalidate at write time
+mem0-local invalidate <memory_id> --by <new_id> [--reason "..."]
+mem0-local revive <memory_id>                                  # undo an invalidation
+mem0-local search "query" --include-superseded                 # history digs
+mem0-local get <memory_id> --resolve-head                      # follow the supersession chain
+mem0-local review [--session <id>] [--wait]                    # handoff: writes + raised suspicions
+mem0-local stale list [--session <id>]
+mem0-local stale confirm <pair_id>
+mem0-local stale dismiss <pair_id> [--pin]
+```
+
+Rules that matter in practice:
+
+- `invalidate` refuses cycles and double-invalidation; `--supersedes` is only
+  valid on the raw (non-infer) add path.
+- Suspicion pairs are keyed `(new_id, old_id, hash(old_text))`: updating a
+  memory's text automatically expires prior judgments about it; dismissals are
+  pair-level and permanent, `--pin` is memory-level and stops all future
+  judging of that entry.
+- `stale confirm` from a non-interactive session is allowed only for pairs
+  raised by that session's own writes; cross-session backlog needs an
+  interactive session.
+- Deleting a memory closes open pairs that reference it.
+- Search hits with open suspicions carry `suspected_stale: true` plus a
+  `suspicions` list (suspected_by, verdict, confidence, reason).
+
 ## Diagnostics
 
 ```bash
