@@ -347,14 +347,18 @@ def _dispatch(client: Any, op: str, args: dict[str, Any]) -> dict[str, Any]:
     if op == "get":
         result = client.get(args["memory_id"])
     elif op == "search":
-        result = client.search(
-            args["query"],
+        from mem0_local.staleness import search_with_staleness
+
+        result = search_with_staleness(
+            client,
+            query=args["query"],
             top_k=args["top_k"],
             filters=args["filters"],
             threshold=args["threshold"],
             rerank=args["rerank"],
             keyword=args.get("keyword", False),
             explain=args["explain"],
+            include_superseded=args.get("include_superseded", False),
         )
     elif op == "list":
         raw = client.get_all(filters=args["filters"], top_k=args["top_k"])
@@ -384,6 +388,40 @@ def _dispatch(client: Any, op: str, args: dict[str, Any]) -> dict[str, Any]:
             result = client.delete(args["memory_id"])
     elif op == "history":
         result = client.history(args["memory_id"])
+    elif op == "invalidate":
+        from mem0_local.staleness import invalidate
+
+        result = invalidate(
+            client,
+            args["memory_id"],
+            args["by_ids"],
+            reason=args.get("reason"),
+            actor_id=args.get("actor_id"),
+            session_id=args.get("session_id"),
+        )
+    elif op == "revive":
+        from mem0_local.staleness import revive
+
+        result = revive(
+            client,
+            args["memory_id"],
+            actor_id=args.get("actor_id"),
+            session_id=args.get("session_id"),
+        )
+    elif op == "stale_pin":
+        client.vector_store.update(
+            vector_id=args["memory_id"], vector=None, payload={"stale_check_pin": True}
+        )
+        result = {"id": args["memory_id"], "pinned": True}
+    elif op == "resolve_head":
+        from mem0_local.staleness import resolve_head
+
+        def _payload(mid: str):
+            point = client.vector_store.get(mid)
+            payload = getattr(point, "payload", None) if point is not None else None
+            return dict(payload) if payload else ({} if point is not None else None)
+
+        result = resolve_head(_payload, args["memory_id"])
     elif op == "entity_list":
         from mem0_local.entity_ops import list_entities
 
@@ -432,6 +470,9 @@ def write_json_line(conn: socket.socket, payload: dict[str, Any]) -> bool:
 
 
 def _process_event(client: Any, queue: EventQueue, item: dict[str, Any]) -> None:
+    if item.get("op") == "stale_check":
+        _process_stale_check(client, queue, item)
+        return
     args = item["args"]
     started = time.perf_counter()
     started_at = _utc_now_iso()
@@ -488,6 +529,34 @@ def _process_event(client: Any, queue: EventQueue, item: dict[str, Any]) -> None
             )
         except Exception as exc:  # noqa: BLE001
             print(f"async add audit failed for {item['id']}: {exc}", file=sys.stderr, flush=True)
+
+
+def _process_stale_check(client: Any, queue: EventQueue, item: dict[str, Any]) -> None:
+    """Advisory judging of one new entry vs its neighbors: evidence rows only,
+    never a store mutation, hence no manifest row."""
+    from mem0_local.config import LLM_MODEL
+    from mem0_local.staleness import run_stale_check
+
+    args = item["args"]
+    _store_gate.acquire_shared()
+    try:
+        with _llm_slots:
+            result = run_stale_check(
+                client,
+                args["new_id"],
+                session_id=args.get("session_id"),
+                judge_model=LLM_MODEL,
+            )
+        error = None
+    except Exception as exc:  # noqa: BLE001 - failures become event state.
+        result, error = None, str(exc)
+    finally:
+        _store_gate.release_shared()
+    if error is None:
+        queue.complete(item["id"], result)
+    else:
+        queue.fail(item["id"], error, item["attempts"])
+    queue.refresh_alerts()
 
 
 def _utc_now_iso() -> str:

@@ -71,6 +71,8 @@ entity_app = typer.Typer(help="Inspect and manage the local entity graph.")
 app.add_typer(entity_app, name="entity")
 event_app = typer.Typer(help="Inspect background add-processing events (async queue).")
 app.add_typer(event_app, name="event")
+stale_app = typer.Typer(help="Inspect and dispose staleness suspicions (advisory judge output).")
+app.add_typer(stale_app, name="stale")
 
 agent_mode = False
 lock_handle = None
@@ -290,6 +292,10 @@ def daemon_operation_timeout(op: str, args: dict[str, Any]) -> float:
         "list",
         "delete",
         "history",
+        "invalidate",
+        "revive",
+        "resolve_head",
+        "stale_pin",
         "entity_list",
         "entity_get",
         "entity_delete",
@@ -736,9 +742,21 @@ def main(
         alerts = read_alerts()
         if alerts and alerts.get("failed_unacked"):
             err_console.print(
-                f"[yellow]mem0-local: {alerts['failed_unacked']} queued add(s) FAILED. "
+                f"[yellow]mem0-local: {alerts['failed_unacked']} queued event(s) FAILED. "
                 "Inspect with `mem0-local event list --status failed`, then "
                 "`mem0-local event retry <event_id>` or `mem0-local event ack --all`.[/yellow]"
+            )
+    except Exception:  # noqa: BLE001 - the banner must never break a command.
+        pass
+    try:
+        from mem0_local.staleness import pair_store
+
+        open_pairs = pair_store().open_count()
+        if open_pairs:
+            err_console.print(
+                f"[yellow]mem0-local: {open_pairs} open staleness suspicion(s) await review. "
+                "List with `mem0-local stale list`; dispose with "
+                "`mem0-local stale confirm|dismiss <pair_id>` or `mem0-local review`.[/yellow]"
             )
     except Exception:  # noqa: BLE001 - the banner must never break a command.
         pass
@@ -817,6 +835,328 @@ def status(
     output(data, command="status", fmt=chosen_format(output_format, json_flag))
 
 
+def run_staleness_op(op: str, args: dict[str, Any]) -> Any:
+    """Route a staleness op through the daemon, falling back to the direct path."""
+    used_daemon, result = maybe_daemon_request(op, args)
+    if used_daemon:
+        return result
+    from mem0_local import staleness
+
+    client = memory_client()
+    if op == "invalidate":
+        return staleness.invalidate(
+            client,
+            args["memory_id"],
+            args["by_ids"],
+            reason=args.get("reason"),
+            actor_id=args.get("actor_id"),
+            session_id=args.get("session_id"),
+        )
+    if op == "revive":
+        return staleness.revive(
+            client,
+            args["memory_id"],
+            actor_id=args.get("actor_id"),
+            session_id=args.get("session_id"),
+        )
+    if op == "resolve_head":
+        def _payload(mid: str):
+            point = client.vector_store.get(mid)
+            payload = getattr(point, "payload", None) if point is not None else None
+            return dict(payload) if payload else ({} if point is not None else None)
+
+        return staleness.resolve_head(_payload, args["memory_id"])
+    raise click.ClickException(f"unsupported staleness op: {op}")
+
+
+def run_invalidate(
+    memory_id: str,
+    by_ids: list[str],
+    *,
+    reason: str | None = None,
+    raise_on_error: bool = False,
+) -> dict[str, Any]:
+    """Invalidate one memory, audited; per-id errors become result rows unless raising."""
+    start = time.perf_counter()
+    started_at = now_utc_iso()
+    context = detect_writer_context()
+    actor_id = context.get("source") or MANUAL_SOURCE
+    session_id = context.get("session_id") or MANUAL_SESSION
+    op_args = {
+        "memory_id": memory_id,
+        "by_ids": by_ids,
+        "reason": reason,
+        "actor_id": actor_id,
+        "session_id": session_id,
+    }
+    error: Exception | None = None
+    try:
+        result = run_staleness_op("invalidate", op_args)
+    except Exception as exc:  # noqa: BLE001 - audited below, surfaced per flag.
+        error = exc
+        result = {"id": memory_id, "invalidated": False, "error": str(exc)}
+    finished_at = now_utc_iso()
+    append_live_audit(
+        operation="invalidate",
+        input_payload=op_args,
+        metadata=None,
+        result=result,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        scope={},
+    )
+    if error is not None and raise_on_error:
+        if isinstance(error, click.ClickException):
+            raise error
+        raise click.ClickException(str(error)) from error
+    return result
+
+
+@app.command()
+def invalidate(
+    memory_id: str = typer.Argument(..., help="Memory ID to mark as superseded."),
+    by: str = typer.Option(..., "--by", help="Comma-separated superseding memory id(s)."),
+    reason: Optional[str] = typer.Option(None, "--reason", help="Short human/agent-readable reason."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Mark a memory as superseded: it leaves the default search pool.
+
+    Text, history, and manifests are preserved; reverse with `revive`.
+    """
+    by_ids = [s.strip() for s in by.split(",") if s.strip()]
+    if not by_ids:
+        raise typer.BadParameter("--by requires at least one memory id.")
+    result = run_invalidate(memory_id, by_ids, reason=reason, raise_on_error=True)
+    output(result, command="invalidate", fmt=chosen_format(output_format, json_flag))
+
+
+@app.command()
+def revive(
+    memory_id: str = typer.Argument(..., help="Invalidated memory ID to restore."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Clear supersession state so a memory re-enters the default search pool."""
+    start = time.perf_counter()
+    started_at = now_utc_iso()
+    context = detect_writer_context()
+    op_args = {
+        "memory_id": memory_id,
+        "actor_id": context.get("source") or MANUAL_SOURCE,
+        "session_id": context.get("session_id") or MANUAL_SESSION,
+    }
+    try:
+        result = run_staleness_op("revive", op_args)
+    except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, click.ClickException):
+            raise
+        raise click.ClickException(str(exc)) from exc
+    finished_at = now_utc_iso()
+    append_live_audit(
+        operation="revive",
+        input_payload=op_args,
+        metadata=None,
+        result=result,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        scope={},
+    )
+    output(result, command="revive", fmt=chosen_format(output_format, json_flag))
+
+
+def _interactive_tty() -> bool:
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _fetch_memory(memory_id: str) -> dict[str, Any] | None:
+    try:
+        used_daemon, row = maybe_daemon_request("get", {"memory_id": memory_id})
+        if not used_daemon:
+            row = memory_client().get(memory_id)
+        return row if isinstance(row, dict) else None
+    except Exception:  # noqa: BLE001 - preview only.
+        return None
+
+
+def _enrich_pairs(pairs: list[dict[str, Any]], *, preview_chars: int = 160) -> list[dict[str, Any]]:
+    enriched = []
+    for pair in pairs:
+        item = dict(pair)
+        for side in ("old", "new"):
+            row = _fetch_memory(pair[f"{side}_id"])
+            item[f"{side}_memory"] = (
+                str(row.get("memory") or "")[:preview_chars] if row else "<deleted>"
+            )
+        enriched.append(item)
+    return enriched
+
+
+@stale_app.command("list")
+def stale_list(
+    session: Optional[str] = typer.Option(None, "--session", help="Only pairs raised by this session's writes."),
+    limit: int = typer.Option(100, "--limit", help="Max pairs returned."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """List open staleness suspicions (advisory; dispose with confirm/dismiss)."""
+    from mem0_local.staleness import pair_store
+
+    pairs = pair_store().open_pairs(session_id=session, limit=limit)
+    output(_enrich_pairs(pairs), command="stale-list", fmt=chosen_format(output_format, json_flag))
+
+
+@stale_app.command("confirm")
+def stale_confirm(
+    pair_id: str = typer.Argument(..., help="Open suspicion pair id (see `stale list`)."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Confirm a suspicion: invalidate the old memory (superseded by the new one).
+
+    Non-interactive callers may only confirm pairs raised by their own
+    session's writes; cross-session backlog needs an interactive session.
+    """
+    from mem0_local.staleness import pair_store
+
+    store = pair_store()
+    pair = store.get(pair_id)
+    if not pair:
+        raise click.ClickException(f"pair not found: {pair_id}")
+    if pair["disposition"] != "open":
+        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    context = detect_writer_context()
+    if not _interactive_tty():
+        own_session = context.get("session_id")
+        if not own_session or pair.get("new_session_id") != own_session:
+            raise click.ClickException(
+                "confirm denied: non-interactive sessions may only confirm suspicions "
+                "raised by their own writes (design: disposition authority). "
+                "Ask the user to confirm this pair from an interactive session."
+            )
+    actor = context.get("source") or MANUAL_SOURCE
+    store.dispose(pair_id, "confirmed", disposed_by=actor)
+    result = run_invalidate(
+        pair["old_id"],
+        [pair["new_id"]],
+        reason=pair.get("reason") or f"confirmed staleness suspicion {pair_id}",
+        raise_on_error=True,
+    )
+    output(
+        {"pair_id": pair_id, "disposition": "confirmed", "invalidate": result},
+        command="stale-confirm",
+        fmt=chosen_format(output_format, json_flag),
+    )
+
+
+@stale_app.command("dismiss")
+def stale_dismiss(
+    pair_id: str = typer.Argument(..., help="Open suspicion pair id."),
+    pin: bool = typer.Option(False, "--pin", help="Also pin the target memory: never judge it again."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Dismiss a suspicion (pair-level, permanent). --pin exempts the memory entirely."""
+    from mem0_local.staleness import pair_store
+
+    store = pair_store()
+    pair = store.get(pair_id)
+    if not pair:
+        raise click.ClickException(f"pair not found: {pair_id}")
+    context = detect_writer_context()
+    actor = context.get("source") or MANUAL_SOURCE
+    if not store.dispose(pair_id, "dismissed", disposed_by=actor):
+        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    result: dict[str, Any] = {"pair_id": pair_id, "disposition": "dismissed"}
+    if pin:
+        started_at = now_utc_iso()
+        start = time.perf_counter()
+        used_daemon, _ = maybe_daemon_request("stale_pin", {"memory_id": pair["old_id"]})
+        if not used_daemon:
+            memory_client().vector_store.update(
+                vector_id=pair["old_id"], vector=None, payload={"stale_check_pin": True}
+            )
+        append_live_audit(
+            operation="stale_pin",
+            input_payload={"memory_id": pair["old_id"], "pair_id": pair_id},
+            metadata=None,
+            result={"pinned": True},
+            started_at=started_at,
+            finished_at=now_utc_iso(),
+            duration_ms=int((time.perf_counter() - start) * 1000),
+            scope={},
+        )
+        result["pinned"] = pair["old_id"]
+    output(result, command="stale-dismiss", fmt=chosen_format(output_format, json_flag))
+
+
+@app.command()
+def review(
+    session: Optional[str] = typer.Option(None, "--session", help="Session id; defaults to the detected current session."),
+    wait: bool = typer.Option(False, "--wait", help="Wait (up to 120s) for pending background judgments first."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Handoff review: this session's writes plus the suspicions they raised.
+
+    Dispose each listed pair with `stale confirm <pair_id>` /
+    `stale dismiss <pair_id> [--pin]`, or correct the old memory with
+    `update`. Undisposed pairs persist and surface via the CLI banner.
+    """
+    from mem0_local.staleness import pair_store
+
+    session = session or detect_writer_context().get("session_id")
+    if not session:
+        raise typer.BadParameter("No session id detected; pass --session explicitly.")
+
+    def pending_stale_checks() -> int:
+        queue = _event_queue_direct()
+        count = 0
+        for row in queue.list(limit=500):
+            if row["op"] == "stale_check" and row["status"] in {"queued", "processing"}:
+                args = queue.get_args(row["event_id"]) or {}
+                if args.get("session_id") == session:
+                    count += 1
+        return count
+
+    pending = pending_stale_checks()
+    if wait:
+        deadline = time.time() + 120
+        while pending and time.time() < deadline:
+            time.sleep(3)
+            pending = pending_stale_checks()
+
+    filters = {"user_id": DEFAULT_USER_ID, "run_id": session}
+    used_daemon, writes = maybe_daemon_request(
+        "list", {"filters": filters, "top_k": 500, "start": 0, "end": 500}
+    )
+    if not used_daemon:
+        writes = memory_client().get_all(filters=filters, top_k=500)
+    write_items = normalize_items(writes) or (writes if isinstance(writes, list) else [])
+
+    pairs = _enrich_pairs(pair_store().open_pairs(session_id=session))
+    output(
+        {
+            "session": session,
+            "writes_count": len(write_items),
+            "writes": [
+                {"id": w.get("id"), "memory": str(w.get("memory") or "")[:160]}
+                for w in write_items
+            ],
+            "pending_stale_checks": pending,
+            "open_pairs": pairs,
+            "how_to_dispose": (
+                "stale confirm <pair_id> | stale dismiss <pair_id> [--pin] | "
+                "update <old_id> '<corrected text>'"
+            ),
+        },
+        command="review",
+        fmt=chosen_format(output_format, json_flag),
+    )
+
+
 @app.command()
 def add(
     text: Optional[str] = typer.Argument(None, help="Text content to add."),
@@ -843,6 +1183,11 @@ def add(
         "--infer/--no-infer",
         help="Force LLM extraction on/off. Default: raw storage for plain text; extraction for --messages/--file.",
     ),
+    supersedes: Optional[str] = typer.Option(
+        None,
+        "--supersedes",
+        help="Comma-separated memory ids this new entry supersedes (raw adds only): they are invalidated with superseded_by=<new id>.",
+    ),
     wait: bool = typer.Option(
         False,
         "--wait",
@@ -862,6 +1207,11 @@ def add(
     start = time.perf_counter()
     started_at = now_utc_iso()
     infer = infer_opt if infer_opt is not None else bool(messages or file)
+    supersede_ids = [s.strip() for s in (supersedes or "").split(",") if s.strip()]
+    if supersede_ids and infer:
+        raise typer.BadParameter(
+            "--supersedes requires the raw add path (extraction adds are async and have no id yet)."
+        )
     content = read_content(text, messages, file)
     meta = parse_json_or_key_values(metadata, option_name="--metadata")
     auto_context = detect_writer_context()
@@ -960,6 +1310,44 @@ def add(
         if isinstance(add_error, click.ClickException):
             raise add_error
         raise click.ClickException(f"add failed in mem0 backend: {add_error}") from add_error
+    if supersede_ids:
+        new_id = next(
+            (item.get("id") for item in normalize_items(result) if item.get("id")), None
+        )
+        if new_id is None:
+            result_note = {"error": "no new memory id in add result; nothing invalidated"}
+            if isinstance(result, dict):
+                result["supersedes"] = result_note
+        else:
+            outcomes = []
+            for old_id in supersede_ids:
+                outcomes.append(
+                    run_invalidate(
+                        old_id,
+                        [str(new_id)],
+                        reason=f"superseded at write time by {new_id}",
+                    )
+                )
+            if isinstance(result, dict):
+                result["supersedes"] = outcomes
+    if not infer:
+        # Advisory background staleness check for the new entry. Queued only —
+        # the daemon judges it later; enqueue failure must never break the add.
+        new_id = next(
+            (item.get("id") for item in normalize_items(result) if item.get("id")), None
+        )
+        if new_id:
+            try:
+                from mem0_local.queue import EventQueue
+
+                stale_event = EventQueue().enqueue(
+                    "stale_check",
+                    {"new_id": str(new_id), "session_id": meta.get("session_id")},
+                )
+                if isinstance(result, dict):
+                    result["stale_check_event"] = stale_event
+            except Exception:  # noqa: BLE001
+                pass
     output(
         result,
         command="add",
@@ -980,6 +1368,11 @@ def search(
     ),
     rerank: bool = typer.Option(False, "--rerank", help="Use configured OpenRouter LLM reranker."),
     keyword: bool = typer.Option(False, "--keyword", help="Pure BM25 keyword retrieval instead of hybrid semantic search."),
+    include_superseded: bool = typer.Option(
+        False,
+        "--include-superseded",
+        help="Also return invalidated (superseded) memories; default search filters them out.",
+    ),
     fields: Optional[str] = typer.Option(None, "--fields", help="Comma-separated result fields to return (id always kept)."),
     explain: bool = typer.Option(False, "--explain", help="Return retrieval explanation when supported."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
@@ -1004,17 +1397,22 @@ def search(
             "rerank": rerank,
             "keyword": keyword,
             "explain": explain,
+            "include_superseded": include_superseded,
         },
     )
     if not used_daemon:
-        result = memory_client().search(
-            query,
+        from mem0_local.staleness import search_with_staleness
+
+        result = search_with_staleness(
+            memory_client(),
+            query=query,
             top_k=top_k,
             filters=filters,
             threshold=threshold,
             rerank=rerank,
             keyword=keyword,
             explain=explain,
+            include_superseded=include_superseded,
         )
     result = project_fields(result, fields)
     output(
@@ -1067,6 +1465,11 @@ def list_memories(
 @app.command()
 def get(
     memory_id: str = typer.Argument(..., help="Memory ID to retrieve."),
+    resolve_head: bool = typer.Option(
+        False,
+        "--resolve-head",
+        help="Follow superseded_by pointers and also return the current active head(s).",
+    ),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
@@ -1074,6 +1477,11 @@ def get(
     used_daemon, result = maybe_daemon_request("get", {"memory_id": memory_id})
     if not used_daemon:
         result = memory_client().get(memory_id)
+    if resolve_head and isinstance(result, dict):
+        try:
+            result["head"] = run_staleness_op("resolve_head", {"memory_id": memory_id})
+        except Exception as exc:  # noqa: BLE001 - head resolution must not mask the get.
+            result["head"] = {"error": str(exc)}
     output(result, command="get", fmt=chosen_format(output_format, json_flag))
 
 
@@ -1219,6 +1627,12 @@ def delete(
     used_daemon, result = maybe_daemon_request("delete", {"all": False, "memory_id": memory_id})
     if not used_daemon:
         result = (client or memory_client()).delete(memory_id)
+    try:
+        from mem0_local.staleness import pair_store
+
+        pair_store().close_for_deleted_memory(memory_id)
+    except Exception:  # noqa: BLE001 - pair hygiene must never break delete.
+        pass
     wrapped_result = {"id": memory_id, "result": result}
     finished_at = now_utc_iso()
     append_live_audit(
