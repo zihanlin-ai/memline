@@ -58,6 +58,12 @@ LABELED_PAIRS: list[tuple[str, str, str, str]] = [
     ("fb59a3bc", "f5b53c0b", "KEPT", "unrelated topics (MTP root cause vs pd-cap methodology)"),
     ("221788b6", "26544c6e", "KEPT", "unrelated topics (tokenizer vs dashboard)"),
     ("addb1990", "2f150285", "KEPT", "two completed same-config runs coexist as variance references (user policy 2026-07-18)"),
+    # Batch 3/4 false-positive guards (different-subject / different-slot; dismissed in campaign):
+    ("48201b4d", "4b867716", "KEPT", "8K dashboard launch vs AB container cleanup: different subjects (batch4 FP)"),
+    ("48201b4d", "e3f5d912", "KEPT", "8K dashboard launch vs six-host service cleanup verify: different services (batch4 FP)"),
+    ("56f0bd7e", "ccf4fa10", "KEPT", "preemption partial-publish policy vs startup-attempts retry flag: different aspects (batch4 FP)"),
+    ("f205ff00", "dfca5dc9", "KEPT", "automation did-not-execute docker blocks vs template contains them: different slots (batch3 FP)"),
+    ("79ad5749", "8ebe93dd", "KEPT", "FTPT mechanism/how-it-works note vs instance not-enabled state: method vs instance (batch3 FP)"),
 ]
 
 
