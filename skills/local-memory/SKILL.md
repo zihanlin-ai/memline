@@ -57,6 +57,7 @@ In Codex/Claude contexts, output defaults to agent-readable JSON. Use `--json` e
 - `update` preserves original writer/session scope and automatically records the current updater identity. Agents should only supply the corrected memory text and optional human-meaningful reason metadata.
 - At session start, after reading `.agent-memory/MEMORY.md`, list memories ingested in the last 1 day with `since="$(python3 -c 'from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(days=1)).isoformat())')"; mem0-local list --filter "{\"ingested_at\":{\"gte\":\"$since\"}}" --page-size 100`; then use semantic `search` for task-specific recall.
 - Never print or read the local secret env file.
+- Memory entries must never contain plaintext credentials (passwords, tokens, private keys, one-time auth values) — reference the secret's location instead (the env file, a chmod600 secret file, hosts.yaml). If an existing entry holds a plaintext secret, redact it in place with `update <id> "<same text, secret replaced by a pointer>"`: this scrubs the value from the store while preserving the id, entity links, and history, and records the redaction in the manifest. Verify with `search "<secret literal>" --include-superseded` returning nothing.
 - Do not use `delete --all --force` unless the user explicitly requests a scoped wipe.
 
 ## Progressive References
@@ -64,4 +65,4 @@ In Codex/Claude contexts, output defaults to agent-readable JSON. Use `--json` e
 - For the full command list, time-range listing, and common examples, read [commands.md](references/commands.md).
 - For real paths, PATH/symlink details, reusable package location, workspace config, store layout, Qdrant lock behavior, missing command issues, or rollback checks, read [troubleshooting.md](references/troubleshooting.md).
 - For historical Markdown ledger migration policy, timestamp-source rules, and dry-run/import audit guidance, read [imports.md](references/imports.md).
-- For the staleness/supersession design (invalidation data model, background judge, disposition authority, edge-case state machine), read [staleness-design.md](references/staleness-design.md).
+- For the staleness/supersession design (invalidation data model, background judge, disposition authority, edge-case state machine), the review false-positive rubric, and how to retrace a conclusion's full lineage, read [staleness-design.md](references/staleness-design.md).

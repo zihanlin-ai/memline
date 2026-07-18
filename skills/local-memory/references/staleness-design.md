@@ -1,11 +1,16 @@
 # Staleness & Supersession Design for mem0-local
 
-Status: steps 1-4 implemented, MERGED to main of
+Status: steps 1-5 complete. Steps 1-4 MERGED to main of
 `.agent-memory/projects/mem0-local` (merge 0d5e8a1) and EXPOSED in the
 local-memory SKILL.md + MEMORY.md rules on 2026-07-17; the running daemon
-serves this code. Step 5 (full-store backlog pass over ~5.6k entries) not
-started. Judge eval gate: 24 labeled real pairs, accuracy 87.5%, SUPERSEDED
-precision 90% / recall 81.8% (`tools/stale_judge_eval.py`).
+serves this code. Step 5 (full-store backlog pass) completed 2026-07-17/18:
+~5602 entries probed oldest-first, 5-way parallel, human-reviewed dispositions
+(`tools/backlog_stale_scan.py`). Totals: confirmed 2087 + obsoleted-cascade
+1008 + merged 9 = 3104 invalidated; 364 dismissed as false positives. Observed
+FP rate 5-40% by content shape (ops-churn / correction-dense regions high;
+same-day infra-evolution and status-log chains low) — see §5.1 rubric.
+Judge eval gate: 24 labeled real pairs, accuracy 87.5%, SUPERSEDED precision
+90% / recall 81.8% (`tools/stale_judge_eval.py`).
 This file is the behavioral spec; update it if the design changes.
 
 ## 1. Problem & Requirements
@@ -176,6 +181,31 @@ gains one line: glance at `stale list` alongside the last-1-day listing.
   manual `--rerank` stays for deep digs). English-keyword query discipline
   stays (measured ~0.1 score penalty and worse ranking for Chinese queries).
 
+### 4.2 Lineage retrace (how a conclusion was reached)
+
+Invalidation deletes nothing, so any current conclusion can be traced back to
+every step that produced it, in both directions, from three append-only
+surfaces:
+
+1. **Per-memory metadata** — `superseded_by` (forward pointer), plus
+   `superseded_reason` / `superseded_at` / `invalidated_by_agent_id` /
+   `invalidated_session_id`. `get <id>` returns invalidated entries too;
+   `get --resolve-head <id>` walks pointers to the live head(s).
+2. **`stale.db` `pairs`** — reason-annotated edges `(old_id ← new_id, verdict,
+   confidence, disposition)`. Query `WHERE new_id=X` for the ancestors X
+   superseded and *why*, then recurse on those `old_id`s.
+3. **manifest `live-YYYY-MM.jsonl`** — append-only event stream: every
+   `invalidate` / `update` row carries `by_ids`, `reason`, timestamp, a full
+   text snapshot, and `payload_sha256`. This is the most complete surface and is
+   git-tracked, so lineage survives even a lost Qdrant store.
+
+Retrace: **backward** = walk `stale.db` pairs `new_id → old_ids` recursively
+(each edge has the reason); **forward** = follow `superseded_by` to the active
+tip. When you lack the id, start with `search "<topic>" --include-superseded` to
+surface the whole family, then trace from the active head. Dismissed pairs are
+NOT edges (distinct facts, no lineage link); only confirmed/obsoleted/merged
+form the DAG.
+
 ### 4.1 Agent-facing interface delta (what eventually gets exposed in skills)
 
 In-session agents learn nothing new: `add`/`search` calls are unchanged;
@@ -248,6 +278,40 @@ Few-shot examples must come from this store's real domain, e.g.:
 - "CURRENT as of ..." methodology note vs a new measurement → KEPT
   (method vs instance).
 
+## 5.1 Review rubric — recurring false positives
+
+Distilled from the 2026-07-18 backlog pass (364 dismissals). When the judge
+flags one of these, **dismiss (keep both)** — they are distinct facts, not a
+chain. A confident *confirm* needs the same slot with a genuinely newer value
+(state moved, measurement re-run under the SAME config, decision revised,
+path/owner changed) or a true duplicate (`merge`).
+
+- **Summary/rollup/status/uptime/concession entry vs a specific technical fact
+  it references** — the specific entry (config spec, formula, byte-level
+  root-cause, commit) carries detail the summary drops.
+- **Comparative / delta fact vs an absolute listing** — "N fields differ",
+  "identical to sibling", cosine/agreement numbers are analytical facts that an
+  absolute config dump does not replace.
+- **Evidence / measurement vs a later interpretation, ranking, or root-cause
+  conclusion** — evidence is durable; a conclusion never supersedes the data it
+  rests on.
+- **Diagnosis vs fix, or source-mechanism vs outcome** — complementary steps,
+  not one replacing the other.
+- **Framing / enumeration** (layered analysis, candidate lists, user-set
+  objectives) **vs a single narrower claim** about one item.
+- **Distinct config / host / kit / commit / dataset / experiment-run** conflated
+  on a shared topic keyword — different slots, results coexist.
+- **Same artifact at different locations** (local `/data` vs SFS backup) —
+  distinct references, both valid.
+- **User-set goal/policy or user-confirmed detail vs a later agent restatement
+  or method note.**
+- **Capture / experiment evidence vs an iteration-status log** that merely
+  cites it.
+
+Redundant multi-superseder pairs (many entries point at the same stale
+snapshot) need only ONE confirm to invalidate the snapshot; dismiss the rest so
+the surviving edge points at the best/current successor.
+
 **Evaluation set before wiring anything:** 30–50 hand-labeled pairs sampled
 from the store (the 2026-07-17 recall test already produced several). Rerun on
 every prompt/model change. Gate: precision on SUPERSEDED matters more than
@@ -305,7 +369,7 @@ review".
 | 2 | judge prompt + few-shots + 30–50 pair labeled eval set + eval runner | precision/recall gate passes with the chosen cheap model |
 | 3 | `stale_check` event type, pair cache, daemon consumer, judge-model config | one day of live adds; inspect suspicion quality |
 | 4 | `review --session`, `stale list`, disposition verbs, warning banner, MEMORY.md/skill rule updates | a real handoff end-to-end |
-| 5 | **full-store** backlog pass over all ~5.6k entries incl. the 2,526 ledger imports (decided 2026-07-17): batched judge runs in background; dispositions consumed in chunks during dedicated interactive sessions (per the disposition-authority rule, backlog confirm requires the user present) | rerun the recall regression; the 10-time-slice state query should return only current + flagged entries |
+| 5 | **DONE 2026-07-18.** full-store backlog pass over all ~5.6k entries incl. the 2,526 ledger imports: `tools/backlog_stale_scan.py` probed ~5602 oldest-first (5-way parallel); dispositions consumed batch-by-batch with the user present (per the disposition-authority rule). 3104 invalidated, 364 dismissed; FP rubric in §5.1 | open suspicions drained to 0; state queries now return current + flagged only |
 
 Implementation location (decided 2026-07-17): directly in the vendored
 mem0-local package; bump the version suffix to `+workspace.2`. Future
