@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
+import time
 import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from mem0_local.config import MANIFEST_DIR, MANIFEST_LOCK
 
@@ -87,3 +91,58 @@ def append_live_audit(
             fh.write(json.dumps(item, ensure_ascii=False, sort_keys=True, default=_json_default) + "\n")
 
     return {"path": str(path), "audit_id": item["audit_id"], "payload_sha256": item["payload_sha256"]}
+
+
+@dataclass
+class AuditSpan:
+    """Mutable record the caller fills in while the audited block runs."""
+
+    input_payload: dict[str, Any]
+    metadata: dict[str, Any] | None = None
+    scope: dict[str, Any] | None = None
+    result: Any = None
+
+
+@contextmanager
+def audited(
+    operation: str,
+    *,
+    input_payload: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    scope: dict[str, Any] | None = None,
+) -> Iterator[AuditSpan]:
+    """Audit one mutation: set ``span.result`` inside the block.
+
+    Success appends a manifest row with the result; an escaping exception
+    appends ``{"error": ...}`` (unless the caller already recorded a result)
+    and re-raises. On the failure path the manifest write itself is
+    best-effort so it can never mask the original error.
+    """
+    span = AuditSpan(input_payload=dict(input_payload or {}), metadata=metadata, scope=scope)
+    start = time.perf_counter()
+    started_at = datetime.now(timezone.utc).isoformat()
+    error: BaseException | None = None
+    try:
+        yield span
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        result = span.result
+        if error is not None and result is None:
+            result = {"error": str(error)}
+        try:
+            append_live_audit(
+                operation=operation,
+                input_payload=span.input_payload,
+                metadata=span.metadata,
+                result=result,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=int((time.perf_counter() - start) * 1000),
+                scope=span.scope or {},
+            )
+        except Exception as audit_exc:  # noqa: BLE001
+            if error is None:
+                raise
+            print(f"audit append failed for {operation}: {audit_exc}", file=sys.stderr)

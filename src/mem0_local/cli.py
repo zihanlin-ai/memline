@@ -18,7 +18,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from mem0_local.audit import append_live_audit
+from mem0_local.audit import audited
 from mem0_local.config import (
     COLLECTION,
     CONFIG_PATH,
@@ -41,7 +41,11 @@ from mem0_local.config import (
     VECTOR_STORE_PORT,
     WORKSPACE_ROOT,
 )
-from mem0_local.ops import dispatch as dispatch_op, op_timeout as daemon_operation_timeout
+from mem0_local.ops import (
+    dispatch as dispatch_op,
+    dispatch_queue,
+    op_timeout as daemon_operation_timeout,
+)
 from mem0_local.runtime import (
     get_client,
     normalize_items,
@@ -207,6 +211,14 @@ def execute(op: str, args: dict[str, Any]) -> Any:
     if used_daemon:
         return result
     return dispatch_op(memory_client(), op, args)
+
+
+def execute_queue(op: str, args: dict[str, Any]) -> Any:
+    """Queue-plane op: daemon when available, else the local event queue."""
+    used_daemon, result = maybe_daemon_request(op, args)
+    if used_daemon:
+        return result
+    return dispatch_queue(_event_queue_direct(), op, args)
 
 
 def confirm_destructive(prompt: str, force: bool) -> None:
@@ -733,40 +745,26 @@ def run_invalidate(
     raise_on_error: bool = False,
 ) -> dict[str, Any]:
     """Invalidate one memory, audited; per-id errors become result rows unless raising."""
-    start = time.perf_counter()
-    started_at = now_utc_iso()
     context = detect_writer_context()
-    actor_id = context.get("source") or MANUAL_SOURCE
-    session_id = context.get("session_id") or MANUAL_SESSION
     op_args = {
         "memory_id": memory_id,
         "by_ids": by_ids,
         "reason": reason,
-        "actor_id": actor_id,
-        "session_id": session_id,
+        "actor_id": context.get("source") or MANUAL_SOURCE,
+        "session_id": context.get("session_id") or MANUAL_SESSION,
     }
     error: Exception | None = None
-    try:
-        result = execute("invalidate", op_args)
-    except Exception as exc:  # noqa: BLE001 - audited below, surfaced per flag.
-        error = exc
-        result = {"id": memory_id, "invalidated": False, "error": str(exc)}
-    finished_at = now_utc_iso()
-    append_live_audit(
-        operation="invalidate",
-        input_payload=op_args,
-        metadata=None,
-        result=result,
-        started_at=started_at,
-        finished_at=finished_at,
-        duration_ms=int((time.perf_counter() - start) * 1000),
-        scope={},
-    )
+    with audited("invalidate", input_payload=op_args) as span:
+        try:
+            span.result = execute("invalidate", op_args)
+        except Exception as exc:  # noqa: BLE001 - audited, surfaced per flag.
+            error = exc
+            span.result = {"id": memory_id, "invalidated": False, "error": str(exc)}
     if error is not None and raise_on_error:
         if isinstance(error, click.ClickException):
             raise error
         raise click.ClickException(str(error)) from error
-    return result
+    return span.result
 
 
 @app.command()
@@ -795,8 +793,6 @@ def revive(
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Clear supersession state so a memory re-enters the default search pool."""
-    start = time.perf_counter()
-    started_at = now_utc_iso()
     context = detect_writer_context()
     op_args = {
         "memory_id": memory_id,
@@ -804,23 +800,13 @@ def revive(
         "session_id": context.get("session_id") or MANUAL_SESSION,
     }
     try:
-        result = execute("revive", op_args)
+        with audited("revive", input_payload=op_args) as span:
+            span.result = execute("revive", op_args)
+    except click.ClickException:
+        raise
     except Exception as exc:  # noqa: BLE001
-        if isinstance(exc, click.ClickException):
-            raise
         raise click.ClickException(str(exc)) from exc
-    finished_at = now_utc_iso()
-    append_live_audit(
-        operation="revive",
-        input_payload=op_args,
-        metadata=None,
-        result=result,
-        started_at=started_at,
-        finished_at=finished_at,
-        duration_ms=int((time.perf_counter() - start) * 1000),
-        scope={},
-    )
-    output(result, command="revive", fmt=chosen_format(output_format, json_flag))
+    output(span.result, command="revive", fmt=chosen_format(output_format, json_flag))
 
 
 def _interactive_tty() -> bool:
@@ -917,13 +903,20 @@ def stale_confirm(
                 "pass --force when the user has approved it out-of-band."
             )
     actor = context.get("source") or MANUAL_SOURCE
+    # Dispose first so invalidate's close_for_old does not relabel this pair
+    # as 'obsoleted'; reopen it if the invalidate then fails, so the pair
+    # stays reviewable instead of stranded as confirmed-but-not-invalidated.
     store.dispose(pair_id, "confirmed", disposed_by=actor)
-    result = run_invalidate(
-        pair["old_id"],
-        [pair["new_id"]],
-        reason=pair.get("reason") or f"confirmed staleness suspicion {pair_id}",
-        raise_on_error=True,
-    )
+    try:
+        result = run_invalidate(
+            pair["old_id"],
+            [pair["new_id"]],
+            reason=pair.get("reason") or f"confirmed staleness suspicion {pair_id}",
+            raise_on_error=True,
+        )
+    except Exception:
+        store.reopen(pair_id)
+        raise
     output(
         {"pair_id": pair_id, "disposition": "confirmed", "invalidate": result},
         command="stale-confirm",
@@ -951,19 +944,12 @@ def stale_dismiss(
         raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
     result: dict[str, Any] = {"pair_id": pair_id, "disposition": "dismissed"}
     if pin:
-        started_at = now_utc_iso()
-        start = time.perf_counter()
-        execute("stale_pin", {"memory_id": pair["old_id"]})
-        append_live_audit(
-            operation="stale_pin",
+        with audited(
+            "stale_pin",
             input_payload={"memory_id": pair["old_id"], "pair_id": pair_id},
-            metadata=None,
-            result={"pinned": True},
-            started_at=started_at,
-            finished_at=now_utc_iso(),
-            duration_ms=int((time.perf_counter() - start) * 1000),
-            scope={},
-        )
+        ) as span:
+            execute("stale_pin", {"memory_id": pair["old_id"]})
+            span.result = {"pinned": True}
         result["pinned"] = pair["old_id"]
     output(result, command="stale-dismiss", fmt=chosen_format(output_format, json_flag))
 
@@ -1002,30 +988,30 @@ def stale_merge(
             )
     new_id, old_id = pair["new_id"], pair["old_id"]
     # Mirrors the update command's metadata handling; audited as an update.
-    start = time.perf_counter()
-    started_at = now_utc_iso()
     existing = execute("get", {"memory_id": new_id})
     if not isinstance(existing, dict):
         raise click.ClickException(f"memory not found: {new_id}")
     meta = updated_memory_metadata(existing, {"merged_from": old_id})
-    update_result = execute(
-        "update", {"memory_id": new_id, "text": merged_text, "metadata": meta}
-    )
-    append_live_audit(
-        operation="update",
+    with audited(
+        "update",
         input_payload={"memory_id": new_id, "text": merged_text, "merge_pair_id": pair_id, "existing": existing},
         metadata=meta,
-        result=update_result,
-        started_at=started_at,
-        finished_at=now_utc_iso(),
-        duration_ms=int((time.perf_counter() - start) * 1000),
         scope=scope_dict(existing.get("user_id"), existing.get("agent_id"), None, existing.get("run_id")),
-    )
+    ) as span:
+        span.result = execute(
+            "update", {"memory_id": new_id, "text": merged_text, "metadata": meta}
+        )
     actor = context.get("source") or MANUAL_SOURCE
+    # Same rollback rule as confirm: reopen the pair if the invalidate fails
+    # (the consolidated update already landed and is retryable).
     store.dispose(pair_id, "merged", disposed_by=actor)
-    invalidate_result = run_invalidate(
-        old_id, [new_id], reason=f"merged into {new_id} (pair {pair_id})", raise_on_error=True
-    )
+    try:
+        invalidate_result = run_invalidate(
+            old_id, [new_id], reason=f"merged into {new_id} (pair {pair_id})", raise_on_error=True
+        )
+    except Exception:
+        store.reopen(pair_id)
+        raise
     output(
         {
             "pair_id": pair_id,
@@ -1148,7 +1134,6 @@ def add(
     or pass --wait for the synchronous path.
     """
     start = time.perf_counter()
-    started_at = now_utc_iso()
     infer = infer_opt if infer_opt is not None else bool(messages or file)
     supersede_ids = [s.strip() for s in (supersedes or "").split(",") if s.strip()]
     if supersede_ids and infer:
@@ -1207,25 +1192,8 @@ def add(
 
     result: Any = None
     add_error: Optional[Exception] = None
-    try:
-        result = execute(
-            "add",
-            {
-                "content": content,
-                "user_id": user_id,
-                "agent_id": agent_id,
-                "run_id": run_id,
-                "metadata": meta or None,
-                "infer": infer,
-            },
-        )
-    except Exception as exc:  # mem0ai>=2.0.11 raises on extraction failure; audit it before surfacing.
-        add_error = exc
-    if isinstance(result, dict):
-        result.setdefault("duration_ms", int((time.perf_counter() - start) * 1000))
-    finished_at = now_utc_iso()
-    append_live_audit(
-        operation="add",
+    with audited(
+        "add",
         input_payload={
             "text": text,
             "messages": messages,
@@ -1234,12 +1202,27 @@ def add(
             "infer": infer,
         },
         metadata=meta,
-        result={"error": str(add_error)} if add_error is not None else result,
-        started_at=started_at,
-        finished_at=finished_at,
-        duration_ms=int((time.perf_counter() - start) * 1000),
         scope=scope_dict(user_id, agent_id, app_id, run_id),
-    )
+    ) as span:
+        try:
+            result = execute(
+                "add",
+                {
+                    "content": content,
+                    "user_id": user_id,
+                    "agent_id": agent_id,
+                    "run_id": run_id,
+                    "metadata": meta or None,
+                    "infer": infer,
+                },
+            )
+        except Exception as exc:  # mem0 raises on extraction failure; audit it before surfacing.
+            add_error = exc
+            span.result = {"error": str(exc)}
+        else:
+            if isinstance(result, dict):
+                result.setdefault("duration_ms", int((time.perf_counter() - start) * 1000))
+            span.result = result
     if add_error is not None:
         if isinstance(add_error, click.ClickException):
             raise add_error
@@ -1408,18 +1391,14 @@ def update(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Update a memory by ID."""
-    start = time.perf_counter()
-    started_at = now_utc_iso()
     existing = execute("get", {"memory_id": memory_id})
     if not isinstance(existing, dict):
         raise click.ClickException(f"memory not found: {memory_id}")
     meta = updated_memory_metadata(
         existing, parse_json_or_key_values(metadata, option_name="--metadata")
     )
-    result = execute("update", {"memory_id": memory_id, "text": text, "metadata": meta})
-    finished_at = now_utc_iso()
-    append_live_audit(
-        operation="update",
+    with audited(
+        "update",
         input_payload={
             "memory_id": memory_id,
             "text": text,
@@ -1427,13 +1406,10 @@ def update(
             "existing": existing,
         },
         metadata=meta,
-        result=result,
-        started_at=started_at,
-        finished_at=finished_at,
-        duration_ms=int((time.perf_counter() - start) * 1000),
         scope=scope_dict(existing.get("user_id"), existing.get("agent_id"), None, existing.get("run_id")),
-    )
-    output(result, command="update", fmt=chosen_format(output_format, json_flag))
+    ) as span:
+        span.result = execute("update", {"memory_id": memory_id, "text": text, "metadata": meta})
+    output(span.result, command="update", fmt=chosen_format(output_format, json_flag))
 
 
 @app.command()
@@ -1449,8 +1425,6 @@ def delete(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Delete one memory, or delete all memories in a scope."""
-    start = time.perf_counter()
-    started_at = now_utc_iso()
     if all_:
         if dry_run:
             filters = filters_from_scope(user_id, agent_id, None, run_id)
@@ -1475,23 +1449,17 @@ def delete(
             return
         if not force:
             raise typer.BadParameter("--all requires --force.")
-        result = execute(
-            "delete",
-            {"all": True, "user_id": user_id, "agent_id": agent_id, "run_id": run_id},
-        )
-        finished_at = now_utc_iso()
-        append_live_audit(
-            operation="delete_all",
+        with audited(
+            "delete_all",
             input_payload={"all": True, "force": force},
-            metadata=None,
-            result=result,
-            started_at=started_at,
-            finished_at=finished_at,
-            duration_ms=int((time.perf_counter() - start) * 1000),
             scope=scope_dict(user_id, agent_id, None, run_id),
-        )
+        ) as span:
+            span.result = execute(
+                "delete",
+                {"all": True, "user_id": user_id, "agent_id": agent_id, "run_id": run_id},
+            )
         output(
-            result,
+            span.result,
             command="delete",
             fmt=chosen_format(output_format, json_flag),
             scope=scope_dict(user_id, agent_id, None, run_id),
@@ -1511,31 +1479,26 @@ def delete(
     if isinstance(existing, dict):
         preview = str(existing.get("memory") or existing.get("data") or "")[:80]
     confirm_destructive(f"Delete memory {memory_id} ({preview!r})?", force)
-    result = execute("delete", {"all": False, "memory_id": memory_id})
-    try:
-        from mem0_local.staleness import pair_store
-
-        pair_store().close_for_deleted_memory(memory_id)
-    except Exception:  # noqa: BLE001 - pair hygiene must never break delete.
-        pass
-    wrapped_result = {"id": memory_id, "result": result}
-    finished_at = now_utc_iso()
-    append_live_audit(
-        operation="delete",
+    with audited(
+        "delete",
         input_payload={"memory_id": memory_id, "existing": existing},
         metadata=(existing.get("metadata") if isinstance(existing, dict) else None),
-        result=wrapped_result,
-        started_at=started_at,
-        finished_at=finished_at,
-        duration_ms=int((time.perf_counter() - start) * 1000),
         scope=scope_dict(
             existing.get("user_id") if isinstance(existing, dict) else None,
             existing.get("agent_id") if isinstance(existing, dict) else None,
             None,
             existing.get("run_id") if isinstance(existing, dict) else None,
         ),
-    )
-    output(wrapped_result, command="delete", fmt=chosen_format(output_format, json_flag))
+    ) as span:
+        result = execute("delete", {"all": False, "memory_id": memory_id})
+        try:
+            from mem0_local.staleness import pair_store
+
+            pair_store().close_for_deleted_memory(memory_id)
+        except Exception:  # noqa: BLE001 - pair hygiene must never break delete.
+            pass
+        span.result = {"id": memory_id, "result": result}
+    output(span.result, command="delete", fmt=chosen_format(output_format, json_flag))
 
 
 @app.command()
@@ -1587,8 +1550,6 @@ def entity_delete(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Delete one entity-graph row (memories themselves are not touched)."""
-    start = time.perf_counter()
-    started_at = now_utc_iso()
     row = execute("entity_get", {"entity_id": entity_id})
     if not row:
         raise click.ClickException(f"Entity not found: {entity_id}")
@@ -1603,19 +1564,11 @@ def entity_delete(
     confirm_destructive(
         f"Delete entity {entity_id} ({row.get('data')!r}, {linked} linked memories)?", force
     )
-    result = execute("entity_delete", {"entity_id": entity_id})
-    finished_at = now_utc_iso()
-    append_live_audit(
-        operation="entity_delete",
-        input_payload={"entity_id": entity_id, "existing": row},
-        metadata=None,
-        result=result,
-        started_at=started_at,
-        finished_at=finished_at,
-        duration_ms=int((time.perf_counter() - start) * 1000),
-        scope={},
-    )
-    output(result, command="entity-delete", fmt=chosen_format(output_format, json_flag))
+    with audited(
+        "entity_delete", input_payload={"entity_id": entity_id, "existing": row}
+    ) as span:
+        span.result = execute("entity_delete", {"entity_id": entity_id})
+    output(span.result, command="entity-delete", fmt=chosen_format(output_format, json_flag))
 
 
 def _event_queue_direct():
@@ -1636,11 +1589,7 @@ def event_list(
     if status and status not in {"queued", "processing", "done", "failed"}:
         raise typer.BadParameter("--status must be one of: queued, processing, done, failed.")
     offset = (page - 1) * page_size
-    used_daemon, result = maybe_daemon_request(
-        "event_list", {"status": status, "limit": page_size, "offset": offset}
-    )
-    if not used_daemon:
-        result = _event_queue_direct().list(status=status, limit=page_size, offset=offset)
+    result = execute_queue("event_list", {"status": status, "limit": page_size, "offset": offset})
     output(result, command="event-list", fmt=chosen_format(output_format, json_flag))
 
 
@@ -1651,9 +1600,7 @@ def event_status(
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Show one background event, including its result or error."""
-    used_daemon, result = maybe_daemon_request("event_get", {"event_id": event_id})
-    if not used_daemon:
-        result = _event_queue_direct().get(event_id)
+    result = execute_queue("event_get", {"event_id": event_id})
     if not result:
         raise click.ClickException(f"Event not found: {event_id}")
     output(result, command="event-status", fmt=chosen_format(output_format, json_flag))
@@ -1666,11 +1613,7 @@ def event_retry(
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Requeue a failed event with its original input."""
-    used_daemon, result = maybe_daemon_request("event_retry", {"event_id": event_id})
-    if not used_daemon:
-        queue = _event_queue_direct()
-        result = {"event_id": event_id, "retried": queue.retry(event_id)}
-        queue.refresh_alerts()
+    result = execute_queue("event_retry", {"event_id": event_id})
     output(result, command="event-retry", fmt=chosen_format(output_format, json_flag))
 
 
@@ -1684,13 +1627,7 @@ def event_ack(
     """Acknowledge failed events so the CLI warning banner clears."""
     if not event_id and not all_:
         raise typer.BadParameter("Pass an event ID or --all.")
-    used_daemon, result = maybe_daemon_request(
-        "event_ack", {"event_id": None if all_ else event_id}
-    )
-    if not used_daemon:
-        queue = _event_queue_direct()
-        result = {"acked": queue.ack(None if all_ else event_id)}
-        queue.refresh_alerts()
+    result = execute_queue("event_ack", {"event_id": None if all_ else event_id})
     output(result, command="event-ack", fmt=chosen_format(output_format, json_flag))
 
 

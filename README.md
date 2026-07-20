@@ -25,6 +25,10 @@ For a new local workspace:
 
 ```bash
 python -m venv .agent-memory/store/venv
+# 1. Vendored mem0ai FIRST — the official PyPI mem0ai will not work
+#    (this repo depends on workspace modifications in vendor/mem0ai).
+.agent-memory/store/venv/bin/pip install "mem0ai @ git+https://github.com/linzihan-tech/mem0-local.git#subdirectory=vendor/mem0ai"
+# 2. The CLI package itself.
 .agent-memory/store/venv/bin/pip install git+https://github.com/linzihan-tech/mem0-local.git
 export MEM0_LOCAL_CONFIG="$PWD/.agent-memory/config.toml"
 ```
@@ -32,8 +36,11 @@ export MEM0_LOCAL_CONFIG="$PWD/.agent-memory/config.toml"
 For development from a checkout:
 
 ```bash
-.agent-memory/store/venv/bin/pip install -e .
+.agent-memory/store/venv/bin/pip install -e ./vendor/mem0ai -e .
 ```
+
+The CLI fails fast with a clear error if the official mem0ai package is
+installed instead of the vendored build.
 
 Put provider secrets in the configured env file, for example `.agent-memory/store/.env`. Do not commit that file.
 

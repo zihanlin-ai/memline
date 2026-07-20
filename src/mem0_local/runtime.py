@@ -115,9 +115,30 @@ def build_config() -> dict[str, Any]:
     }
 
 
+def check_vendored_mem0() -> None:
+    """Fail fast when the official PyPI mem0ai shadows the vendored build.
+
+    This package depends on workspace modifications that only exist in
+    ``vendor/mem0ai`` (version ``2.0.x+workspace.N``); the official package
+    imports fine but breaks at runtime in non-obvious ways.
+    """
+    try:
+        from importlib.metadata import version
+
+        installed = version("mem0ai")
+    except Exception:  # noqa: BLE001 - metadata missing: let the import decide.
+        return
+    if "workspace" not in installed:
+        raise RuntimeError(
+            f"mem0ai {installed} is the official package, but mem0-local requires "
+            "the vendored build. Install it first: pip install -e <repo>/vendor/mem0ai"
+        )
+
+
 def new_memory_client() -> Any:
     setup_env()
     acquire_cli_lock()
+    check_vendored_mem0()
     from mem0 import Memory
 
     return Memory.from_config(build_config())

@@ -90,7 +90,7 @@ def desired_patch(payload: dict[str, Any], *, backfilled_at: str) -> dict[str, A
     return {key: value for key, value in desired.items() if payload.get(key) != value}
 
 
-def project_fields(payload: dict[str, Any]) -> dict[str, Any]:
+def payload_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     keys = [
         "agent_id",
         "run_id",
@@ -154,9 +154,9 @@ def main() -> None:
             {
                 "memory_id": point.id,
                 "changed_fields": sorted(patch),
-                "before": project_fields(payload),
+                "before": payload_snapshot(payload),
                 "patch": patch,
-                "after": project_fields(after),
+                "after": payload_snapshot(after),
             }
         )
         if not args.dry_run:

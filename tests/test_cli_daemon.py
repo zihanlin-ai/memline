@@ -63,7 +63,7 @@ class CliDaemonTests(unittest.TestCase):
         with (
             patch.dict(cli.os.environ, {}, clear=False),
             patch.object(cli, "maybe_daemon_request", return_value=(True, result)),
-            patch.object(cli, "append_live_audit") as append_live_audit,
+            patch("mem0_local.audit.append_live_audit") as append_live_audit,
             patch.object(cli, "output") as output,
             patch.object(queue_mod, "EventQueue") as event_queue,
         ):

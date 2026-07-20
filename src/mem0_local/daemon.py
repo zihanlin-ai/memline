@@ -22,7 +22,13 @@ from pathlib import Path
 from typing import Any
 
 from mem0_local.audit import append_live_audit
-from mem0_local.ops import dispatch as dispatch_op, is_exclusive, is_llm_bound
+from mem0_local.ops import (
+    QUEUE_OPS,
+    dispatch as dispatch_op,
+    dispatch_queue,
+    is_exclusive,
+    is_llm_bound,
+)
 from mem0_local.queue import EventQueue
 from mem0_local.config import (
     LLM_APP_NAME,
@@ -206,23 +212,8 @@ def handle_request(client: Any, request: dict[str, Any]) -> dict[str, Any]:
         payload = {k: v for k, v in args.items() if k != "async"}
         event_id = _event_queue.enqueue("add", payload)
         return {"status": "ok", "result": {"event_id": event_id, "status": "queued"}}
-    if op in {"event_list", "event_get", "event_retry", "event_ack"}:
-        queue = _event_queue or EventQueue()
-        if op == "event_list":
-            result: Any = queue.list(
-                status=args.get("status"),
-                limit=args.get("limit", 50),
-                offset=args.get("offset", 0),
-            )
-        elif op == "event_get":
-            result = queue.get(args["event_id"])
-        elif op == "event_retry":
-            result = {"event_id": args["event_id"], "retried": queue.retry(args["event_id"])}
-            queue.refresh_alerts()
-        else:
-            result = {"acked": queue.ack(args.get("event_id"))}
-            queue.refresh_alerts()
-        return {"status": "ok", "result": result}
+    if op in QUEUE_OPS:
+        return {"status": "ok", "result": dispatch_queue(_event_queue or EventQueue(), op, args)}
 
     exclusive = is_exclusive(op, args)
 

@@ -8,10 +8,11 @@ LLM slot, whether it needs exclusive store access — lives in the same
 registry, so adding an op is one entry here instead of parallel edits in
 the CLI and the daemon.
 
-Queue-plane ops (async enqueue, event inspection) are not in this
-registry: they never touch the memory store and are handled by the daemon
-directly against its event queue. They appear only in
-``QUEUE_OP_TIMEOUTS`` for their transport timeout.
+Queue-plane ops (event inspection/retry/ack) never touch the memory
+store; they run against an :class:`~mem0_local.queue.EventQueue` via
+:func:`dispatch_queue` — again shared by the daemon and the CLI's direct
+path. Async enqueue itself stays in the daemon (it needs the daemon's
+queue instance to wake its workers).
 """
 
 from __future__ import annotations
@@ -185,11 +186,38 @@ OPS: dict[str, OpSpec] = {
     "entity_delete": OpSpec(_entity_delete, timeout=30.0),
 }
 
-QUEUE_OP_TIMEOUTS: dict[str, float] = {
-    "event_list": 30.0,
-    "event_get": 30.0,
-    "event_retry": 30.0,
-    "event_ack": 30.0,
+QUEUE_OP_TIMEOUT_SECONDS = 30.0
+
+
+def _event_list(queue: Any, args: dict[str, Any]) -> Any:
+    return queue.list(
+        status=args.get("status"),
+        limit=args.get("limit", 50),
+        offset=args.get("offset", 0),
+    )
+
+
+def _event_get(queue: Any, args: dict[str, Any]) -> Any:
+    return queue.get(args["event_id"])
+
+
+def _event_retry(queue: Any, args: dict[str, Any]) -> Any:
+    result = {"event_id": args["event_id"], "retried": queue.retry(args["event_id"])}
+    queue.refresh_alerts()
+    return result
+
+
+def _event_ack(queue: Any, args: dict[str, Any]) -> Any:
+    result = {"acked": queue.ack(args.get("event_id"))}
+    queue.refresh_alerts()
+    return result
+
+
+QUEUE_OPS: dict[str, Handler] = {
+    "event_list": _event_list,
+    "event_get": _event_get,
+    "event_retry": _event_retry,
+    "event_ack": _event_ack,
 }
 
 
@@ -198,6 +226,13 @@ def dispatch(client: Any, op: str, args: dict[str, Any]) -> Any:
     if spec is None:
         raise ValueError(f"Unsupported daemon op: {op}")
     return spec.handler(client, args)
+
+
+def dispatch_queue(queue: Any, op: str, args: dict[str, Any]) -> Any:
+    handler = QUEUE_OPS.get(op)
+    if handler is None:
+        raise ValueError(f"Unsupported queue op: {op}")
+    return handler(queue, args)
 
 
 def op_timeout(op: str, args: dict[str, Any]) -> float:
@@ -210,7 +245,9 @@ def op_timeout(op: str, args: dict[str, Any]) -> float:
     spec = OPS.get(op)
     if spec is not None:
         return spec.timeout(args) if callable(spec.timeout) else spec.timeout
-    return QUEUE_OP_TIMEOUTS.get(op, DEFAULT_TIMEOUT_SECONDS)
+    if op in QUEUE_OPS:
+        return QUEUE_OP_TIMEOUT_SECONDS
+    return DEFAULT_TIMEOUT_SECONDS
 
 
 def is_llm_bound(op: str, args: dict[str, Any]) -> bool:

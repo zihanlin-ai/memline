@@ -8,10 +8,13 @@ version = "0.2.0"
 description = "Local-first Mem0 CLI with Qdrant path storage and audit metadata."
 readme = "README.md"
 requires-python = ">=3.11"
+# NOTE: mem0ai is intentionally NOT listed here. This package requires the
+# vendored build in ./vendor/mem0ai (2.0.x+workspace.N); the official PyPI
+# package imports but breaks at runtime. Install the vendored package first
+# (see README); runtime.check_vendored_mem0() fails fast otherwise.
 dependencies = [
   "click",
   "fastembed",
-  "mem0ai>=2.0.11",
   "python-dotenv",
   "qdrant-client",
   "rich",

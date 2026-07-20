@@ -47,7 +47,7 @@ class EventQueueTests(unittest.TestCase):
 
     def test_retry_resets_failed_event(self) -> None:
         event_id = self.queue.enqueue("add", {"content": "x"})
-        item = self.queue.claim_next()
+        self.queue.claim_next()
         for _ in range(MAX_ATTEMPTS - 1):
             self.queue.fail(event_id, "boom", MAX_ATTEMPTS)
             break

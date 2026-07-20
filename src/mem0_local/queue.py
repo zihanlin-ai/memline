@@ -14,9 +14,11 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from mem0_local.config import STORE_DIR
+from mem0_local.sqlite_util import SqliteStore
 
 QUEUE_DB = STORE_DIR / "queue.db"
 ALERTS_FILE = STORE_DIR / "queue-alerts.json"
@@ -28,12 +30,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class EventQueue:
+class EventQueue(SqliteStore):
     def __init__(self, db_path: Any = None) -> None:
-        STORE_DIR.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path or QUEUE_DB), check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._lock = threading.Lock()
+        super().__init__(Path(db_path or QUEUE_DB))
         with self._lock:
             self._conn.execute(
                 """CREATE TABLE IF NOT EXISTS events (
@@ -80,10 +79,15 @@ class EventQueue:
                 return None
             self._conn.execute(
                 "UPDATE events SET status = 'processing', attempts = attempts + 1, updated_at = ? WHERE id = ?",
-                (_now(), row[0]),
+                (_now(), row["id"]),
             )
             self._conn.commit()
-        return {"id": row[0], "op": row[1], "args": json.loads(row[2]), "attempts": row[3] + 1}
+        return {
+            "id": row["id"],
+            "op": row["op"],
+            "args": json.loads(row["args_json"]),
+            "attempts": row["attempts"] + 1,
+        }
 
     def complete(self, event_id: str, result: Any) -> None:
         with self._lock:
@@ -140,29 +144,27 @@ class EventQueue:
     # -- inspection / management ------------------------------------------
 
     @staticmethod
-    def _row_to_dict(row: tuple) -> dict[str, Any]:
+    def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         item = {
-            "event_id": row[0],
-            "op": row[1],
-            "status": row[3],
-            "attempts": row[4],
-            "acked": bool(row[5]),
-            "created_at": row[6],
-            "updated_at": row[7],
-            "error": row[9],
+            "event_id": row["id"],
+            "op": row["op"],
+            "status": row["status"],
+            "attempts": row["attempts"],
+            "acked": bool(row["acked"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "error": row["error"],
         }
-        args = json.loads(row[2])
+        args = json.loads(row["args_json"])
         content = args.get("content")
         item["content_preview"] = str(content)[:120] if content is not None else None
-        item["result"] = json.loads(row[8]) if row[8] else None
+        item["result"] = json.loads(row["result_json"]) if row["result_json"] else None
         return item
-
-    _COLS = "id, op, args_json, status, attempts, acked, created_at, updated_at, result_json, error"
 
     def get(self, event_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(
-                f"SELECT {self._COLS} FROM events WHERE id = ?", (event_id,)
+                "SELECT * FROM events WHERE id = ?", (event_id,)
             ).fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -171,10 +173,10 @@ class EventQueue:
             row = self._conn.execute(
                 "SELECT args_json FROM events WHERE id = ?", (event_id,)
             ).fetchone()
-        return json.loads(row[0]) if row else None
+        return json.loads(row["args_json"]) if row else None
 
     def list(self, status: str | None = None, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
-        query = f"SELECT {self._COLS} FROM events"
+        query = "SELECT * FROM events"
         params: list[Any] = []
         if status:
             query += " WHERE status = ?"
@@ -220,20 +222,21 @@ class EventQueue:
         """Publish unacknowledged-failure state for the CLI banner."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT COUNT(*), MAX(updated_at) FROM events WHERE status = 'failed' AND acked = 0"
+                "SELECT COUNT(*) AS n, MAX(updated_at) AS latest_at "
+                "FROM events WHERE status = 'failed' AND acked = 0"
             ).fetchone()
             latest = self._conn.execute(
                 "SELECT error FROM events WHERE status = 'failed' AND acked = 0 "
                 "ORDER BY updated_at DESC LIMIT 1"
             ).fetchone()
-        count = row[0] if row else 0
+        count = row["n"] if row else 0
         if count:
             ALERTS_FILE.write_text(
                 json.dumps(
                     {
                         "failed_unacked": count,
-                        "latest_error": (latest[0] if latest else None),
-                        "updated_at": row[1],
+                        "latest_error": (latest["error"] if latest else None),
+                        "updated_at": row["latest_at"],
                     }
                 )
             )

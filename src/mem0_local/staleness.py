@@ -21,7 +21,6 @@ store path.
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -29,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mem0_local.config import STORE_DIR
+from mem0_local.sqlite_util import SqliteStore
 
 SUPERSEDED_BY = "superseded_by"
 SUPERSEDED_AT = "superseded_at"
@@ -482,7 +482,7 @@ def pair_store(path: Path | None = None) -> "PairStore":
         return _pair_store
 
 
-class PairStore:
+class PairStore(SqliteStore):
     """Append-only suspicion-pair evidence rows (design §2.2).
 
     A pair is uniquely identified by ``(new_id, old_id, old_text_hash)`` —
@@ -492,14 +492,10 @@ class PairStore:
     """
 
     def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._lock = threading.Lock()
+        super().__init__(path)
         with self._lock:
             self._conn.executescript(
                 """
-                PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS pairs (
                     pair_id       TEXT PRIMARY KEY,
                     new_id        TEXT NOT NULL,
@@ -569,19 +565,6 @@ class PairStore:
             self._conn.commit()
         row["inserted"] = cursor.rowcount > 0
         return row
-
-    def judged_pairs(self, new_id: str, candidates: list[tuple[str, str]]) -> set[str]:
-        """Return old_ids already judged for (new_id, old_id, hash(old_text))."""
-        judged: set[str] = set()
-        with self._lock:
-            for old_id, old_text in candidates:
-                cur = self._conn.execute(
-                    "SELECT 1 FROM pairs WHERE new_id=? AND old_id=? AND old_text_hash=?",
-                    (new_id, old_id, text_hash(old_text)),
-                )
-                if cur.fetchone():
-                    judged.add(old_id)
-        return judged
 
     def judged_either(
         self, probe_id: str, probe_text: str, candidates: list[tuple[str, str]]
@@ -656,6 +639,20 @@ class PairStore:
                 WHERE pair_id=? AND disposition='open'
                 """,
                 (disposition, disposed_by, _now_iso(), pair_id),
+            )
+            self._conn.commit()
+        return cursor.rowcount > 0
+
+    def reopen(self, pair_id: str) -> bool:
+        """Return a disposed pair to ``open`` (rollback when the follow-up
+        store mutation of a confirm/merge failed after disposal)."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE pairs SET disposition='open', disposed_by=NULL, disposed_at=NULL
+                WHERE pair_id=? AND disposition!='open'
+                """,
+                (pair_id,),
             )
             self._conn.commit()
         return cursor.rowcount > 0

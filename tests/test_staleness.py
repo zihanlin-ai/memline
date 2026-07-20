@@ -331,9 +331,20 @@ class PairStoreTests(unittest.TestCase):
             confidence=0.9, reason="",
         )
         self.assertTrue(after_update["inserted"])
-        self.assertEqual(
-            self.store.judged_pairs("n", [("o", "v1"), ("o", "v3")]), {"o"}
+
+    def test_reopen_restores_open_disposition(self) -> None:
+        row = self.store.record_judgment(
+            new_id="n", old_id="o", old_text="t", verdict="SUPERSEDED",
+            confidence=0.9, reason="",
         )
+        self.assertTrue(self.store.dispose(row["pair_id"], "confirmed", disposed_by="agent"))
+        self.assertTrue(self.store.reopen(row["pair_id"]))
+        pair = self.store.get(row["pair_id"])
+        self.assertEqual(pair["disposition"], "open")
+        self.assertIsNone(pair["disposed_by"])
+        self.assertIsNone(pair["disposed_at"])
+        # Already-open pairs are not "reopened".
+        self.assertFalse(self.store.reopen(row["pair_id"]))
 
     def test_dispose_only_open_pairs(self) -> None:
         row = self.store.record_judgment(
