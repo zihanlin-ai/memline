@@ -22,29 +22,19 @@ from pathlib import Path
 from typing import Any
 
 from mem0_local.audit import append_live_audit
+from mem0_local.ops import dispatch as dispatch_op, is_exclusive, is_llm_bound
 from mem0_local.queue import EventQueue
 from mem0_local.config import (
-    EMBEDDING_DIMS,
-    EMBEDDING_MODEL,
-    EMBEDDING_PROVIDER,
-    ENV_FILE,
-    FASTEMBED_CACHE,
-    HISTORY_DB,
     LLM_APP_NAME,
     LLM_BASE_URL,
     LLM_MODEL,
-    LLM_PROVIDER,
     LLM_SITE_URL,
-    LOCK_FILE,
-    MEM0_DIR,
-    MEM0_HOME,
-    QDRANT_DIR,
     STORE_DIR,
     VECTOR_STORE_HOST,
     VECTOR_STORE_MODE,
     VECTOR_STORE_PORT,
-    vector_store_config,
 )
+from mem0_local.runtime import new_memory_client
 
 SOCKET_PATH = STORE_DIR / "daemon.sock"
 PID_PATH = STORE_DIR / "daemon.pid"
@@ -59,7 +49,6 @@ MAX_WORKERS = int(os.environ.get("MEM0_LOCAL_DAEMON_WORKERS", "32"))
 LLM_CONCURRENCY = int(os.environ.get("MEM0_LOCAL_LLM_CONCURRENCY", "4"))
 ASYNC_WORKERS = int(os.environ.get("MEM0_LOCAL_ASYNC_WORKERS", "2"))
 
-_lock_handle = None
 _lifetime_lock_handle = None
 _event_queue: EventQueue | None = None
 
@@ -203,93 +192,6 @@ class DaemonUnavailable(RuntimeError):
     """Raised when the local daemon is not accepting requests."""
 
 
-def setup_env() -> None:
-    for path in (QDRANT_DIR, MEM0_DIR, MEM0_HOME, FASTEMBED_CACHE):
-        path.mkdir(parents=True, exist_ok=True)
-
-    os.environ.setdefault("HOME", str(MEM0_HOME))
-    os.environ.setdefault("MEM0_DIR", str(MEM0_DIR))
-    os.environ.setdefault("FASTEMBED_CACHE_PATH", str(FASTEMBED_CACHE))
-    os.environ.setdefault("MEM0_TELEMETRY", "False")
-
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    load_dotenv(ENV_FILE)
-
-
-def acquire_cli_lock() -> None:
-    global _lock_handle
-    if _lock_handle is not None:
-        return
-    STORE_DIR.mkdir(parents=True, exist_ok=True)
-    _lock_handle = LOCK_FILE.open("a+")
-    try:
-        import fcntl
-
-        fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_EX)
-    except ImportError:
-        return
-
-
-def build_config() -> dict[str, Any]:
-    openrouter_llm = {
-        "provider": "openai",
-        "config": {
-            "model": LLM_MODEL,
-            "openrouter_base_url": LLM_BASE_URL,
-            "site_url": LLM_SITE_URL,
-            "app_name": LLM_APP_NAME,
-            "temperature": 0.0,
-            "max_tokens": 2000,
-            "top_p": 0.1,
-            "is_reasoning_model": False,
-        },
-    }
-
-    return {
-        "vector_store": vector_store_config(),
-        "embedder": {
-            "provider": EMBEDDING_PROVIDER,
-            "config": {
-                "model": EMBEDDING_MODEL,
-                "embedding_dims": EMBEDDING_DIMS,
-            },
-        },
-        "llm": openrouter_llm,
-        "reranker": {
-            "provider": "llm_reranker",
-            "config": {
-                "top_k": 8,
-                "temperature": 0.0,
-                "max_tokens": 100,
-                "llm": openrouter_llm,
-            },
-        },
-        "history_db_path": str(HISTORY_DB),
-    }
-
-
-def memory_client():
-    setup_env()
-    acquire_cli_lock()
-    from mem0 import Memory
-
-    return Memory.from_config(build_config())
-
-
-def normalize_items(data: Any) -> list[dict[str, Any]]:
-    if isinstance(data, list):
-        return [x for x in data if isinstance(x, dict)]
-    if isinstance(data, dict):
-        for key in ("results", "memories"):
-            value = data.get(key)
-            if isinstance(value, list):
-                return [x for x in value if isinstance(x, dict)]
-    return []
-
-
 def handle_request(client: Any, request: dict[str, Any]) -> dict[str, Any]:
     op = request.get("op")
     args = request.get("args") or {}
@@ -322,128 +224,22 @@ def handle_request(client: Any, request: dict[str, Any]) -> dict[str, Any]:
             queue.refresh_alerts()
         return {"status": "ok", "result": result}
 
-    exclusive = op == "delete" and bool(args.get("all"))
-    llm_bound = (op == "add" and args.get("infer", True)) or (op == "search" and args.get("rerank"))
+    exclusive = is_exclusive(op, args)
 
     if exclusive:
         _store_gate.acquire_exclusive()
     else:
         _store_gate.acquire_shared()
     try:
-        if llm_bound:
+        if is_llm_bound(op, args):
             with _llm_slots:
-                return _dispatch(client, op, args)
-        return _dispatch(client, op, args)
+                return {"status": "ok", "result": dispatch_op(client, op, args)}
+        return {"status": "ok", "result": dispatch_op(client, op, args)}
     finally:
         if exclusive:
             _store_gate.release_exclusive()
         else:
             _store_gate.release_shared()
-
-
-def _dispatch(client: Any, op: str, args: dict[str, Any]) -> dict[str, Any]:
-    started = time.perf_counter()
-
-    if op == "get":
-        result = client.get(args["memory_id"])
-    elif op == "search":
-        from mem0_local.staleness import search_with_staleness
-
-        result = search_with_staleness(
-            client,
-            query=args["query"],
-            top_k=args["top_k"],
-            filters=args["filters"],
-            threshold=args["threshold"],
-            rerank=args["rerank"],
-            keyword=args.get("keyword", False),
-            explain=args["explain"],
-            include_superseded=args.get("include_superseded", False),
-        )
-    elif op == "list":
-        raw = client.get_all(filters=args["filters"], top_k=args["top_k"])
-        items = normalize_items(raw)
-        result = items[args["start"] : args["end"]]
-    elif op == "add":
-        result = client.add(
-            args["content"],
-            user_id=args["user_id"],
-            agent_id=args["agent_id"],
-            run_id=args["run_id"],
-            metadata=args["metadata"],
-            infer=args["infer"],
-        )
-        if isinstance(result, dict):
-            result.setdefault("duration_ms", int((time.perf_counter() - started) * 1000))
-    elif op == "update":
-        result = client.update(args["memory_id"], args["text"], metadata=args["metadata"])
-    elif op == "delete":
-        if args.get("all"):
-            result = client.delete_all(
-                user_id=args["user_id"],
-                agent_id=args.get("agent_id"),
-                run_id=args.get("run_id"),
-            )
-        else:
-            result = client.delete(args["memory_id"])
-    elif op == "history":
-        result = client.history(args["memory_id"])
-    elif op == "invalidate":
-        from mem0_local.staleness import invalidate
-
-        result = invalidate(
-            client,
-            args["memory_id"],
-            args["by_ids"],
-            reason=args.get("reason"),
-            actor_id=args.get("actor_id"),
-            session_id=args.get("session_id"),
-        )
-    elif op == "revive":
-        from mem0_local.staleness import revive
-
-        result = revive(
-            client,
-            args["memory_id"],
-            actor_id=args.get("actor_id"),
-            session_id=args.get("session_id"),
-        )
-    elif op == "stale_pin":
-        client.vector_store.update(
-            vector_id=args["memory_id"], vector=None, payload={"stale_check_pin": True}
-        )
-        result = {"id": args["memory_id"], "pinned": True}
-    elif op == "resolve_head":
-        from mem0_local.staleness import resolve_head
-
-        def _payload(mid: str):
-            point = client.vector_store.get(mid)
-            payload = getattr(point, "payload", None) if point is not None else None
-            return dict(payload) if payload else ({} if point is not None else None)
-
-        result = resolve_head(_payload, args["memory_id"])
-    elif op == "entity_list":
-        from mem0_local.entity_ops import list_entities
-
-        rows = list_entities(
-            client.entity_store,
-            entity_type=args.get("entity_type"),
-            contains=args.get("contains"),
-            scan_limit=args.get("scan_limit", 50000),
-        )
-        result = rows[args.get("start", 0) : args.get("end")]
-    elif op == "entity_get":
-        from mem0_local.entity_ops import row_to_dict
-
-        row = client.entity_store.get(args["entity_id"])
-        result = row_to_dict(row) if row else None
-    elif op == "entity_delete":
-        client.entity_store.delete(args["entity_id"])
-        result = {"id": args["entity_id"], "deleted": True}
-    else:
-        raise ValueError(f"Unsupported daemon op: {op}")
-
-    return {"status": "ok", "result": result}
 
 
 def read_json_line(conn: socket.socket) -> dict[str, Any]:
@@ -483,10 +279,9 @@ def _process_event(client: Any, queue: EventQueue, item: dict[str, Any]) -> None
     try:
         if args.get("infer", True):
             with _llm_slots:
-                result = _dispatch(client, "add", args)
+                result = dispatch_op(client, "add", args)
         else:
-            result = _dispatch(client, "add", args)
-        result = result.get("result") if isinstance(result, dict) and "result" in result else result
+            result = dispatch_op(client, "add", args)
     except Exception as exc:  # noqa: BLE001 - failures become event state.
         error = str(exc)
     finally:
@@ -649,7 +444,7 @@ def serve() -> None:
     SOCKET_PATH.chmod(0o600)
 
     _ensure_qdrant()
-    client = memory_client()
+    client = new_memory_client()
     _serialize_spacy_inference()
     _prewarm(client)
 

@@ -13,13 +13,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from mem0_local import cli as mem0_memory
+from mem0_local.config import (
+    LOCAL_TZ,
+    MEMORY_ROOT,
+    MEMORY_SCHEMA_VERSION,
+    WORKSPACE_ROOT,
+)
+from mem0_local.runtime import get_client, require_llm_api_key
 
 
-ROOT = mem0_memory.ROOT
-MEMORY_ROOT = mem0_memory.MEMORY_ROOT
+ROOT = WORKSPACE_ROOT
 MANIFEST_DIR = MEMORY_ROOT / "manifests"
-LOCAL_TZ = timezone(timedelta(hours=8))
 
 
 @dataclass
@@ -332,7 +336,8 @@ def main() -> None:
             print(json.dumps({"ledger_id": chunk.ledger_id, "preview": preview}, ensure_ascii=False))
         return
 
-    client = mem0_memory.memory_client()
+    require_llm_api_key()
+    client = get_client()
     imported_at = datetime.now(timezone.utc).isoformat()
     run_id = args.run_id or f"ledger-{month}"
     for index, (sequence, chunk) in enumerate(pending, 1):
@@ -342,7 +347,7 @@ def main() -> None:
         metadata["session_id"] = run_id
         metadata["writer_agent_id"] = args.agent_id
         metadata["origin"] = "ledger_import"
-        metadata["memory_schema_version"] = mem0_memory.MEMORY_SCHEMA_VERSION
+        metadata["memory_schema_version"] = MEMORY_SCHEMA_VERSION
         metadata["imported_at"] = imported_at
         metadata["ingested_at"] = imported_at
         metadata["created_at"] = timestamp

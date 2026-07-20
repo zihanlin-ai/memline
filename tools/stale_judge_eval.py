@@ -134,7 +134,7 @@ def build(pairs_path: Path) -> None:
 
 def make_llm():
     sys.path.insert(0, str(HERE.parent / "src"))
-    from mem0_local.cli import setup_env
+    from mem0_local.runtime import setup_env
     from mem0_local.config import (
         LLM_APP_NAME,
         LLM_BASE_URL,

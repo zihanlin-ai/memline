@@ -7,6 +7,12 @@
 The abstraction is split into four boundaries:
 
 - Package code: command behavior, metadata policy, config parsing, import helpers.
+  Internally, `runtime.py` owns bootstrap (env setup, cross-process lock, Mem0
+  client build) and `ops.py` is the single registry of store operations: the
+  CLI's direct path and the daemon execute the same handlers, and per-op
+  transport metadata (timeout, LLM slot, exclusive store access) lives in the
+  same registry. Adding an op means one entry in `ops.py`, not parallel edits
+  in `cli.py` and `daemon.py`.
 - Workspace profile: absolute local paths, collection name, model/provider settings.
 - Runtime store: Qdrant path data, Mem0 history DB, model cache, venv, lock file, and secrets.
 - Agent discovery: skill docs and wrappers that tell Codex/Claude to call `mem0-local`.

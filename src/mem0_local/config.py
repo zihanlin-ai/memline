@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
 
 
 LOCAL_TZ_OFFSET_HOURS = 8
+LOCAL_TZ = timezone(timedelta(hours=LOCAL_TZ_OFFSET_HOURS))
 
 
 def _load_toml(path: Path | None) -> dict[str, Any]:

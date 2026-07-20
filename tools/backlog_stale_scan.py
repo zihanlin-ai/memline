@@ -90,7 +90,7 @@ def save_progress(probed: set[str]) -> None:
 
 
 def make_judge_llm():
-    from mem0_local.cli import setup_env
+    from mem0_local.runtime import setup_env
     from mem0_local.config import LLM_APP_NAME, LLM_BASE_URL, LLM_MODEL, LLM_SITE_URL
 
     setup_env()

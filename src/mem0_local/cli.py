@@ -9,8 +9,7 @@ import re
 import stat
 import sys
 import time
-import warnings
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -27,33 +26,30 @@ from mem0_local.config import (
     EMBEDDING_DIMS,
     EMBEDDING_MODEL,
     EMBEDDING_PROVIDER,
-    ENV_FILE,
-    FASTEMBED_CACHE,
     HISTORY_DB,
     LLM_API_KEY_ENV,
-    LLM_APP_NAME,
-    LLM_BASE_URL,
     LLM_MODEL,
+    LLM_BASE_URL,
     LLM_PROVIDER,
-    LLM_SITE_URL,
-    LOCK_FILE,
+    LOCAL_TZ,
     MANUAL_SESSION,
     MANUAL_SOURCE,
-    MEMORY_ROOT,
     MEMORY_SCHEMA_VERSION,
-    MEM0_DIR,
-    MEM0_HOME,
     QDRANT_DIR,
-    STORE_DIR,
     VECTOR_STORE_HOST,
     VECTOR_STORE_MODE,
     VECTOR_STORE_PORT,
     WORKSPACE_ROOT,
-    vector_store_config,
+)
+from mem0_local.ops import dispatch as dispatch_op, op_timeout as daemon_operation_timeout
+from mem0_local.runtime import (
+    get_client,
+    normalize_items,
+    require_llm_api_key,
+    setup_env,
 )
 
 ROOT = WORKSPACE_ROOT
-LOCAL_TZ = timezone(timedelta(hours=8))
 
 console = Console()
 err_console = Console(stderr=True)
@@ -75,81 +71,10 @@ stale_app = typer.Typer(help="Inspect and dispose staleness suspicions (advisory
 app.add_typer(stale_app, name="stale")
 
 agent_mode = False
-lock_handle = None
-
-
-def setup_env() -> None:
-    warnings.filterwarnings("ignore", message="Payload indexes have no effect in the local Qdrant.*")
-
-    for path in (QDRANT_DIR, MEM0_DIR, MEM0_HOME, FASTEMBED_CACHE):
-        path.mkdir(parents=True, exist_ok=True)
-
-    os.environ.setdefault("HOME", str(MEM0_HOME))
-    os.environ.setdefault("MEM0_DIR", str(MEM0_DIR))
-    os.environ.setdefault("FASTEMBED_CACHE_PATH", str(FASTEMBED_CACHE))
-    os.environ.setdefault("MEM0_TELEMETRY", "False")
-
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    load_dotenv(ENV_FILE)
-
-
-def acquire_cli_lock() -> None:
-    """Serialize local Qdrant path access across CLI processes."""
-    global lock_handle
-    if lock_handle is not None:
-        return
-    STORE_DIR.mkdir(parents=True, exist_ok=True)
-    lock_handle = LOCK_FILE.open("a+")
-    try:
-        import fcntl
-
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-    except ImportError:
-        return
-
-
-def build_config() -> dict[str, Any]:
-    openrouter_llm = {
-        "provider": "openai",
-        "config": {
-            "model": LLM_MODEL,
-            "openrouter_base_url": LLM_BASE_URL,
-            "site_url": LLM_SITE_URL,
-            "app_name": LLM_APP_NAME,
-            "temperature": 0.0,
-            "max_tokens": 2000,
-            "top_p": 0.1,
-            "is_reasoning_model": False,
-        },
-    }
-
-    return {
-        "vector_store": vector_store_config(),
-        "embedder": {
-            "provider": EMBEDDING_PROVIDER,
-            "config": {
-                "model": EMBEDDING_MODEL,
-                "embedding_dims": EMBEDDING_DIMS,
-            },
-        },
-        "llm": openrouter_llm,
-        "reranker": {
-            "provider": "llm_reranker",
-            "config": {
-                "top_k": 8,
-                "temperature": 0.0,
-                "max_tokens": 100,
-                "llm": openrouter_llm,
-            },
-        },
-        "history_db_path": str(HISTORY_DB),
-    }
 
 
 def memory_client():
+    """Build (or reuse) the direct-path client, with CLI-side guard checks."""
     setup_env()
     if os.environ.get("MEM0_LOCAL_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
         try:
@@ -161,15 +86,11 @@ def memory_client():
             raise
         except Exception:
             pass
-    acquire_cli_lock()
-    if not os.environ.get(LLM_API_KEY_ENV):
-        raise typer.BadParameter(
-            f"{LLM_API_KEY_ENV} is not set. Export it or put it in the configured env file."
-        )
-
-    from mem0 import Memory
-
-    return Memory.from_config(build_config())
+    try:
+        require_llm_api_key()
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    return get_client()
 
 
 def output(data: Any, *, command: str, fmt: str = "text", scope: dict[str, str] | None = None) -> None:
@@ -276,36 +197,16 @@ def maybe_daemon_request(op: str, args: dict[str, Any]) -> tuple[bool, Any]:
         raise click.ClickException(f"mem0-local daemon {op} failed: {exc}") from exc
 
 
-def daemon_operation_timeout(op: str, args: dict[str, Any]) -> float:
-    raw = os.environ.get("MEM0_LOCAL_DAEMON_TIMEOUT")
-    if raw:
-        try:
-            return float(raw)
-        except ValueError:
-            pass
-    if op == "search":
-        return 180.0 if args.get("rerank") else 30.0
-    if op == "add":
-        return 300.0 if args.get("infer") else 30.0
-    if op in {
-        "get",
-        "list",
-        "delete",
-        "history",
-        "invalidate",
-        "revive",
-        "resolve_head",
-        "stale_pin",
-        "entity_list",
-        "entity_get",
-        "entity_delete",
-        "event_list",
-        "event_get",
-        "event_retry",
-        "event_ack",
-    }:
-        return 30.0
-    return 300.0
+def execute(op: str, args: dict[str, Any]) -> Any:
+    """Run one store op through the daemon when available, else in-process.
+
+    Both paths run the same handler from ``mem0_local.ops``, so daemon and
+    direct execution cannot drift apart semantically.
+    """
+    used_daemon, result = maybe_daemon_request(op, args)
+    if used_daemon:
+        return result
+    return dispatch_op(memory_client(), op, args)
 
 
 def confirm_destructive(prompt: str, force: bool) -> None:
@@ -585,17 +486,6 @@ def render_text(command: str, data: Any) -> None:
     console.print_json(json.dumps(data, ensure_ascii=False, default=str))
 
 
-def normalize_items(data: Any) -> list[dict[str, Any]]:
-    if isinstance(data, list):
-        return [x for x in data if isinstance(x, dict)]
-    if isinstance(data, dict):
-        for key in ("results", "memories"):
-            value = data.get(key)
-            if isinstance(value, list):
-                return [x for x in value if isinstance(x, dict)]
-    return []
-
-
 def format_score(item: dict[str, Any]) -> str:
     score = item.get("score", item.get("rerank_score"))
     if isinstance(score, int | float):
@@ -835,40 +725,6 @@ def status(
     output(data, command="status", fmt=chosen_format(output_format, json_flag))
 
 
-def run_staleness_op(op: str, args: dict[str, Any]) -> Any:
-    """Route a staleness op through the daemon, falling back to the direct path."""
-    used_daemon, result = maybe_daemon_request(op, args)
-    if used_daemon:
-        return result
-    from mem0_local import staleness
-
-    client = memory_client()
-    if op == "invalidate":
-        return staleness.invalidate(
-            client,
-            args["memory_id"],
-            args["by_ids"],
-            reason=args.get("reason"),
-            actor_id=args.get("actor_id"),
-            session_id=args.get("session_id"),
-        )
-    if op == "revive":
-        return staleness.revive(
-            client,
-            args["memory_id"],
-            actor_id=args.get("actor_id"),
-            session_id=args.get("session_id"),
-        )
-    if op == "resolve_head":
-        def _payload(mid: str):
-            point = client.vector_store.get(mid)
-            payload = getattr(point, "payload", None) if point is not None else None
-            return dict(payload) if payload else ({} if point is not None else None)
-
-        return staleness.resolve_head(_payload, args["memory_id"])
-    raise click.ClickException(f"unsupported staleness op: {op}")
-
-
 def run_invalidate(
     memory_id: str,
     by_ids: list[str],
@@ -891,7 +747,7 @@ def run_invalidate(
     }
     error: Exception | None = None
     try:
-        result = run_staleness_op("invalidate", op_args)
+        result = execute("invalidate", op_args)
     except Exception as exc:  # noqa: BLE001 - audited below, surfaced per flag.
         error = exc
         result = {"id": memory_id, "invalidated": False, "error": str(exc)}
@@ -948,7 +804,7 @@ def revive(
         "session_id": context.get("session_id") or MANUAL_SESSION,
     }
     try:
-        result = run_staleness_op("revive", op_args)
+        result = execute("revive", op_args)
     except Exception as exc:  # noqa: BLE001
         if isinstance(exc, click.ClickException):
             raise
@@ -973,9 +829,7 @@ def _interactive_tty() -> bool:
 
 def _fetch_memory(memory_id: str) -> dict[str, Any] | None:
     try:
-        used_daemon, row = maybe_daemon_request("get", {"memory_id": memory_id})
-        if not used_daemon:
-            row = memory_client().get(memory_id)
+        row = execute("get", {"memory_id": memory_id})
         return row if isinstance(row, dict) else None
     except Exception:  # noqa: BLE001 - preview only.
         return None
@@ -992,6 +846,29 @@ def _enrich_pairs(pairs: list[dict[str, Any]], *, preview_chars: int = 160) -> l
             )
         enriched.append(item)
     return enriched
+
+
+def updated_memory_metadata(
+    existing: dict[str, Any], extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Metadata for rewriting an existing memory: preserve creation
+    timestamps, record the updater (used by both `update` and `stale merge`)."""
+    existing_meta = existing.get("metadata") or {}
+    meta = dict(existing_meta)
+    if extra:
+        meta.update(extra)
+    if existing.get("created_at"):
+        meta["created_at"] = existing["created_at"]
+    meta.setdefault(
+        "ledger_timestamp",
+        existing_meta.get("ledger_timestamp") or existing.get("created_at") or now_utc_iso(),
+    )
+    context = detect_writer_context()
+    meta.setdefault("memory_schema_version", MEMORY_SCHEMA_VERSION)
+    meta["updated_by_cli_at"] = now_utc_iso()
+    meta["last_updated_by_agent_id"] = context.get("source") or MANUAL_SOURCE
+    meta["last_updated_session_id"] = context.get("session_id") or MANUAL_SESSION
+    return meta
 
 
 @stale_app.command("list")
@@ -1076,11 +953,7 @@ def stale_dismiss(
     if pin:
         started_at = now_utc_iso()
         start = time.perf_counter()
-        used_daemon, _ = maybe_daemon_request("stale_pin", {"memory_id": pair["old_id"]})
-        if not used_daemon:
-            memory_client().vector_store.update(
-                vector_id=pair["old_id"], vector=None, payload={"stale_check_pin": True}
-            )
+        execute("stale_pin", {"memory_id": pair["old_id"]})
         append_live_audit(
             operation="stale_pin",
             input_payload={"memory_id": pair["old_id"], "pair_id": pair_id},
@@ -1128,34 +1001,16 @@ def stale_merge(
                 "--force when the user has approved it out-of-band."
             )
     new_id, old_id = pair["new_id"], pair["old_id"]
-    # Mirrors the update command's metadata handling: preserve creation
-    # timestamps, record the updater; audited as an update.
+    # Mirrors the update command's metadata handling; audited as an update.
     start = time.perf_counter()
     started_at = now_utc_iso()
-    used_daemon, existing = maybe_daemon_request("get", {"memory_id": new_id})
-    client = None
-    if not used_daemon:
-        client = memory_client()
-        existing = client.get(new_id)
+    existing = execute("get", {"memory_id": new_id})
     if not isinstance(existing, dict):
         raise click.ClickException(f"memory not found: {new_id}")
-    existing_meta = existing.get("metadata") or {}
-    meta = dict(existing_meta)
-    if existing.get("created_at"):
-        meta["created_at"] = existing["created_at"]
-    meta.setdefault("ledger_timestamp", existing_meta.get("ledger_timestamp") or existing.get("created_at") or now_utc_iso())
-    meta["updated_by_cli_at"] = now_utc_iso()
-    meta["last_updated_by_agent_id"] = context.get("source") or MANUAL_SOURCE
-    meta["last_updated_session_id"] = context.get("session_id") or MANUAL_SESSION
-    meta["merged_from"] = old_id
-    if used_daemon:
-        used_update_daemon, update_result = maybe_daemon_request(
-            "update", {"memory_id": new_id, "text": merged_text, "metadata": meta}
-        )
-        if not used_update_daemon:
-            raise click.ClickException("mem0-local daemon became unavailable during merge")
-    else:
-        update_result = client.update(new_id, merged_text, metadata=meta)
+    meta = updated_memory_metadata(existing, {"merged_from": old_id})
+    update_result = execute(
+        "update", {"memory_id": new_id, "text": merged_text, "metadata": meta}
+    )
     append_live_audit(
         operation="update",
         input_payload={"memory_id": new_id, "text": merged_text, "merge_pair_id": pair_id, "existing": existing},
@@ -1220,11 +1075,7 @@ def review(
             pending = pending_stale_checks()
 
     filters = {"user_id": DEFAULT_USER_ID, "run_id": session}
-    used_daemon, writes = maybe_daemon_request(
-        "list", {"filters": filters, "top_k": 500, "start": 0, "end": 500}
-    )
-    if not used_daemon:
-        writes = memory_client().get_all(filters=filters, top_k=500)
+    writes = execute("list", {"filters": filters, "top_k": 500, "start": 0, "end": 500})
     write_items = normalize_items(writes) or (writes if isinstance(writes, list) else [])
 
     pairs = _enrich_pairs(pair_store().open_pairs(session_id=session))
@@ -1357,7 +1208,7 @@ def add(
     result: Any = None
     add_error: Optional[Exception] = None
     try:
-        used_daemon, result = maybe_daemon_request(
+        result = execute(
             "add",
             {
                 "content": content,
@@ -1368,15 +1219,6 @@ def add(
                 "infer": infer,
             },
         )
-        if not used_daemon:
-            result = memory_client().add(
-                content,
-                user_id=user_id,
-                agent_id=agent_id,
-                run_id=run_id,
-                metadata=meta or None,
-                infer=infer,
-            )
     except Exception as exc:  # mem0ai>=2.0.11 raises on extraction failure; audit it before surfacing.
         add_error = exc
     if isinstance(result, dict):
@@ -1479,7 +1321,7 @@ def search(
         raise typer.BadParameter("--top-k must be >= 1.")
 
     filters = filters_from_scope(user_id, None, None, None)
-    used_daemon, result = maybe_daemon_request(
+    result = execute(
         "search",
         {
             "query": query,
@@ -1492,20 +1334,6 @@ def search(
             "include_superseded": include_superseded,
         },
     )
-    if not used_daemon:
-        from mem0_local.staleness import search_with_staleness
-
-        result = search_with_staleness(
-            memory_client(),
-            query=query,
-            top_k=top_k,
-            filters=filters,
-            threshold=threshold,
-            rerank=rerank,
-            keyword=keyword,
-            explain=explain,
-            include_superseded=include_superseded,
-        )
     result = project_fields(result, fields)
     output(
         result,
@@ -1533,7 +1361,7 @@ def list_memories(
     extra = parse_json_or_key_values(filter_json, option_name="--filter")
     filters = filters_from_scope(user_id, None, None, None, extra)
     start = (page - 1) * page_size
-    used_daemon, result = maybe_daemon_request(
+    result = execute(
         "list",
         {
             "filters": filters or None,
@@ -1542,10 +1370,6 @@ def list_memories(
             "end": start + page_size,
         },
     )
-    if not used_daemon:
-        raw = memory_client().get_all(filters=filters or None, top_k=page * page_size)
-        items = normalize_items(raw)
-        result = items[start : start + page_size]
     output(
         result,
         command="list",
@@ -1566,12 +1390,10 @@ def get(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Get a memory by ID."""
-    used_daemon, result = maybe_daemon_request("get", {"memory_id": memory_id})
-    if not used_daemon:
-        result = memory_client().get(memory_id)
+    result = execute("get", {"memory_id": memory_id})
     if resolve_head and isinstance(result, dict):
         try:
-            result["head"] = run_staleness_op("resolve_head", {"memory_id": memory_id})
+            result["head"] = execute("resolve_head", {"memory_id": memory_id})
         except Exception as exc:  # noqa: BLE001 - head resolution must not mask the get.
             result["head"] = {"error": str(exc)}
     output(result, command="get", fmt=chosen_format(output_format, json_flag))
@@ -1588,32 +1410,13 @@ def update(
     """Update a memory by ID."""
     start = time.perf_counter()
     started_at = now_utc_iso()
-    used_daemon, existing = maybe_daemon_request("get", {"memory_id": memory_id})
-    client = None
-    if not used_daemon:
-        client = memory_client()
-        existing = client.get(memory_id)
-    existing_meta = existing.get("metadata") or {}
-    meta = {**existing_meta, **parse_json_or_key_values(metadata, option_name="--metadata")}
-    if existing.get("created_at"):
-        meta["created_at"] = existing["created_at"]
-    meta.setdefault("ledger_timestamp", existing_meta.get("ledger_timestamp") or existing.get("created_at") or now_utc_iso())
-    update_context = detect_writer_context()
-    updater_agent_id = update_context.get("source") or MANUAL_SOURCE
-    updater_session_id = update_context.get("session_id") or MANUAL_SESSION
-    meta.setdefault("memory_schema_version", MEMORY_SCHEMA_VERSION)
-    meta["updated_by_cli_at"] = now_utc_iso()
-    meta["last_updated_by_agent_id"] = updater_agent_id
-    meta["last_updated_session_id"] = updater_session_id
-    if used_daemon:
-        used_update_daemon, result = maybe_daemon_request(
-            "update",
-            {"memory_id": memory_id, "text": text, "metadata": meta},
-        )
-        if not used_update_daemon:
-            raise click.ClickException("mem0-local daemon became unavailable during update")
-    else:
-        result = client.update(memory_id, text, metadata=meta)
+    existing = execute("get", {"memory_id": memory_id})
+    if not isinstance(existing, dict):
+        raise click.ClickException(f"memory not found: {memory_id}")
+    meta = updated_memory_metadata(
+        existing, parse_json_or_key_values(metadata, option_name="--metadata")
+    )
+    result = execute("update", {"memory_id": memory_id, "text": text, "metadata": meta})
     finished_at = now_utc_iso()
     append_live_audit(
         operation="update",
@@ -1651,12 +1454,10 @@ def delete(
     if all_:
         if dry_run:
             filters = filters_from_scope(user_id, agent_id, None, run_id)
-            used_daemon, matches = maybe_daemon_request(
+            matches = execute(
                 "list",
                 {"filters": filters or None, "top_k": 10000, "start": 0, "end": 10000},
             )
-            if not used_daemon:
-                matches = normalize_items(memory_client().get_all(filters=filters or None, top_k=10000))
             matches = normalize_items(matches) or (matches if isinstance(matches, list) else [])
             output(
                 {
@@ -1674,12 +1475,10 @@ def delete(
             return
         if not force:
             raise typer.BadParameter("--all requires --force.")
-        used_daemon, result = maybe_daemon_request(
+        result = execute(
             "delete",
             {"all": True, "user_id": user_id, "agent_id": agent_id, "run_id": run_id},
         )
-        if not used_daemon:
-            result = memory_client().delete_all(user_id=user_id, agent_id=agent_id, run_id=run_id)
         finished_at = now_utc_iso()
         append_live_audit(
             operation="delete_all",
@@ -1700,11 +1499,7 @@ def delete(
         return
     if not memory_id:
         raise typer.BadParameter("Pass memory_id or --all --force.")
-    used_get_daemon, existing = maybe_daemon_request("get", {"memory_id": memory_id})
-    client = None
-    if not used_get_daemon:
-        client = memory_client()
-        existing = client.get(memory_id)
+    existing = execute("get", {"memory_id": memory_id})
     if dry_run:
         output(
             {"dry_run": True, "would_delete": existing},
@@ -1716,9 +1511,7 @@ def delete(
     if isinstance(existing, dict):
         preview = str(existing.get("memory") or existing.get("data") or "")[:80]
     confirm_destructive(f"Delete memory {memory_id} ({preview!r})?", force)
-    used_daemon, result = maybe_daemon_request("delete", {"all": False, "memory_id": memory_id})
-    if not used_daemon:
-        result = (client or memory_client()).delete(memory_id)
+    result = execute("delete", {"all": False, "memory_id": memory_id})
     try:
         from mem0_local.staleness import pair_store
 
@@ -1752,9 +1545,7 @@ def history(
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Show Mem0 history for a memory when available."""
-    used_daemon, result = maybe_daemon_request("history", {"memory_id": memory_id})
-    if not used_daemon:
-        result = memory_client().history(memory_id)
+    result = execute("history", {"memory_id": memory_id})
     output(result, command="history", fmt=chosen_format(output_format, json_flag))
 
 
@@ -1774,7 +1565,7 @@ def entity_list(
     if page_size < 1:
         raise typer.BadParameter("--page-size must be >= 1.")
     start = (page - 1) * page_size
-    used_daemon, result = maybe_daemon_request(
+    result = execute(
         "entity_list",
         {
             "entity_type": entity_type,
@@ -1784,16 +1575,6 @@ def entity_list(
             "end": start + page_size,
         },
     )
-    if not used_daemon:
-        from mem0_local.entity_ops import list_entities
-
-        rows = list_entities(
-            memory_client().entity_store,
-            entity_type=entity_type,
-            contains=contains,
-            scan_limit=scan_limit,
-        )
-        result = rows[start : start + page_size]
     output(result, command="entity-list", fmt=chosen_format(output_format, json_flag))
 
 
@@ -1808,14 +1589,7 @@ def entity_delete(
     """Delete one entity-graph row (memories themselves are not touched)."""
     start = time.perf_counter()
     started_at = now_utc_iso()
-    used_get_daemon, row = maybe_daemon_request("entity_get", {"entity_id": entity_id})
-    client = None
-    if not used_get_daemon:
-        from mem0_local.entity_ops import row_to_dict
-
-        client = memory_client()
-        raw = client.entity_store.get(entity_id)
-        row = row_to_dict(raw) if raw else None
+    row = execute("entity_get", {"entity_id": entity_id})
     if not row:
         raise click.ClickException(f"Entity not found: {entity_id}")
     if dry_run:
@@ -1829,10 +1603,7 @@ def entity_delete(
     confirm_destructive(
         f"Delete entity {entity_id} ({row.get('data')!r}, {linked} linked memories)?", force
     )
-    used_daemon, result = maybe_daemon_request("entity_delete", {"entity_id": entity_id})
-    if not used_daemon:
-        (client or memory_client()).entity_store.delete(entity_id)
-        result = {"id": entity_id, "deleted": True}
+    result = execute("entity_delete", {"entity_id": entity_id})
     finished_at = now_utc_iso()
     append_live_audit(
         operation="entity_delete",

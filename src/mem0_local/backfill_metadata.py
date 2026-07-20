@@ -11,18 +11,26 @@ from typing import Any
 
 from qdrant_client import QdrantClient
 
-from mem0_local import cli as mem0_memory
-from mem0_local.config import VECTOR_STORE_MODE, vector_store_config
+from mem0_local.config import (
+    COLLECTION,
+    MEMORY_ROOT,
+    MEMORY_SCHEMA_VERSION,
+    QDRANT_DIR,
+    VECTOR_STORE_MODE,
+    WORKSPACE_ROOT,
+    vector_store_config,
+)
+from mem0_local.runtime import acquire_cli_lock, setup_env
 
 
-MANIFEST_DIR = mem0_memory.MEMORY_ROOT / "manifests"
+MANIFEST_DIR = MEMORY_ROOT / "manifests"
 
 
 def iter_points(client: QdrantClient):
     offset = None
     while True:
         points, offset = client.scroll(
-            collection_name=mem0_memory.COLLECTION,
+            collection_name=COLLECTION,
             limit=256,
             offset=offset,
             with_payload=True,
@@ -76,7 +84,7 @@ def desired_patch(payload: dict[str, Any], *, backfilled_at: str) -> dict[str, A
         "session_id": session_id,
         "writer_agent_id": str(payload.get("writer_agent_id") or "").strip() or agent_id,
         "origin": origin,
-        "memory_schema_version": payload.get("memory_schema_version") or mem0_memory.MEMORY_SCHEMA_VERSION,
+        "memory_schema_version": payload.get("memory_schema_version") or MEMORY_SCHEMA_VERSION,
         "metadata_backfilled_at": payload.get("metadata_backfilled_at") or backfilled_at,
     }
     return {key: value for key, value in desired.items() if payload.get(key) != value}
@@ -111,13 +119,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    mem0_memory.setup_env()
-    mem0_memory.acquire_cli_lock()
+    setup_env()
+    acquire_cli_lock()
     if VECTOR_STORE_MODE == "qdrant-server":
         vs = vector_store_config()["config"]
         client = QdrantClient(host=vs["host"], port=vs["port"])
     else:
-        client = QdrantClient(path=str(mem0_memory.QDRANT_DIR))
+        client = QdrantClient(path=str(QDRANT_DIR))
 
     backfilled_at = datetime.now(timezone.utc).isoformat()
     manifest = args.manifest
@@ -125,7 +133,7 @@ def main() -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         manifest = MANIFEST_DIR / f"metadata-backfill-{stamp}.jsonl"
     if not manifest.is_absolute():
-        manifest = mem0_memory.ROOT / manifest
+        manifest = WORKSPACE_ROOT / manifest
 
     total = 0
     changed = 0
@@ -153,7 +161,7 @@ def main() -> None:
         )
         if not args.dry_run:
             client.set_payload(
-                collection_name=mem0_memory.COLLECTION,
+                collection_name=COLLECTION,
                 payload=patch,
                 points=[point.id],
                 wait=True,
