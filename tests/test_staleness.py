@@ -252,10 +252,11 @@ class RunStaleCheckTests(unittest.TestCase):
         self.assertEqual(result["opened"], 1)
         store = staleness.pair_store()
         self.assertEqual(store.open_count(), 1)
-        open_pair = store.open_pairs(session_id="s1")[0]
+        open_pair = store.open_pairs(session_id="s1", kind="displacement")[0]
         self.assertEqual(open_pair["old_id"], "old1")
-        # Self, invalidated, and pinned entries were never sent to the judge.
-        self.assertEqual(llm.calls, 1)
+        # Self, invalidated, and pinned entries were never sent to the
+        # displacement judge; necessity + timestamp self-checks add 2 calls.
+        self.assertEqual(llm.calls, 3)
 
     def test_rerun_hits_pair_cache(self) -> None:
         client = self._client()
@@ -267,7 +268,11 @@ class RunStaleCheckTests(unittest.TestCase):
         again = staleness.run_stale_check(client, "new1", llm=llm)
         self.assertEqual(again["judged"], 0)
         self.assertEqual(again["cached"], 2)
-        self.assertEqual(llm.calls, 1)
+        self.assertEqual(again["necessity"], "cached")
+        self.assertEqual(again["timestamp"], "cached")
+        # 3 calls on the first run (necessity, timestamp, displacement);
+        # everything version-cached on the rerun.
+        self.assertEqual(llm.calls, 3)
 
     def test_judged_either_covers_both_orientations(self) -> None:
         store = staleness.pair_store()
@@ -369,6 +374,234 @@ class PairStoreTests(unittest.TestCase):
         mine = self.store.open_pairs(session_id="s1")
         self.assertEqual(len(mine), 1)
         self.assertEqual(mine[0]["new_id"], "n1")
+
+
+class RoutingFakeLlm:
+    """Answers each judge by recognizing its system prompt."""
+
+    def __init__(self, necessity: dict, timestamp: dict, judgments: list[dict] | None = None):
+        self._necessity = necessity
+        self._timestamp = timestamp
+        self._judgments = judgments or []
+        self.necessity_calls = 0
+        self.timestamp_calls = 0
+        self.displacement_calls = 0
+
+    def generate_response(self, messages, response_format=None):
+        import json as _json
+
+        system = messages[0]["content"]
+        if "memory-necessity judge" in system:
+            self.necessity_calls += 1
+            return _json.dumps(self._necessity)
+        if "timestamp or actor" in system:
+            self.timestamp_calls += 1
+            return _json.dumps(self._timestamp)
+        self.displacement_calls += 1
+        return _json.dumps({"judgments": self._judgments})
+
+
+class SelfCheckTests(unittest.TestCase):
+    """Necessity (R1) and timestamp (R2) self-checks in run_stale_check."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        staleness._pair_store = PairStore(Path(self._tmp.name) / "stale.db")
+
+    def tearDown(self) -> None:
+        staleness._pair_store = None
+        self._tmp.cleanup()
+
+    def _client(self, payload_extra: dict | None = None) -> FakeClient:
+        payload = {
+            "data": "grid progress: done=38 running=2 pending=22",
+            "user_id": "workspace",
+            "created_at": "2026-07-20T01:00:00+00:00",
+            "ingested_at": "2026-07-20T01:00:00+00:00",
+            "source": "claude",
+        }
+        payload.update(payload_extra or {})
+        return FakeClient({"m1": payload}, search_items=[])
+
+    def test_necessity_flag_opens_self_pair_without_candidates(self) -> None:
+        llm = RoutingFakeLlm(
+            {"verdict": "PROGRESS_TICK", "confidence": 0.9, "reason": "tick"},
+            {"verdict": "CONSISTENT", "confidence": 0.9, "reason": "ok"},
+        )
+        result = staleness.run_stale_check(self._client(), "m1", session_id="s1", llm=llm)
+        self.assertEqual(result["necessity"], "PROGRESS_TICK")
+        self.assertTrue(result["necessity_open"])
+        self.assertEqual(result["timestamp"], "CONSISTENT")
+        rows = staleness.pair_store().open_pairs(kind="necessity")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["new_id"], "m1")
+        self.assertEqual(rows[0]["old_id"], "m1")
+        # CONSISTENT timestamp verdict is cached, not opened.
+        self.assertEqual(staleness.pair_store().open_pairs(kind="timestamp"), [])
+
+    def test_timestamp_suspect_opens_flag(self) -> None:
+        llm = RoutingFakeLlm(
+            {"verdict": "DURABLE", "confidence": 0.9, "reason": "keep"},
+            {"verdict": "TIMESTAMP_SUSPECT", "confidence": 0.8, "reason": "date off"},
+        )
+        result = staleness.run_stale_check(self._client(), "m1", llm=llm)
+        self.assertTrue(result["timestamp_open"])
+        rows = staleness.pair_store().open_pairs(kind="timestamp")
+        self.assertEqual(rows[0]["verdict"], "TIMESTAMP_SUSPECT")
+
+    def test_self_checks_version_cached(self) -> None:
+        llm = RoutingFakeLlm(
+            {"verdict": "DURABLE", "confidence": 0.9, "reason": "keep"},
+            {"verdict": "CONSISTENT", "confidence": 0.9, "reason": "ok"},
+        )
+        staleness.run_stale_check(self._client(), "m1", llm=llm)
+        again = staleness.run_stale_check(self._client(), "m1", llm=llm)
+        self.assertEqual(again["necessity"], "cached")
+        self.assertEqual(again["timestamp"], "cached")
+        self.assertEqual(llm.necessity_calls, 1)
+        self.assertEqual(llm.timestamp_calls, 1)
+
+    def test_pinned_entry_skips_everything(self) -> None:
+        llm = RoutingFakeLlm({}, {})
+        result = staleness.run_stale_check(
+            self._client({"stale_check_pin": True}), "m1", llm=llm
+        )
+        self.assertEqual(result["skipped"], "memory is pinned")
+        self.assertEqual(llm.necessity_calls, 0)
+
+    def test_ledger_import_skips_timestamp_check(self) -> None:
+        llm = RoutingFakeLlm(
+            {"verdict": "DURABLE", "confidence": 0.9, "reason": "keep"},
+            {"verdict": "TIMESTAMP_SUSPECT", "confidence": 0.9, "reason": "n/a"},
+        )
+        result = staleness.run_stale_check(
+            self._client({"origin": "ledger_import"}), "m1", llm=llm
+        )
+        self.assertNotIn("timestamp", result)
+        self.assertEqual(llm.timestamp_calls, 0)
+
+
+class TtlTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        staleness._pair_store = PairStore(Path(self._tmp.name) / "stale.db")
+
+    def tearDown(self) -> None:
+        staleness._pair_store = None
+        self._tmp.cleanup()
+
+    def test_is_ttl_expired(self) -> None:
+        self.assertFalse(staleness.is_ttl_expired({}))
+        self.assertFalse(staleness.is_ttl_expired({"ttl_expires_at": "2999-01-01T00:00:00+00:00"}))
+        self.assertTrue(staleness.is_ttl_expired({"ttl_expires_at": "2020-01-01T00:00:00+00:00"}))
+
+    def test_set_and_clear_ttl(self) -> None:
+        client = FakeClient({"m1": {"data": "snapshot"}})
+        result = staleness.set_ttl(client, "m1", days=30, actor_id="claude")
+        self.assertIn("ttl_expires_at", result)
+        self.assertTrue(client.vector_store.payloads["m1"]["ttl_expires_at"])
+        cleared = staleness.set_ttl(client, "m1", clear=True)
+        self.assertTrue(cleared["ttl_cleared"])
+        self.assertIsNone(client.vector_store.payloads["m1"]["ttl_expires_at"])
+        with self.assertRaises(StalenessError):
+            staleness.set_ttl(client, "ghost", days=1)
+
+    def test_search_filters_expired_entries(self) -> None:
+        items = [
+            {"id": "live", "memory": "a", "metadata": {}},
+            {"id": "gone", "memory": "b", "metadata": {"ttl_expires_at": "2020-01-01T00:00:00+00:00"}},
+            {"id": "later", "memory": "c", "metadata": {"ttl_expires_at": "2999-01-01T00:00:00+00:00"}},
+        ]
+        client = FakeClient({}, search_items=items)
+        result = search_with_staleness(
+            client, query="q", top_k=3, filters=None, threshold=0.1,
+            rerank=False, keyword=False, explain=False,
+        )
+        ids = [i["id"] for i in result["results"]]
+        self.assertEqual(ids, ["live", "later"])
+
+    def test_harvest_materializes_expiry_and_closes_pairs(self) -> None:
+        client = FakeClient({"gone": {"data": "b"}})
+        client.get_all = lambda **kw: {
+            "results": [
+                {"id": "gone", "memory": "b", "metadata": {"ttl_expires_at": "2020-01-01T00:00:00+00:00"}},
+            ]
+        }
+        store = staleness.pair_store()
+        store.record_judgment(
+            kind="necessity", new_id="gone", old_id="gone", old_text="b",
+            verdict="PROGRESS_TICK", confidence=0.9, reason="tick",
+        )
+        result = staleness.harvest_expired(client)
+        self.assertEqual(result["harvested"], 1)
+        self.assertTrue(client.vector_store.payloads["gone"]["ttl_expired_at"])
+        self.assertEqual(store.open_count(), 0)
+
+    def test_delete_guard_detects_participation(self) -> None:
+        client = FakeClient({"node": {"data": "x", "superseded_by": ["y"]}})
+        client.get_all = lambda **kw: {"results": []}
+        self.assertTrue(staleness.delete_guard(client, "node")["participates"])
+
+        client2 = FakeClient({"parent": {"data": "x"}})
+        client2.get_all = lambda **kw: {"results": [{"id": "child"}]}
+        self.assertTrue(staleness.delete_guard(client2, "parent")["participates"])
+
+        client3 = FakeClient({"free": {"data": "x"}})
+        client3.get_all = lambda **kw: {"results": []}
+        self.assertFalse(staleness.delete_guard(client3, "free")["participates"])
+
+
+class PairStoreMigrationTests(unittest.TestCase):
+    def test_v1_table_rebuilt_with_kind(self) -> None:
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "stale.db"
+            conn = sqlite3.connect(str(db))
+            conn.executescript(
+                """
+                CREATE TABLE pairs (
+                    pair_id TEXT PRIMARY KEY, new_id TEXT NOT NULL,
+                    old_id TEXT NOT NULL, old_text_hash TEXT NOT NULL,
+                    verdict TEXT NOT NULL, confidence REAL, reason TEXT,
+                    judged_at TEXT NOT NULL, judge_model TEXT,
+                    new_session_id TEXT,
+                    disposition TEXT NOT NULL DEFAULT 'open',
+                    disposed_by TEXT, disposed_at TEXT,
+                    UNIQUE(new_id, old_id, old_text_hash)
+                );
+                INSERT INTO pairs (pair_id, new_id, old_id, old_text_hash,
+                    verdict, judged_at)
+                VALUES ('p1', 'n', 'o', 'h', 'SUPERSEDED', '2026-07-01');
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            store = PairStore(db)
+            row = store.get("p1")
+            self.assertEqual(row["kind"], "displacement")
+            # Same (new_id, old_id, hash) under a different kind now inserts.
+            rec = store.record_judgment(
+                kind="necessity", new_id="n", old_id="n", old_text="t",
+                verdict="DURABLE", confidence=0.9, reason="",
+            )
+            self.assertTrue(rec["inserted"])
+
+    def test_ttl_disposition_and_updated_text_expiry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PairStore(Path(tmp) / "stale.db")
+            row = store.record_judgment(
+                kind="necessity", new_id="m", old_id="m", old_text="v1",
+                verdict="EVENT_SCOPED", confidence=0.9, reason="pending",
+            )
+            self.assertTrue(store.dispose(row["pair_id"], "ttl", disposed_by="claude"))
+            row2 = store.record_judgment(
+                kind="necessity", new_id="m2", old_id="m2", old_text="v1",
+                verdict="PROGRESS_TICK", confidence=0.9, reason="tick",
+            )
+            self.assertEqual(store.close_for_updated_text("m2", "v2-rewritten"), 1)
+            self.assertEqual(store.get(row2["pair_id"])["disposition"], "expired")
 
 
 if __name__ == "__main__":

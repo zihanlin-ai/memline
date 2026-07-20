@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -34,11 +34,21 @@ SUPERSEDED_BY = "superseded_by"
 SUPERSEDED_AT = "superseded_at"
 SUPERSEDED_REASON = "superseded_reason"
 STALE_PIN = "stale_check_pin"
+TTL_EXPIRES_AT = "ttl_expires_at"
+TTL_EXPIRED_AT = "ttl_expired_at"
+
+# Suspicion-pair kinds: displacement = new entry displaces an old one;
+# necessity = the entry itself may not deserve long-term memory (R1);
+# timestamp = the entry's claimed time/actor contradicts CLI metadata (R2).
+KIND_DISPLACEMENT = "displacement"
+KIND_NECESSITY = "necessity"
+KIND_TIMESTAMP = "timestamp"
 
 MAX_CHAIN_DEPTH = 100
 # Verdicts below this confidence are cached (never re-judged) but do not
 # open a suspicion for review.
 SUSPICION_CONFIDENCE_FLOOR = 0.6
+DEFAULT_TTL_DAYS = 30
 
 STALE_DB = STORE_DIR / "stale.db"
 
@@ -81,6 +91,24 @@ def result_item_superseded(item: dict[str, Any]) -> list[str]:
     be tolerant of both layouts.
     """
     return superseded_ids(item.get("metadata") or {}) or superseded_ids(item)
+
+
+def is_ttl_expired(payload_or_meta: dict[str, Any] | None, now: str | None = None) -> bool:
+    """Lazy TTL check: expired entries leave the pool even before harvest.
+
+    ISO-8601 UTC strings compare lexicographically in chronological order,
+    so a plain string comparison is the whole check.
+    """
+    if not payload_or_meta:
+        return False
+    expires = payload_or_meta.get(TTL_EXPIRES_AT)
+    if not expires:
+        return False
+    return str(expires) <= (now or _now_iso())
+
+
+def result_item_expired(item: dict[str, Any], now: str | None = None) -> bool:
+    return is_ttl_expired(item.get("metadata") or {}, now) or is_ttl_expired(item, now)
 
 
 def _point_payload(client: Any, memory_id: str) -> dict[str, Any] | None:
@@ -302,12 +330,14 @@ def search_with_staleness(
     explain: bool,
     include_superseded: bool = False,
 ) -> Any:
-    """Default search: over-fetch, drop invalidated, flag suspected.
+    """Default search: over-fetch, drop invalidated/expired, flag suspected.
 
     With ``include_superseded`` the raw result is returned unchanged (full
-    history digs). Otherwise invalidated entries are filtered out (over-fetch
-    keeps top_k honest) and any hit with open suspicion pairs is annotated
-    with ``suspected_stale`` so stale candidates are flagged, not silent.
+    history digs). Otherwise invalidated and TTL-expired entries are filtered
+    out (over-fetch keeps top_k honest; the TTL check is lazy so correctness
+    never depends on the harvest loop) and any hit with open suspicion pairs
+    is annotated with ``suspected_stale`` so stale candidates are flagged,
+    not silent.
     """
     fetch_k = top_k if include_superseded else max(top_k * 2, top_k + 10)
     result = client.search(
@@ -326,7 +356,11 @@ def search_with_staleness(
     if not isinstance(items, list):
         return result
 
-    kept = [i for i in items if not result_item_superseded(i)][:top_k]
+    now = _now_iso()
+    kept = [
+        i for i in items
+        if not result_item_superseded(i) and not result_item_expired(i, now)
+    ][:top_k]
     annotate_suspected(kept)
     result["results"] = kept
     return result
@@ -349,6 +383,7 @@ def annotate_suspected(items: list[dict[str, Any]]) -> None:
             item["suspected_stale"] = True
             item["suspicions"] = [
                 {
+                    "kind": p.get("kind") or KIND_DISPLACEMENT,
                     "suspected_by": p["new_id"],
                     "verdict": p["verdict"],
                     "confidence": p["confidence"],
@@ -374,20 +409,29 @@ def run_stale_check(
     llm: Any = None,
     judge_model: str | None = None,
 ) -> dict[str, Any]:
-    """Judge one new entry against its top-k active neighbors (advisory only).
+    """Judge one new entry: necessity, timestamp sanity, then displacement
+    against its top-k active neighbors (all advisory only).
 
     Produces suspicion-pair evidence rows; never changes memory state. Safe
     to re-run: the pair cache skips already-judged (old_id, text-version)
-    combinations.
+    combinations for every kind.
     """
     payload = _point_payload(client, new_id)
     if payload is None:
         return {"new_id": new_id, "skipped": "memory no longer exists"}
     if is_invalidated(payload):
         return {"new_id": new_id, "skipped": "memory already invalidated"}
+    if payload.get(STALE_PIN):
+        return {"new_id": new_id, "skipped": "memory is pinned"}
     new_text = str(payload.get("data") or "")
     if not new_text:
         return {"new_id": new_id, "skipped": "empty text"}
+
+    llm = llm or client.llm
+    self_report = _run_self_checks(
+        client, new_id, new_text, payload,
+        llm=llm, judge_model=judge_model, session_id=session_id,
+    )
 
     filters = {"user_id": payload["user_id"]} if payload.get("user_id") else None
     raw = client.search(
@@ -428,11 +472,13 @@ def run_stale_check(
     )
     candidates = [c for c in candidates if c["id"] not in already]
     if not candidates:
-        return {"new_id": new_id, "judged": 0, "opened": 0, "cached": len(already)}
+        return {
+            "new_id": new_id, "judged": 0, "opened": 0, "cached": len(already),
+            **self_report,
+        }
 
     from mem0_local.judge import judge as judge_fn
 
-    llm = llm or client.llm
     new_entry = {
         "id": new_id,
         "text": new_text,
@@ -460,7 +506,83 @@ def run_stale_check(
         "judged": len(judgments),
         "opened": opened,
         "cached": len(already),
+        **self_report,
     }
+
+
+def _run_self_checks(
+    client: Any,
+    new_id: str,
+    new_text: str,
+    payload: dict[str, Any],
+    *,
+    llm: Any,
+    judge_model: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Necessity (R1) and timestamp/attribution (R2) checks on the entry
+    itself, recorded as self-pairs (new_id == old_id), version-scoped by the
+    entry text so an ``update`` re-arms them. Advisory only; each check is
+    skipped when this text version was already judged for that kind."""
+    store = pair_store()
+    entry = {
+        "id": new_id,
+        "text": new_text,
+        "date": str(payload.get("created_at") or "")[:10],
+    }
+    report: dict[str, Any] = {}
+
+    if store.has_judgment(new_id, new_id, new_text, kind=KIND_NECESSITY):
+        report["necessity"] = "cached"
+    else:
+        from mem0_local.judge import judge_necessity
+
+        verdict = judge_necessity(llm, entry)
+        row = store.record_judgment(
+            kind=KIND_NECESSITY,
+            new_id=new_id,
+            old_id=new_id,
+            old_text=new_text,
+            verdict=verdict["verdict"],
+            confidence=verdict["confidence"],
+            reason=verdict["reason"],
+            judge_model=judge_model,
+            new_session_id=session_id,
+        )
+        report["necessity"] = verdict["verdict"]
+        report["necessity_open"] = row["disposition"] == "open" and row["inserted"]
+
+    # Timestamp/attribution checks only make sense for live agent writes;
+    # ledger imports carry historical dates by design.
+    if payload.get("origin") == "ledger_import":
+        return report
+    if store.has_judgment(new_id, new_id, new_text, kind=KIND_TIMESTAMP):
+        report["timestamp"] = "cached"
+        return report
+
+    from mem0_local.judge import judge_timestamp
+
+    verdict = judge_timestamp(
+        llm,
+        entry,
+        ingested_at=str(payload.get("ingested_at") or payload.get("created_at") or ""),
+        created_at=str(payload.get("created_at") or "") or None,
+        writer=str(payload.get("source") or payload.get("writer_agent_id") or "") or None,
+    )
+    row = store.record_judgment(
+        kind=KIND_TIMESTAMP,
+        new_id=new_id,
+        old_id=new_id,
+        old_text=new_text,
+        verdict=verdict["verdict"],
+        confidence=verdict["confidence"],
+        reason=verdict["reason"],
+        judge_model=judge_model,
+        new_session_id=session_id,
+    )
+    report["timestamp"] = verdict["verdict"]
+    report["timestamp_open"] = row["disposition"] == "open" and row["inserted"]
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -482,41 +604,78 @@ def pair_store(path: Path | None = None) -> "PairStore":
         return _pair_store
 
 
-class PairStore(SqliteStore):
-    """Append-only suspicion-pair evidence rows (design §2.2).
+# Verdicts that open a review suspicion, per pair kind; anything else is a
+# cached (never re-judged) verdict for that text version.
+_OPENING_VERDICTS: dict[str, Callable[[str], bool]] = {
+    KIND_DISPLACEMENT: lambda v: v in {"SUPERSEDED", "DUPLICATE"},
+    KIND_NECESSITY: lambda v: v != "DURABLE",
+    KIND_TIMESTAMP: lambda v: v != "CONSISTENT",
+}
 
-    A pair is uniquely identified by ``(new_id, old_id, old_text_hash)`` —
-    judgments are scoped to a specific version of the old text and expire
-    automatically when it changes. Rows are never deleted; dispositions move
-    ``open`` pairs to ``confirmed``/``dismissed``/``obsoleted``.
+_PAIRS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS pairs (
+    pair_id       TEXT PRIMARY KEY,
+    kind          TEXT NOT NULL DEFAULT 'displacement',
+    new_id        TEXT NOT NULL,
+    old_id        TEXT NOT NULL,
+    old_text_hash TEXT NOT NULL,
+    verdict       TEXT NOT NULL,
+    confidence    REAL,
+    reason        TEXT,
+    judged_at     TEXT NOT NULL,
+    judge_model   TEXT,
+    new_session_id TEXT,
+    disposition   TEXT NOT NULL DEFAULT 'open',
+    disposed_by   TEXT,
+    disposed_at   TEXT,
+    UNIQUE(kind, new_id, old_id, old_text_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_pairs_old ON pairs(old_id, disposition);
+CREATE INDEX IF NOT EXISTS idx_pairs_new ON pairs(new_id, disposition);
+CREATE INDEX IF NOT EXISTS idx_pairs_session ON pairs(new_session_id, disposition);
+"""
+
+
+class PairStore(SqliteStore):
+    """Append-only suspicion-pair evidence rows (design §2.2 + lifecycle R1/R2).
+
+    A pair is uniquely identified by ``(kind, new_id, old_id, old_text_hash)``
+    — judgments are scoped to a specific version of the old text and expire
+    automatically when it changes. Necessity/timestamp checks are self-pairs
+    (new_id == old_id). Rows are never deleted; dispositions move ``open``
+    pairs to ``confirmed``/``dismissed``/``merged``/``ttl``/``obsoleted``/
+    ``expired``.
     """
 
     def __init__(self, path: Path) -> None:
         super().__init__(path)
         with self._lock:
-            self._conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS pairs (
-                    pair_id       TEXT PRIMARY KEY,
-                    new_id        TEXT NOT NULL,
-                    old_id        TEXT NOT NULL,
-                    old_text_hash TEXT NOT NULL,
-                    verdict       TEXT NOT NULL,
-                    confidence    REAL,
-                    reason        TEXT,
-                    judged_at     TEXT NOT NULL,
-                    judge_model   TEXT,
-                    new_session_id TEXT,
-                    disposition   TEXT NOT NULL DEFAULT 'open',
-                    disposed_by   TEXT,
-                    disposed_at   TEXT,
-                    UNIQUE(new_id, old_id, old_text_hash)
-                );
-                CREATE INDEX IF NOT EXISTS idx_pairs_old ON pairs(old_id, disposition);
-                CREATE INDEX IF NOT EXISTS idx_pairs_new ON pairs(new_id, disposition);
-                CREATE INDEX IF NOT EXISTS idx_pairs_session ON pairs(new_session_id, disposition);
-                """
+            self._migrate_v1_locked()
+            self._conn.executescript(_PAIRS_SCHEMA)
+
+    def _migrate_v1_locked(self) -> None:
+        """Rebuild a pre-kind table: the old UNIQUE lacked the kind column."""
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(pairs)")}
+        if not cols or "kind" in cols:
+            return
+        self._conn.executescript(
+            "ALTER TABLE pairs RENAME TO pairs_v1;" + _PAIRS_SCHEMA
+        )
+        self._conn.execute(
+            """
+            INSERT INTO pairs (
+                pair_id, kind, new_id, old_id, old_text_hash, verdict,
+                confidence, reason, judged_at, judge_model, new_session_id,
+                disposition, disposed_by, disposed_at
             )
+            SELECT pair_id, 'displacement', new_id, old_id, old_text_hash,
+                   verdict, confidence, reason, judged_at, judge_model,
+                   new_session_id, disposition, disposed_by, disposed_at
+            FROM pairs_v1
+            """
+        )
+        self._conn.execute("DROP TABLE pairs_v1")
+        self._conn.commit()
 
     def record_judgment(
         self,
@@ -529,14 +688,16 @@ class PairStore(SqliteStore):
         reason: str | None,
         judge_model: str | None = None,
         new_session_id: str | None = None,
+        kind: str = KIND_DISPLACEMENT,
     ) -> dict[str, Any]:
         """Insert one judgment; no-op if this exact pair version was judged."""
         opens = (
-            verdict in {"SUPERSEDED", "DUPLICATE"}
+            _OPENING_VERDICTS.get(kind, lambda v: False)(verdict)
             and (confidence or 0.0) >= SUSPICION_CONFIDENCE_FLOOR
         )
         row = {
             "pair_id": str(uuid.uuid4()),
+            "kind": kind,
             "new_id": new_id,
             "old_id": old_id,
             "old_text_hash": text_hash(old_text),
@@ -552,11 +713,12 @@ class PairStore(SqliteStore):
             cursor = self._conn.execute(
                 """
                 INSERT OR IGNORE INTO pairs (
-                    pair_id, new_id, old_id, old_text_hash, verdict, confidence,
-                    reason, judged_at, judge_model, new_session_id, disposition
+                    pair_id, kind, new_id, old_id, old_text_hash, verdict,
+                    confidence, reason, judged_at, judge_model,
+                    new_session_id, disposition
                 ) VALUES (
-                    :pair_id, :new_id, :old_id, :old_text_hash, :verdict,
-                    :confidence, :reason, :judged_at, :judge_model,
+                    :pair_id, :kind, :new_id, :old_id, :old_text_hash,
+                    :verdict, :confidence, :reason, :judged_at, :judge_model,
                     :new_session_id, :disposition
                 )
                 """,
@@ -565,6 +727,16 @@ class PairStore(SqliteStore):
             self._conn.commit()
         row["inserted"] = cursor.rowcount > 0
         return row
+
+    def has_judgment(
+        self, new_id: str, old_id: str, old_text: str, *, kind: str
+    ) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT 1 FROM pairs WHERE kind=? AND new_id=? AND old_id=? AND old_text_hash=?",
+                (kind, new_id, old_id, text_hash(old_text)),
+            )
+            return cur.fetchone() is not None
 
     def judged_either(
         self, probe_id: str, probe_text: str, candidates: list[tuple[str, str]]
@@ -576,9 +748,9 @@ class PairStore(SqliteStore):
         with self._lock:
             for cand_id, cand_text in candidates:
                 cur = self._conn.execute(
-                    "SELECT 1 FROM pairs WHERE "
+                    "SELECT 1 FROM pairs WHERE kind='displacement' AND ("
                     "(new_id=? AND old_id=? AND old_text_hash=?) OR "
-                    "(new_id=? AND old_id=? AND old_text_hash=?)",
+                    "(new_id=? AND old_id=? AND old_text_hash=?))",
                     (probe_id, cand_id, text_hash(cand_text), cand_id, probe_id, probe_hash),
                 )
                 if cur.fetchone():
@@ -603,6 +775,7 @@ class PairStore(SqliteStore):
         self,
         *,
         session_id: str | None = None,
+        kind: str | None = None,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
         query = "SELECT * FROM pairs WHERE disposition='open'"
@@ -610,6 +783,9 @@ class PairStore(SqliteStore):
         if session_id:
             query += " AND new_session_id=?"
             params.append(session_id)
+        if kind:
+            query += " AND kind=?"
+            params.append(kind)
         query += " ORDER BY judged_at DESC LIMIT ?"
         params.append(limit)
         with self._lock:
@@ -630,7 +806,7 @@ class PairStore(SqliteStore):
         *,
         disposed_by: str | None = None,
     ) -> bool:
-        if disposition not in {"confirmed", "dismissed", "obsoleted", "expired", "merged"}:
+        if disposition not in {"confirmed", "dismissed", "obsoleted", "expired", "merged", "ttl"}:
             raise StalenessError(f"invalid disposition: {disposition}")
         with self._lock:
             cursor = self._conn.execute(
@@ -697,9 +873,127 @@ class PairStore(SqliteStore):
             self._conn.commit()
         return a.rowcount + b.rowcount
 
+    def close_for_updated_text(self, memory_id: str, current_text: str) -> int:
+        """Expire open pairs judged against a text version that no longer
+        exists (the memory was rewritten via ``update``)."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE pairs SET disposition='expired', disposed_at=? "
+                "WHERE old_id=? AND disposition='open' AND old_text_hash!=?",
+                (_now_iso(), memory_id, text_hash(current_text)),
+            )
+            self._conn.commit()
+        return cursor.rowcount
+
     def get(self, pair_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM pairs WHERE pair_id=?", (pair_id,)
             ).fetchone()
         return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# TTL lifecycle (design R3) and delete guard (design §9)
+# ---------------------------------------------------------------------------
+
+
+def set_ttl(
+    client: Any,
+    memory_id: str,
+    *,
+    days: float | None = None,
+    expires_at: str | None = None,
+    clear: bool = False,
+    actor_id: str | None = None,
+) -> dict[str, Any]:
+    """Schedule (or clear) reversible pool-exit for one memory.
+
+    Payload-only mutation like invalidate; the search filter honors
+    ``ttl_expires_at`` lazily, so the entry leaves the pool at the deadline
+    even if no harvest loop ever runs.
+    """
+    payload = _point_payload(client, memory_id)
+    if payload is None:
+        raise StalenessError(f"memory not found: {memory_id}")
+    now = _now_iso()
+    if clear:
+        patch: dict[str, Any] = {TTL_EXPIRES_AT: None, TTL_EXPIRED_AT: None}
+        result = {"id": memory_id, "ttl_cleared": True}
+    else:
+        if expires_at is None:
+            delta = timedelta(days=days if days is not None else DEFAULT_TTL_DAYS)
+            expires_at = (datetime.now(timezone.utc) + delta).isoformat()
+        patch = {TTL_EXPIRES_AT: expires_at, "ttl_set_at": now, "ttl_set_by": actor_id}
+        result = {"id": memory_id, TTL_EXPIRES_AT: expires_at}
+    client.vector_store.update(vector_id=memory_id, vector=None, payload=patch)
+    text = str(payload.get("data") or "")
+    try:
+        client.db.add_history(
+            memory_id, text, text, "TTL_CLEAR" if clear else "TTL_SET",
+            updated_at=now, actor_id=actor_id,
+        )
+    except Exception:  # noqa: BLE001 - history is best-effort.
+        pass
+    return result
+
+
+def harvest_expired(client: Any, *, now: str | None = None, limit: int = 1000) -> dict[str, Any]:
+    """Materialize lazy TTL expiries: stamp ``ttl_expired_at``, close open
+    suspicions on the entry, write a history event. Correctness never depends
+    on this running — the search filter is already lazy."""
+    now = now or _now_iso()
+    try:
+        raw = client.get_all(filters={TTL_EXPIRES_AT: {"lte": now}}, top_k=limit)
+    except Exception as exc:  # noqa: BLE001 - range filter support may vary.
+        return {"harvested": 0, "error": f"ttl scan failed: {exc}"}
+    items = raw.get("results") if isinstance(raw, dict) else raw
+    harvested = 0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        memory_id = str(item.get("id") or "")
+        meta = item.get("metadata") or {}
+        if not memory_id or meta.get(TTL_EXPIRED_AT):
+            continue
+        if not is_ttl_expired(meta, now) and not is_ttl_expired(item, now):
+            continue
+        client.vector_store.update(
+            vector_id=memory_id, vector=None, payload={TTL_EXPIRED_AT: now}
+        )
+        try:
+            client.db.add_history(
+                memory_id, str(item.get("memory") or ""), str(item.get("memory") or ""),
+                "TTL_EXPIRE", updated_at=now,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            pair_store().close_for_old(memory_id, "expired")
+        except Exception:  # noqa: BLE001
+            pass
+        harvested += 1
+    return {"harvested": harvested}
+
+
+def delete_guard(client: Any, memory_id: str) -> dict[str, Any]:
+    """Check whether a memory participates in any supersession edge.
+
+    Chain participants must never be hard-deleted (dangling ``superseded_by``
+    pointers break ``resolve_head``); callers downgrade to reversible expiry
+    instead. Fails open on scan errors: the guard is an extra safety, not a
+    gate the store's health depends on.
+    """
+    payload = _point_payload(client, memory_id)
+    if payload is None:
+        return {"participates": False, "reason": "memory not found"}
+    if superseded_ids(payload):
+        return {"participates": True, "reason": "memory is superseded (chain node)"}
+    try:
+        raw = client.get_all(filters={SUPERSEDED_BY: memory_id}, top_k=1)
+        items = raw.get("results") if isinstance(raw, dict) else raw
+        if items:
+            return {"participates": True, "reason": "memory supersedes other entries"}
+    except Exception:  # noqa: BLE001 - fail open.
+        pass
+    return {"participates": False, "reason": None}

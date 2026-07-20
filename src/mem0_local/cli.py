@@ -857,6 +857,56 @@ def updated_memory_metadata(
     return meta
 
 
+def _apply_ttl(memory_id: str, *, days: float | None = None, clear: bool = False) -> dict[str, Any]:
+    """Set/clear a reversible pool-exit deadline on one memory, audited."""
+    context = detect_writer_context()
+    op_args = {
+        "memory_id": memory_id,
+        "days": days,
+        "clear": clear,
+        "actor_id": context.get("source") or MANUAL_SOURCE,
+    }
+    with audited("ttl", input_payload=op_args) as span:
+        span.result = execute("set_ttl", op_args)
+    return span.result
+
+
+@app.command()
+def ttl(
+    memory_id: str = typer.Argument(..., help="Memory ID to schedule (or clear) expiry for."),
+    days: Optional[float] = typer.Option(None, "--days", help="Days until the entry leaves the search pool (default 30)."),
+    clear: bool = typer.Option(False, "--clear", help="Remove any scheduled/materialized expiry (re-enters the pool)."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Schedule reversible expiry: the entry leaves default search at the
+    deadline (lazily enforced; the daemon materializes it later). Reverse
+    any time with --clear."""
+    result = _apply_ttl(memory_id, days=days, clear=clear)
+    output(result, command="ttl", fmt=chosen_format(output_format, json_flag))
+
+
+def _flag_suggestion(pair: dict[str, Any]) -> str:
+    """Reviewer guidance per suspicion kind/verdict (lifecycle design R4)."""
+    if pair.get("kind") == "timestamp":
+        return (
+            "fix via `update <memory_id> '<corrected text>'` (expires this flag) | "
+            "false positive -> `stale dismiss <pair_id>`"
+        )
+    if pair.get("verdict") in {"PROGRESS_TICK", "EVENT_SCOPED"}:
+        return (
+            "settled/closed -> `stale confirm <pair_id>` (expires now) | "
+            "still alive -> `stale ttl <pair_id> [--days 30]` | "
+            "false positive -> `stale dismiss <pair_id> [--pin]`"
+        )
+    return (
+        "verify born-unnecessary -> `stale confirm <pair_id>` (expires now), or "
+        "`delete <memory_id>` for your own fresh entry | keep the non-derivable "
+        "part -> `update <memory_id> '<rewritten>'` | false positive -> "
+        "`stale dismiss <pair_id> [--pin]`"
+    )
+
+
 @stale_app.command("list")
 def stale_list(
     session: Optional[str] = typer.Option(None, "--session", help="Only pairs raised by this session's writes."),
@@ -892,6 +942,12 @@ def stale_confirm(
         raise click.ClickException(f"pair not found: {pair_id}")
     if pair["disposition"] != "open":
         raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    kind = pair.get("kind") or "displacement"
+    if kind == "timestamp":
+        raise click.ClickException(
+            "timestamp suspicions are corrected via `update` (which expires the "
+            "flag) or closed with `stale dismiss`; confirm does not apply."
+        )
     context = detect_writer_context()
     if not force and not _interactive_tty():
         own_session = context.get("session_id")
@@ -904,22 +960,67 @@ def stale_confirm(
             )
     actor = context.get("source") or MANUAL_SOURCE
     # Dispose first so invalidate's close_for_old does not relabel this pair
-    # as 'obsoleted'; reopen it if the invalidate then fails, so the pair
-    # stays reviewable instead of stranded as confirmed-but-not-invalidated.
+    # as 'obsoleted'; reopen it if the follow-up mutation fails, so the pair
+    # stays reviewable instead of stranded as confirmed-but-not-executed.
     store.dispose(pair_id, "confirmed", disposed_by=actor)
     try:
-        result = run_invalidate(
-            pair["old_id"],
-            [pair["new_id"]],
-            reason=pair.get("reason") or f"confirmed staleness suspicion {pair_id}",
-            raise_on_error=True,
-        )
+        if kind == "necessity":
+            # A self-suspicion has no superseder; confirming it means the
+            # entry leaves the pool now via reversible expiry.
+            result: dict[str, Any] = {"expired": _apply_ttl(pair["old_id"], days=0)}
+        else:
+            result = {
+                "invalidate": run_invalidate(
+                    pair["old_id"],
+                    [pair["new_id"]],
+                    reason=pair.get("reason") or f"confirmed staleness suspicion {pair_id}",
+                    raise_on_error=True,
+                )
+            }
     except Exception:
         store.reopen(pair_id)
         raise
     output(
-        {"pair_id": pair_id, "disposition": "confirmed", "invalidate": result},
+        {"pair_id": pair_id, "disposition": "confirmed", **result},
         command="stale-confirm",
+        fmt=chosen_format(output_format, json_flag),
+    )
+
+
+@stale_app.command("ttl")
+def stale_ttl(
+    pair_id: str = typer.Argument(..., help="Open necessity suspicion pair id."),
+    days: Optional[float] = typer.Option(None, "--days", help="Days until natural expiry (default 30)."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Dispose a snapshot-type suspicion as still-alive: keep the entry in
+    the pool now, let it expire naturally at the deadline (reversible via
+    `ttl <memory_id> --clear`)."""
+    from mem0_local.staleness import pair_store
+
+    store = pair_store()
+    pair = store.get(pair_id)
+    if not pair:
+        raise click.ClickException(f"pair not found: {pair_id}")
+    if pair["disposition"] != "open":
+        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    if (pair.get("kind") or "displacement") != "necessity":
+        raise click.ClickException(
+            "ttl disposition applies to necessity suspicions; displacement pairs "
+            "use confirm/dismiss/merge, timestamp flags use update/dismiss."
+        )
+    context = detect_writer_context()
+    actor = context.get("source") or MANUAL_SOURCE
+    store.dispose(pair_id, "ttl", disposed_by=actor)
+    try:
+        result = _apply_ttl(pair["old_id"], days=days)
+    except Exception:
+        store.reopen(pair_id)
+        raise
+    output(
+        {"pair_id": pair_id, "disposition": "ttl", "ttl": result},
+        command="stale-ttl",
         fmt=chosen_format(output_format, json_flag),
     )
 
@@ -977,6 +1078,8 @@ def stale_merge(
         raise click.ClickException(f"pair not found: {pair_id}")
     if pair["disposition"] != "open":
         raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    if (pair.get("kind") or "displacement") != "displacement":
+        raise click.ClickException("merge applies only to displacement pairs.")
     context = detect_writer_context()
     if not force and not _interactive_tty():
         own_session = context.get("session_id")
@@ -1064,7 +1167,25 @@ def review(
     writes = execute("list", {"filters": filters, "top_k": 500, "start": 0, "end": 500})
     write_items = normalize_items(writes) or (writes if isinstance(writes, list) else [])
 
-    pairs = _enrich_pairs(pair_store().open_pairs(session_id=session))
+    all_pairs = pair_store().open_pairs(session_id=session)
+    displacement = [p for p in all_pairs if (p.get("kind") or "displacement") == "displacement"]
+    self_flags = []
+    for p in all_pairs:
+        if (p.get("kind") or "displacement") == "displacement":
+            continue
+        row = _fetch_memory(p["old_id"])
+        self_flags.append(
+            {
+                "pair_id": p["pair_id"],
+                "kind": p["kind"],
+                "memory_id": p["old_id"],
+                "verdict": p["verdict"],
+                "confidence": p["confidence"],
+                "reason": p["reason"],
+                "memory": str(row.get("memory") or "")[:160] if row else "<deleted>",
+                "suggested": _flag_suggestion(p),
+            }
+        )
     output(
         {
             "session": session,
@@ -1074,11 +1195,14 @@ def review(
                 for w in write_items
             ],
             "pending_stale_checks": pending,
-            "open_pairs": pairs,
+            "open_pairs": _enrich_pairs(displacement),
+            "self_flags": self_flags,
             "how_to_dispose": (
-                "stale confirm <pair_id> | stale dismiss <pair_id> [--pin] | "
-                "stale merge <pair_id> '<consolidated text>' | "
-                "update <old_id> '<corrected text>'"
+                "displacement: stale confirm <pair_id> | stale dismiss <pair_id> [--pin] | "
+                "stale merge <pair_id> '<consolidated text>' | update <old_id> '<corrected text>'. "
+                "necessity: stale confirm (expire now) | stale ttl <pair_id> [--days 30] | "
+                "delete <memory_id> (own fresh born-unnecessary entry) | stale dismiss [--pin]. "
+                "timestamp: update <memory_id> '<corrected>' | stale dismiss <pair_id>."
             ),
         },
         command="review",
@@ -1490,13 +1614,23 @@ def delete(
             existing.get("run_id") if isinstance(existing, dict) else None,
         ),
     ) as span:
-        result = execute("delete", {"all": False, "memory_id": memory_id})
-        try:
-            from mem0_local.staleness import pair_store
+        context = detect_writer_context()
+        result = execute(
+            "delete",
+            {
+                "all": False,
+                "memory_id": memory_id,
+                "actor_id": context.get("source") or MANUAL_SOURCE,
+            },
+        )
+        downgraded = isinstance(result, dict) and result.get("downgraded_to_expiry")
+        if not downgraded:
+            try:
+                from mem0_local.staleness import pair_store
 
-            pair_store().close_for_deleted_memory(memory_id)
-        except Exception:  # noqa: BLE001 - pair hygiene must never break delete.
-            pass
+                pair_store().close_for_deleted_memory(memory_id)
+            except Exception:  # noqa: BLE001 - pair hygiene must never break delete.
+                pass
         span.result = {"id": memory_id, "result": result}
     output(span.result, command="delete", fmt=chosen_format(output_format, json_flag))
 

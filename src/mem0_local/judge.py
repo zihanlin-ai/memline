@@ -194,3 +194,204 @@ def judge(
         response_format={"type": "json_object"},
     )
     return parse_judgments(response, {str(c["id"]) for c in candidates})
+
+
+# ---------------------------------------------------------------------------
+# Necessity judge (lifecycle design R1)
+# ---------------------------------------------------------------------------
+
+NECESSITY_VERDICTS = {
+    "DURABLE",
+    "PROGRESS_TICK",
+    "ACTIVITY_LOG",
+    "COMMIT_RECORD",
+    "REPO_FACT",
+    "EVENT_SCOPED",
+}
+
+# Prompt "v4" — gated by tools/necessity_judge_eval.py (2026-07-20): accuracy
+# 91-94%, flag precision 100%, zero false flags on the DURABLE trap subset
+# (lessons / corrections / high-cost audit conclusions) across all runs.
+NECESSITY_PROMPT = """\
+You are a memory-necessity judge for an engineering memory store. Entries
+are dated snapshots written by coding agents during infrastructure work.
+Given ONE entry, decide whether it deserves long-term memory, or belongs
+to a category that should be flagged for review.
+
+Verdicts:
+- DURABLE: worth keeping. THE DEFAULT — use whenever uncertain.
+- PROGRESS_TICK: the IN-FLIGHT state of a still-running process, worthless
+  within hours: percent complete, counts that are still changing
+  (done/running/pending), current load/traffic over a window, "launched
+  with PID N", "paused at step N", mid-run metrics. NOT this category:
+  the COMPLETED result of a controlled experiment/benchmark/comparison
+  together with its configuration — that is a DURABLE measurement even
+  if dated. But an observation of live OPERATIONAL state — current
+  traffic/latency over a window, queue depth, which hosts are idle/busy,
+  service health at a moment — is still PROGRESS_TICK even when the
+  probe itself completed: the observed state churns on its own.
+- ACTIVITY_LOG: narrates that an agent performed or should perform routine
+  actions ("agent read X then searched Y", "deleted directory as
+  requested", "updated file at 11:39", "A recommended B record their
+  findings") with no reusable technical fact beyond the action itself.
+- COMMIT_RECORD: the entry's central content is what a git commit/PR
+  contains, changed, or its metadata (hash, title, author, timestamps),
+  or an assertion that changes are now committed/pushed. git log/show
+  already stores all of this. Attached context like "tests passed" does
+  not rescue it — review rewrites to keep such fragments. Only when the
+  commit reference is incidental to a finding that stands on its own
+  ("root cause was X; fixed in commit Y") is the entry DURABLE.
+- REPO_FACT: restates what an agent could get by simply opening a named
+  checked-in file: a doc/skill's content, a config default, what a script
+  does. Phrasing it as a "mechanism" or "design decision" does not rescue
+  it if the file says the same thing. Only hard-won insight beyond the
+  file's text (a footgun, a proven interaction) makes it DURABLE.
+- EVENT_SCOPED: legitimate record whose usefulness is tied to an ongoing
+  event, campaign, or handoff. Cues: "pending", "blocked until",
+  "awaiting", "not yet done", "next gate is", "requires X before Y",
+  "machines held/locked for the run", staging/preparation state for an
+  upcoming batch. The payload is an open dependency or coordination
+  state, not a finding; it should expire when the event closes. (An
+  in-flight NUMBER is PROGRESS_TICK; an open TO-DO/dependency is
+  EVENT_SCOPED.)
+
+Hard rules — these override everything above:
+1. Judge by RE-ACQUISITION COST, not theoretical derivability. A
+   conclusion distilled from hours of auditing, debugging, instrumented
+   experiments, or sweeps is DURABLE even if re-derivable from code
+   ("audited the call chain and proved X", "mechanism investigation
+   found Y").
+2. Corrections, retractions, and hard-won lessons are ALWAYS DURABLE:
+   entries marking earlier conclusions wrong/superseded/withdrawn, and
+   learned-the-hard-way rules (footguns, gotchas, mandatory safeguards).
+   They prevent future agents from repeating mistakes.
+3. COMPLETED measurements/comparisons with their configuration,
+   decisions/rules with rationale, root-cause findings, external-world
+   facts (hosts, auth quirks, artifact paths, hashes), and pointers to
+   archives are DURABLE.
+4. When uncertain between a flag category and DURABLE, choose DURABLE.
+   When certain it should be flagged but torn between two flag
+   categories, pick the one matching the entry's dominant content.
+
+confidence: probability a human reviewer confirms your verdict.
+reason: ONE short sentence naming what the entry is. Never quote long
+fragments of the entry.
+
+Output JSON only:
+{"verdict":"...","confidence":0.0,"reason":"..."}
+"""
+
+
+def parse_single_judgment(
+    response: str | None,
+    allowed_verdicts: set[str],
+    *,
+    default_verdict: str,
+) -> dict[str, Any]:
+    """Parse a one-entry judgment; unknown verdicts fall back to the default."""
+    if not response:
+        raise ValueError("judge returned an empty response")
+    text = response.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n|```$", "", text).strip()
+    try:
+        data = json.loads(text, strict=False)
+    except json.JSONDecodeError:
+        m = re.search(r'"verdict"\s*:\s*"([A-Za-z_]+)"', text)
+        if not m:
+            raise ValueError(f"judge returned non-JSON output: {text[:200]}") from None
+        data = {"verdict": m.group(1), "confidence": 0.0, "reason": "<truncated output>"}
+    verdict = str(data.get("verdict", "")).upper()
+    if verdict not in allowed_verdicts:
+        verdict = default_verdict
+    try:
+        confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return {
+        "verdict": verdict,
+        "confidence": confidence,
+        "reason": str(data.get("reason") or "")[:500],
+    }
+
+
+def judge_necessity(llm: Any, entry: dict[str, Any]) -> dict[str, Any]:
+    """Judge whether one entry deserves long-term memory (advisory only)."""
+    user = "## Entry (written {})\n{}".format(
+        entry.get("date") or "unknown date", entry.get("text", "")
+    )
+    response = llm.generate_response(
+        messages=[
+            {"role": "system", "content": NECESSITY_PROMPT},
+            {"role": "user", "content": user},
+        ],
+        response_format={"type": "json_object"},
+    )
+    return parse_single_judgment(
+        response, NECESSITY_VERDICTS, default_verdict="DURABLE"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Timestamp / attribution mismatch judge (lifecycle design R2)
+# ---------------------------------------------------------------------------
+
+TIMESTAMP_VERDICTS = {"CONSISTENT", "TIMESTAMP_SUSPECT", "ATTRIBUTION_SUSPECT"}
+
+TIMESTAMP_PROMPT = """\
+You check one engineering memory entry for obvious timestamp or actor
+mismatches. Agents on long sessions lose track of time (an experiment
+crosses midnight and the text still says yesterday's date) or misattribute
+actions ("user did X" for the writing agent's own routine action). The CLI
+stamps authoritative metadata; you compare the entry text against it.
+
+You are given: the entry text, the authoritative ingestion time (UTC, from
+the CLI clock), the recorded creation time, and the writer identity.
+
+Verdicts:
+- CONSISTENT: no clear contradiction. THE DEFAULT — use unless the
+  mismatch is unmistakable.
+- TIMESTAMP_SUSPECT: the text narrates CURRENT or just-completed events
+  (present/just-finished tense) under a date that contradicts the
+  authoritative ingestion time by more than roughly one day. Narrating a
+  historical event with its own old date is FINE. A few hours of drift
+  around midnight is FINE.
+- ATTRIBUTION_SUSPECT: the text attributes an action to an actor in clear
+  contradiction with the writer identity and context. Agents legitimately
+  record the user's decisions and other agents' actions — flag only when
+  the attribution is plainly impossible or reversed.
+
+confidence: probability a human reviewer confirms the mismatch.
+reason: one short sentence naming the contradiction (or "consistent").
+
+Output JSON only:
+{"verdict":"...","confidence":0.0,"reason":"..."}
+"""
+
+
+def judge_timestamp(
+    llm: Any,
+    entry: dict[str, Any],
+    *,
+    ingested_at: str,
+    created_at: str | None,
+    writer: str | None,
+) -> dict[str, Any]:
+    """Flag obvious timestamp/attribution mismatches (advisory only)."""
+    user = (
+        f"## Authoritative metadata\n"
+        f"ingested_at (CLI clock, UTC): {ingested_at}\n"
+        f"created_at: {created_at or 'same as ingested_at'}\n"
+        f"writer identity: {writer or 'unknown'}\n\n"
+        f"## Entry text\n{entry.get('text', '')}"
+    )
+    response = llm.generate_response(
+        messages=[
+            {"role": "system", "content": TIMESTAMP_PROMPT},
+            {"role": "user", "content": user},
+        ],
+        response_format={"type": "json_object"},
+    )
+    return parse_single_judgment(
+        response, TIMESTAMP_VERDICTS, default_verdict="CONSISTENT"
+    )

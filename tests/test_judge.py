@@ -77,6 +77,52 @@ class ParseJudgmentsTests(unittest.TestCase):
             parse_judgments(json.dumps({"something": []}), {"a"})
 
 
+class ParseSingleJudgmentTests(unittest.TestCase):
+    def test_valid_necessity_verdict(self) -> None:
+        from mem0_local.judge import NECESSITY_VERDICTS, parse_single_judgment
+
+        out = parse_single_judgment(
+            json.dumps({"verdict": "progress_tick", "confidence": 0.9, "reason": "r"}),
+            NECESSITY_VERDICTS,
+            default_verdict="DURABLE",
+        )
+        self.assertEqual(out["verdict"], "PROGRESS_TICK")
+
+    def test_unknown_verdict_falls_back_to_default(self) -> None:
+        from mem0_local.judge import NECESSITY_VERDICTS, parse_single_judgment
+
+        out = parse_single_judgment(
+            json.dumps({"verdict": "BANANA", "confidence": 0.9, "reason": "r"}),
+            NECESSITY_VERDICTS,
+            default_verdict="DURABLE",
+        )
+        self.assertEqual(out["verdict"], "DURABLE")
+
+    def test_truncated_output_salvages_verdict(self) -> None:
+        from mem0_local.judge import TIMESTAMP_VERDICTS, parse_single_judgment
+
+        out = parse_single_judgment(
+            '{"verdict":"TIMESTAMP_SUSPECT","confidence":0.8,"reason":"cut of',
+            TIMESTAMP_VERDICTS,
+            default_verdict="CONSISTENT",
+        )
+        self.assertEqual(out["verdict"], "TIMESTAMP_SUSPECT")
+
+    def test_confidence_clamped_and_empty_raises(self) -> None:
+        from mem0_local.judge import NECESSITY_VERDICTS, parse_single_judgment
+
+        out = parse_single_judgment(
+            json.dumps({"verdict": "DURABLE", "confidence": 3.0, "reason": "r"}),
+            NECESSITY_VERDICTS,
+            default_verdict="DURABLE",
+        )
+        self.assertEqual(out["confidence"], 1.0)
+        with self.assertRaises(ValueError):
+            parse_single_judgment(None, NECESSITY_VERDICTS, default_verdict="DURABLE")
+        with self.assertRaises(ValueError):
+            parse_single_judgment("garbage", NECESSITY_VERDICTS, default_verdict="DURABLE")
+
+
 class BuildUserMessageTests(unittest.TestCase):
     def test_contains_new_entry_and_candidates(self) -> None:
         msg = build_user_message(

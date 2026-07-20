@@ -242,6 +242,13 @@ Output JSON only:
 """
 
 
+# "prod" = whatever judge.py currently ships, so a rerun of this eval always
+# gates the deployed prompt against the labeled set.
+sys.path.insert(0, str(HERE.parent / "src"))
+from mem0_local.judge import NECESSITY_PROMPT as _PROD_NECESSITY_PROMPT  # noqa: E402
+
+PROMPTS["prod"] = _PROD_NECESSITY_PROMPT
+
 # v3 = v2 with two surgical deltas: (a) operational-state snapshots are ticks
 # even when "complete"; (b) suppress the insight-rescue of single repo facts.
 PROMPTS["v3"] = PROMPTS["v2"].replace(

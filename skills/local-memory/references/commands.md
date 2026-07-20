@@ -224,21 +224,36 @@ Full semantics: `.agents/skills/local-memory/references/staleness-design.md`.
 Invalidation is metadata-only (`superseded_by` list on the memory), reversible,
 and audited; invalidated entries leave the default search pool but keep text,
 history, and manifest rows. Every raw add also queues an advisory background
-judge (`stale_check` event) whose output is suspicion pairs — never a state
-change.
+judge (`stale_check` event) — never a state change — which now produces three
+suspicion kinds:
+
+- `displacement`: an existing entry may be superseded by the new one;
+- `necessity`: the new entry itself may not deserve long-term memory
+  (verdicts: PROGRESS_TICK, ACTIVITY_LOG, COMMIT_RECORD, REPO_FACT,
+  EVENT_SCOPED; DURABLE never opens a flag);
+- `timestamp`: the entry's claimed date/actor contradicts the CLI's
+  authoritative metadata (TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT).
 
 ```bash
 mem0-local add "newer fact" --supersedes <old_id>[,<old_id2>]  # invalidate at write time
 mem0-local invalidate <memory_id> --by <new_id> [--reason "..."]
 mem0-local revive <memory_id>                                  # undo an invalidation
-mem0-local search "query" --include-superseded                 # history digs
+mem0-local ttl <memory_id> [--days 30] [--clear]               # schedule/cancel reversible expiry
+mem0-local search "query" --include-superseded                 # history digs (includes expired)
 mem0-local get <memory_id> --resolve-head                      # follow the supersession chain
 mem0-local review [--session <id>] [--wait]                    # handoff: writes + raised suspicions
 mem0-local stale list [--session <id>]
 mem0-local stale confirm <pair_id>
 mem0-local stale dismiss <pair_id> [--pin]
 mem0-local stale merge <pair_id> "<consolidated text>"
+mem0-local stale ttl <pair_id> [--days 30]                     # snapshot still alive: expire later
 ```
+
+TTL semantics: `ttl` schedules a reversible pool-exit deadline (default 30
+days). The search filter honors it lazily, so the entry leaves default search
+at the deadline even if the daemon is down; the daemon materializes expiries
+in the background. `ttl --clear` re-enters the pool at any time, including
+after expiry.
 
 `stale merge` is for pairs where the new entry ADDS detail rather than
 replacing the old answer: the newer memory is updated to the consolidated
@@ -257,9 +272,21 @@ Rules that matter in practice:
 - `stale confirm` from a non-interactive session is allowed only for pairs
   raised by that session's own writes; cross-session backlog needs an
   interactive session.
-- Deleting a memory closes open pairs that reference it.
+- `stale confirm` on a necessity flag expires the entry immediately
+  (reversible via `ttl <memory_id> --clear`) — a self-suspicion has no
+  superseder to invalidate by. Timestamp flags are corrected via `update`
+  (which auto-expires flags judged against the old text) and closed with
+  `stale dismiss`.
+- Session handoff (the "过期审查" the user requests before ending a session):
+  run `review`, then dispose every `self_flags` item — born-unnecessary own
+  entries may be hard-`delete`d; still-alive snapshots get `stale ttl`;
+  timestamp flags get `update`. The `suggested` field on each flag spells
+  out the options.
+- Deleting a memory closes open pairs that reference it. `delete` refuses to
+  hard-delete a supersession-chain participant and downgrades to immediate
+  reversible expiry instead (`downgraded_to_expiry` in the result).
 - Search hits with open suspicions carry `suspected_stale: true` plus a
-  `suspicions` list (suspected_by, verdict, confidence, reason).
+  `suspicions` list (kind, suspected_by, verdict, confidence, reason).
 
 ## Diagnostics
 

@@ -55,6 +55,10 @@ class RegistryMetadataTests(unittest.TestCase):
         with patch.dict(ops.os.environ, {"MEM0_LOCAL_DAEMON_TIMEOUT": "bad"}, clear=False):
             self.assertEqual(ops.op_timeout("search", {"rerank": False}), 30.0)
 
+    def test_set_ttl_registered(self):
+        self.assertIn("set_ttl", ops.OPS)
+        self.assertEqual(ops.op_timeout("set_ttl", {}), 30.0)
+
     def test_llm_slot_and_exclusive_flags(self):
         self.assertTrue(ops.is_llm_bound("add", {"infer": True}))
         self.assertTrue(ops.is_llm_bound("add", {}))  # add defaults to infer=True

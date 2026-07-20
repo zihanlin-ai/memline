@@ -54,6 +54,10 @@ CPU_SAMPLE_SECONDS = 0.05
 MAX_WORKERS = int(os.environ.get("MEM0_LOCAL_DAEMON_WORKERS", "32"))
 LLM_CONCURRENCY = int(os.environ.get("MEM0_LOCAL_LLM_CONCURRENCY", "4"))
 ASYNC_WORKERS = int(os.environ.get("MEM0_LOCAL_ASYNC_WORKERS", "2"))
+# TTL expiry is enforced lazily by the search filter; this loop only
+# materializes it (payload stamp + history + pair closure), so a long
+# interval is fine.
+TTL_HARVEST_INTERVAL_SECONDS = float(os.environ.get("MEM0_LOCAL_TTL_HARVEST_SECONDS", str(6 * 3600)))
 
 _lifetime_lock_handle = None
 _event_queue: EventQueue | None = None
@@ -391,6 +395,26 @@ def _worker_loop(client: Any, queue: EventQueue, stop_event: threading.Event) ->
         _process_event(client, queue, item)
 
 
+def _ttl_harvest_loop(client: Any, stop_event: threading.Event) -> None:
+    """Materialize lazy TTL expiries once at startup, then periodically."""
+    from mem0_local.staleness import harvest_expired
+
+    while True:
+        _store_gate.acquire_shared()
+        try:
+            result = harvest_expired(client)
+            if result.get("harvested"):
+                print(f"ttl harvest: expired {result['harvested']} entries", file=sys.stderr, flush=True)
+            elif result.get("error"):
+                print(f"ttl harvest: {result['error']}", file=sys.stderr, flush=True)
+        except Exception as exc:  # noqa: BLE001 - harvest must never kill the daemon.
+            print(f"ttl harvest failed: {exc}", file=sys.stderr, flush=True)
+        finally:
+            _store_gate.release_shared()
+        if stop_event.wait(timeout=TTL_HARVEST_INTERVAL_SECONDS):
+            return
+
+
 def _serve_connection(client: Any, conn: socket.socket) -> None:
     with conn:
         try:
@@ -461,6 +485,12 @@ def serve() -> None:
     for worker in workers:
         worker.start()
 
+    ttl_stop = threading.Event()
+    ttl_thread = threading.Thread(
+        target=_ttl_harvest_loop, args=(client, ttl_stop), daemon=True, name="mem0-ttl"
+    )
+    ttl_thread.start()
+
     PID_PATH.write_text(str(os.getpid()))
     server.listen(64)
 
@@ -495,6 +525,7 @@ def serve() -> None:
             except FileNotFoundError:
                 pass
         executor.shutdown(wait=True)
+        ttl_stop.set()
         # Give event workers a grace window; anything still 'processing' after
         # exit is requeued by recover_stale() on the next start.
         worker_stop.set()

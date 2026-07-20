@@ -78,7 +78,15 @@ def _add(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _update(client: Any, args: dict[str, Any]) -> Any:
-    return client.update(args["memory_id"], args["text"], metadata=args["metadata"])
+    result = client.update(args["memory_id"], args["text"], metadata=args["metadata"])
+    # Open suspicions judged against the pre-update text no longer apply.
+    try:
+        from mem0_local.staleness import pair_store
+
+        pair_store().close_for_updated_text(args["memory_id"], args["text"])
+    except Exception:  # noqa: BLE001 - pair hygiene must never break update.
+        pass
+    return result
 
 
 def _delete(client: Any, args: dict[str, Any]) -> Any:
@@ -88,7 +96,36 @@ def _delete(client: Any, args: dict[str, Any]) -> Any:
             agent_id=args.get("agent_id"),
             run_id=args.get("run_id"),
         )
-    return client.delete(args["memory_id"])
+    from mem0_local.staleness import delete_guard, set_ttl
+
+    memory_id = args["memory_id"]
+    guard = delete_guard(client, memory_id)
+    if guard["participates"]:
+        # Chain participants are never hard-deleted (dangling superseded_by
+        # pointers would break resolve_head); downgrade to immediate
+        # reversible expiry instead (design §9).
+        result = set_ttl(client, memory_id, days=0, actor_id=args.get("actor_id"))
+        return {
+            "id": memory_id,
+            "deleted": False,
+            "downgraded_to_expiry": True,
+            "reason": guard["reason"],
+            "ttl": result,
+        }
+    return client.delete(memory_id)
+
+
+def _set_ttl(client: Any, args: dict[str, Any]) -> Any:
+    from mem0_local.staleness import set_ttl
+
+    return set_ttl(
+        client,
+        args["memory_id"],
+        days=args.get("days"),
+        expires_at=args.get("expires_at"),
+        clear=args.get("clear", False),
+        actor_id=args.get("actor_id"),
+    )
 
 
 def _history(client: Any, args: dict[str, Any]) -> Any:
@@ -180,6 +217,7 @@ OPS: dict[str, OpSpec] = {
     "invalidate": OpSpec(_invalidate, timeout=30.0),
     "revive": OpSpec(_revive, timeout=30.0),
     "stale_pin": OpSpec(_stale_pin, timeout=30.0),
+    "set_ttl": OpSpec(_set_ttl, timeout=30.0),
     "resolve_head": OpSpec(_resolve_head, timeout=30.0),
     "entity_list": OpSpec(_entity_list, timeout=30.0),
     "entity_get": OpSpec(_entity_get, timeout=30.0),
