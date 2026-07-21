@@ -1,6 +1,6 @@
 ---
 name: local-memory
-description: Use the `mem0-local` CLI for workspace-local memory search, add, get, list, update, delete, and audited historical memory import. Trigger when the user asks to search, add, migrate, audit, troubleshoot, or inspect local memory backed by the workspace Mem0/Qdrant store.
+description: Use the `mem0-local` CLI for workspace-local memory search, add, get, list, update, delete, and audited historical memory import. Trigger when the user asks to search, add, migrate, audit, troubleshoot, or inspect local memory backed by the workspace Mem0/Qdrant store, or asks for an end-of-session handoff review (过期审查 / 收尾审查 / handoff review).
 ---
 
 # Local Memory
@@ -15,18 +15,12 @@ mem0-local <command> --help
 
 mem0-local add "accurate memory text"
 mem0-local add "newer fact" --supersedes <old_id>   # when this write knowingly replaces an old entry
-mem0-local search "query"                            # invalidated entries excluded by default
-mem0-local search "query" --include-superseded       # history digs: include invalidated entries
-mem0-local get <memory_id> [--resolve-head]
+mem0-local search "query"                            # retired entries excluded by default
+mem0-local search "query" --include-superseded       # history digs: include retired entries
+mem0-local get <memory_id>
 mem0-local update <memory_id> "updated memory text"
 mem0-local delete <memory_id> --force   # destructive ops confirm on a TTY; non-interactive agents must pass --force (preview with --dry-run)
 mem0-local entity list --contains "<text>"
-mem0-local review --wait                             # at handoff: session writes + suspicions they raised
-mem0-local stale list                                # open staleness suspicions (advisory judge output)
-mem0-local stale confirm <pair_id>                   # invalidate the old memory (reversible)
-mem0-local stale dismiss <pair_id> [--pin]           # reject a suspicion; --pin exempts the memory forever
-mem0-local stale merge <pair_id> "<consolidated text>"  # additive-detail pairs: newer entry absorbs both, older retires
-mem0-local invalidate <memory_id> --by <new_id>      # manual supersession; undo with `revive <memory_id>`
 ```
 
 In Codex/Claude contexts, output defaults to agent-readable JSON. Use `--json` explicitly only for portability, or use `--output text` / `--output table` for human-readable output.
@@ -46,10 +40,7 @@ In Codex/Claude contexts, output defaults to agent-readable JSON. Use `--json` e
 - `search` and `get` return the stored timestamps.
 - Keep `search` as pure semantic retrieval: pass a query, optionally `--top-k` or `--rerank`, and do not use it for agent/session/time scoping. Default retrieval is hybrid (vector + BM25); `--keyword` switches to pure BM25 term matching (exact identifiers, paths, error strings), and `--fields memory,score` projects result fields. The local `--threshold` default is 0.1 (official CLI: 0.3) on purpose — local hybrid scores are distributed lower; do not "align" it to 0.3.
 - Raw adds hash-dedup exact re-fires (event `NONE` with `duplicate_of`) and annotate semantic near-duplicates with `near_duplicate_of`/`near_duplicate_score` (cosine >= 0.95) without skipping the store — review the hint and `delete --force` the redundant copy if it truly duplicates.
-- Supersession: when a new fact replaces an evolving old one and you know it (you just re-ran the experiment, the state moved), write `add "..." --supersedes <old_id>` — the old entry is invalidated in the same step. Otherwise just add normally: every raw add also queues an advisory background staleness judge that compares the new entry to its neighbors and opens suspicion pairs. Invalidation is metadata-only and reversible (`revive <id>`): text, history, and manifests are always preserved; the entry merely leaves the default search pool.
-- Search results may carry `suspected_stale: true` with `suspicions` (who suspects it, verdict, confidence, reason). Treat as advisory: the entry is still in the pool, but weigh whether a newer answer exists before relying on it.
-- At session end / handoff, run `mem0-local review --wait` and dispose the listed pairs: `stale confirm <pair_id>` (invalidates the old entry), `stale dismiss <pair_id>` (permanent pair-level rejection; add `--pin` if the memory keeps attracting false suspicion), `stale merge <pair_id> "<consolidated text>"` (when the new entry adds detail rather than replacing: the newer entry is updated to carry both entries' still-valid facts and the older retires), or `update <old_id> "..."` to correct the old text instead. Non-interactive sessions may only confirm pairs raised by their own writes; leave cross-session backlog to the user's interactive sessions. A stderr banner reports any open-suspicion backlog — glance at `stale list` when you see it.
-- The background judge also reviews each new entry itself and `review` lists the results as `self_flags`: necessity flags with verdict BORN_UNNECESSARY (activity narration / commit restatement / repo-readable fact) or EXPIRING (progress tick / event-scoped coordination), and timestamp flags (claimed date or actor contradicts the CLI's authoritative metadata). Dispose each per its `suggested` field: born-unnecessary own fresh entries → `delete <memory_id>`; still-alive snapshots → `stale ttl <pair_id> [--days 7]` (leaves the pool at the deadline, reversible); confirmed dead → `stale confirm` (expires now); timestamp issues → `update` with corrected text; false positives → `stale dismiss [--pin]`. `review` also lists `ttl_expired`: entries whose TTL deadline fired and left the pool — any session may `stale confirm` (accept) or `stale ttl` (renew, re-enters pool). Corrections, hard-won lessons, costly audit conclusions, credential/artifact location pointers, and standing constraints are never flagged by design — if one is, dismiss and pin it.
+- Lifecycle hygiene is deliberately invisible during task execution. Background judges quietly mark entries for later; `suspected_stale`/`suspicions` fields on search hits are advisory (prefer checking whether a newer answer exists); stderr suspicion banners require NO action mid-task. When a write knowingly replaces an evolving old fact, `add "..." --supersedes <old_id>` retires the old entry in the same step — that is the only lifecycle action that belongs inside a task. Everything else (review, dispositions, TTL, flags) happens exactly once, at session handoff, and only when the user asks for it (e.g. "做一次过期审查"): at that moment read [handoff-review.md](references/handoff-review.md) and follow it.
 - `delete` and `entity delete` are guarded: they prompt for confirmation on a TTY and refuse in non-interactive contexts without `--force`; `--dry-run` previews what would be deleted (for `delete --all --dry-run`, without needing `--force`).
 - `entity list/delete` manage the local entity graph (spaCy-extracted entities linked to memories). Deleting an entity row never touches the memories themselves; use it to prune junk or stale entities. `entity delete` is audited to the live manifest like other mutations.
 - Use `list --filter ...` only when the user asks to enumerate/audit memories by structured fields such as time range, writer, session, source, or import batch. See [commands.md](references/commands.md) for field details.
@@ -66,4 +57,5 @@ In Codex/Claude contexts, output defaults to agent-readable JSON. Use `--json` e
 - For the full command list, time-range listing, and common examples, read [commands.md](references/commands.md).
 - For real paths, PATH/symlink details, reusable package location, workspace config, store layout, Qdrant lock behavior, missing command issues, or rollback checks, read [troubleshooting.md](references/troubleshooting.md).
 - For historical Markdown ledger migration policy, timestamp-source rules, and dry-run/import audit guidance, read [imports.md](references/imports.md).
+- For the end-of-session handoff review workflow (review output anatomy, disposition commands, protection list, authority rules), read [handoff-review.md](references/handoff-review.md) — only at handoff time, never mid-task.
 - For the staleness/supersession design (invalidation data model, background judge, disposition authority, edge-case state machine), the review false-positive rubric, and how to retrace a conclusion's full lineage, read [staleness-design.md](references/staleness-design.md).
