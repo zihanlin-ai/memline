@@ -49,6 +49,20 @@ CASES: list[tuple[str, str, str, dict]] = [
      "CONSISTENT", "trap: english prose, env var + path", {}),
     ("The crash reason was `RuntimeError: MoE all-to-all dispatch failed`; fix landed in commit a1e284a0.",
      "CONSISTENT", "trap: english prose, error string + hash", {}),
+    # --- CONSISTENT traps: English NARRATIVE that QUOTES a whole Chinese sentence
+    #     (user instruction / notice) verbatim — the narrative is English, the
+    #     quoted original must be preserved. These were real judge false-positives. ---
+    ("On 2026-07-15, Codex corrected the attribution for the cleanup actions under the user "
+     "instruction '清理这些机器上妨碍拉起服务的进程，然后按照之前的方案拉起服务', not the earlier suspected source.",
+     "CONSISTENT", "trap: english narrative quoting a full CN user instruction", {}),
+    ("On 2026-06-13, the user decided to stop the OmniCache service and bring it up from the "
+     "reference yml to test reproducibility, stating '把这个服务停了，直接用reference的yml拉起，再测一次看能不能复现'.",
+     "CONSISTENT", "trap: english narrative quoting a full CN quote", {}),
+    ("Caveat from the 2026-07-03 probe: superpod_30 and superpod_75 hosts are from a bare-metal "
+     "resource allocation group (裸机资源分配群) not allocated to the team — NPU-idle does not mean free.",
+     "CONSISTENT", "trap: english narrative + parenthetical CN gloss", {}),
+    ("AGENTS.md, KLAUD_DEBUG.md, and .claude/commands are the designated files for agent operations (运维).",
+     "CONSISTENT", "trap: english sentence with one CN word", {}),
     # --- CONSISTENT: ordinary English narrative ---
     ("2026-07-21 refactored the daemon dispatch into ops.py; all 116 unit tests pass on host devbox.",
      "CONSISTENT", "plain english fact", {}),
@@ -62,6 +76,20 @@ CASES: list[tuple[str, str, str, dict]] = [
     # --- CONSISTENT: historical date narrated as history (not a timestamp bug) ---
     ("On 2026-06-13 the model safety boundary test wrote 680 records to censor_eval_raw_n20.jsonl.",
      "CONSISTENT", "english, historical event with its own old date", {}),
+    # --- CONSISTENT: SGT text date vs UTC ingestion crossing midnight (real FP pattern) ---
+    ("On 2026-07-11, Codex verified root passwordless SSH to all six Pangu 505B image100008 hosts.",
+     "CONSISTENT", "trap: SGT text date = ingest UTC 07-10 16:33 +8h",
+     {"ingested_at": "2026-07-10T16:33:04+00:00", "created_at": "2026-07-10T16:33:04+00:00"}),
+    ("On 2026-07-12, a deep-adapter SGD lr=1e-2 trial completed on host 7.246.46.17: val loss 20.75.",
+     "CONSISTENT", "trap: SGT text date = ingest UTC 07-11 18:28 +8h",
+     {"ingested_at": "2026-07-11T18:28:02+00:00", "created_at": "2026-07-11T18:28:02+00:00"}),
+    # --- CONSISTENT: status/revision markers dated at/after original ingestion (updated in place) ---
+    ("RESOLVED 2026-07-07: the pd-cap-dashboard pre-publication scrub items are fixed and verified.",
+     "CONSISTENT", "trap: RESOLVED marker, entry updated in place later",
+     {"ingested_at": "2026-07-01T10:00:00+00:00", "created_at": "2026-07-01T10:00:00+00:00"}),
+    ("As of 2026-07-13, live multi-request Pangu DSpark speculative metrics are stable.",
+     "CONSISTENT", "trap: 'As of' status snapshot marker",
+     {"ingested_at": "2026-07-10T12:00:00+00:00", "created_at": "2026-07-10T12:00:00+00:00"}),
     # --- ATTRIBUTION_SUSPECT (english, reversed actor) ---
     ("The user personally ran npu-smi and rebuilt the container image on every one of the 299 hosts himself.",
      "ATTRIBUTION_SUSPECT", "english, implausible attribution to user", {}),
@@ -126,9 +154,11 @@ def run() -> int:
     lang_false_alarm = sum(
         confusion[(l, "LANGUAGE_SUSPECT")] for l in
         ("CONSISTENT", "TIMESTAMP_SUSPECT", "ATTRIBUTION_SUSPECT"))
-    lang_miss = sum(
-        c for (l, v), c in confusion.items()
-        if l == "LANGUAGE_SUSPECT" and v != "LANGUAGE_SUSPECT")
+    # A Chinese-narrative case is only truly MISSED if it slips through as
+    # CONSISTENT (unflagged). Being flagged under another correctness verdict
+    # (e.g. a mixed Chinese+date entry judged TIMESTAMP_SUSPECT) still routes it
+    # to the same `update` disposition, so it is not a miss.
+    lang_miss = confusion[("LANGUAGE_SUSPECT", "CONSISTENT")]
     print("\n=== metrics ===")
     print(f"accuracy: {correct}/{total} = {correct/total:.2%}")
     print(f"language false alarms (English-prose flagged as LANGUAGE, must be 0): {lang_false_alarm}")

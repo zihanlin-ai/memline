@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 VERDICTS = {"SUPERSEDED", "DUPLICATE", "KEPT"}
@@ -379,31 +380,55 @@ You check one engineering memory entry for three defects: timestamp mismatch,
 actor misattribution, and non-English narrative. The CLI stamps authoritative
 metadata; compare the entry against it and against the store's writing rules.
 
-You are given: the entry text, the authoritative ingestion time (UTC, from
-the CLI clock), the recorded creation time, and the writer identity.
+You are given: the entry text, the authoritative ingestion time, the recorded
+creation time, and the writer identity. ALL times given to you are already in
+the workspace timezone Asia/Singapore (SGT, UTC+8); entry text dates are also
+written in SGT. Compare same-timezone dates only — do not reintroduce any UTC
+offset.
 
 Output exactly one verdict. CONSISTENT is the default — only flag an
 unmistakable case.
 - CONSISTENT: no clear defect.
-- TIMESTAMP_SUSPECT: the text narrates CURRENT or just-completed events
-  (present/just-finished tense) under a date that contradicts the
-  authoritative ingestion time by more than roughly one day. Narrating a
-  historical event with its own old date is FINE. A few hours of drift
-  around midnight is FINE.
+- TIMESTAMP_SUSPECT: the text narrates a CURRENT or just-completed event
+  (present/just-finished tense) under a date that contradicts the ingestion
+  time (both in SGT) by more than roughly one day. NOT suspect, all CONSISTENT:
+  narrating a historical event with its own past date; a same-day or one-day
+  boundary difference; and status/revision markers written when the entry was
+  created OR later updated in place — phrases like "As of <date>", "RESOLVED
+  <date>", "REVISED <date>", "updated <date>", "(updated <date>)". Such markers
+  legitimately carry a date at or slightly after the original ingestion time
+  because the entry was edited later; never flag them.
 - ATTRIBUTION_SUSPECT: the text attributes an action to an actor in clear
   contradiction with the writer identity and context. Agents legitimately
   record the user's decisions and other agents' actions — flag only when
   the attribution is plainly impossible or reversed.
-- LANGUAGE_SUSPECT: the entry's NARRATIVE is written in a non-English
-  language (usually Chinese) — whole sentences or clauses in Chinese. The
-  local store embeds with an English-only model, so non-English prose
-  retrieves poorly; entries must be written in English. This is NOT a
-  violation (stay CONSISTENT) when the narrative is English and the only
-  non-English characters sit inside PRESERVED TECHNICAL IDENTIFIERS — file
-  paths, shell commands, env var names, host names, model/artifact names,
-  error strings — or a short quoted proper-noun token (a channel/group name)
-  with no standard English form. Judge the language of the SENTENCES, not of
-  quoted identifiers.
+- LANGUAGE_SUSPECT: the ENTRY'S OWN NARRATION — the author's connecting
+  sentences — is written in Chinese instead of English. The local store embeds
+  with an English-only model, so Chinese prose retrieves poorly; entries must
+  be AUTHORED in English. Decide by the language the author writes IN, not by
+  whether any Chinese characters are present. Stay CONSISTENT when the narration
+  is English even if it also contains:
+    * preserved technical identifiers — paths, shell commands, env var names,
+      host names, model/artifact names, error strings;
+    * VERBATIM QUOTES of Chinese source material — a user instruction, a
+      broadcast notice, a channel/group name, a document heading — kept inside
+      quotes or parentheses. Quoting the original Chinese is CORRECT and does
+      not make the entry Chinese; a single Chinese gloss word likewise does not.
+  Flag ONLY when the author's own sentences (outside quotes and identifiers)
+  are Chinese.
+
+  LANGUAGE examples (decide by the author's own sentences):
+    * "On 2026-07-15 Codex corrected the attribution under the user instruction
+      '清理这些机器上妨碍拉起服务的进程'." -> CONSISTENT (English narration; the
+      Chinese is a verbatim quote).
+    * "superpod_30 hosts are from the bare-metal pool (裸机资源分配群); NPU-idle
+      does not mean free." -> CONSISTENT (English narration; Chinese gloss).
+    * "The designated files for agent operations (运维) are AGENTS.md and
+      KLAUD_DEBUG.md." -> CONSISTENT (English sentence, one Chinese word).
+    * "2026-07-20 训练已到 step652，loss=0.62，容器 running，accept_len 2.68。"
+      -> LANGUAGE_SUSPECT (the narration itself is Chinese).
+    * "已按用户要求在 remote-inventory.md 新增 Host Lease Utility 章节。"
+      -> LANGUAGE_SUSPECT (Chinese narration around English identifiers).
 
 If more than one defect applies, prefer LANGUAGE_SUSPECT (rewriting the entry
 in English is the fix and subsumes the rest).
@@ -468,6 +493,23 @@ def judge_safety(llm: Any, entry: dict[str, Any]) -> dict[str, Any]:
     return parse_single_judgment(response, SAFETY_VERDICTS, default_verdict="CLEAN")
 
 
+_SGT = timezone(timedelta(hours=8))
+
+
+def _to_sgt(iso: str | None) -> str | None:
+    """Render a UTC/ISO timestamp in Asia/Singapore (UTC+8), so the judge
+    compares SGT text dates against an SGT clock (workspace convention)."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return str(iso)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_SGT).strftime("%Y-%m-%d %H:%M:%S SGT")
+
+
 def judge_correctness(
     llm: Any,
     entry: dict[str, Any],
@@ -479,8 +521,8 @@ def judge_correctness(
     """Flag timestamp/attribution mismatches and non-English narrative (advisory only)."""
     user = (
         f"## Authoritative metadata\n"
-        f"ingested_at (CLI clock, UTC): {ingested_at}\n"
-        f"created_at: {created_at or 'same as ingested_at'}\n"
+        f"ingested_at (SGT, UTC+8): {_to_sgt(ingested_at)}\n"
+        f"created_at (SGT): {_to_sgt(created_at) or 'same as ingested_at'}\n"
         f"writer identity: {writer or 'unknown'}\n\n"
         f"## Entry text\n{entry.get('text', '')}"
     )
