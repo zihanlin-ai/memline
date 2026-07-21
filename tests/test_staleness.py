@@ -401,7 +401,7 @@ class RoutingFakeLlm:
         if "embedded live credentials" in system:
             self.safety_calls += 1
             return _json.dumps(self._safety)
-        if "timestamp or actor" in system:
+        if "actor misattribution" in system:
             self.timestamp_calls += 1
             return _json.dumps(self._timestamp)
         self.displacement_calls += 1

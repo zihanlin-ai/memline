@@ -395,7 +395,7 @@ disposition surface (`review` / `stale confirm|dismiss|ttl|merge`):
 |---|---|---|
 | `displacement` | does the new entry displace an old one? | SUPERSEDED / DUPLICATE / KEPT (floor 0.6) |
 | `necessity` | does the entry deserve long-term memory at all? | DURABLE / BORN_UNNECESSARY / EXPIRING (floor 0.8) |
-| `correctness` | does the claimed date/actor contradict CLI metadata? | CONSISTENT / TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT (floor 0.8) |
+| `correctness` | does the date/actor contradict CLI metadata, or is the narrative non-English (store embeds English-only)? | CONSISTENT / TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT / LANGUAGE_SUSPECT (floor 0.8) |
 | `ttl_expiry` | a TTL deadline fired — accept or renew? | TTL_EXPIRED (always opens; any session may dispose) |
 | `safety` | does the entry embed a plaintext credential value? | CLEAN / SECRET_SUSPECT (floor 0.6 — missing a leak costs more than a spurious review moment) |
 

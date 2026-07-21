@@ -25,7 +25,7 @@ The output has four work lists:
 |---|---|---|
 | `writes` | everything this session added | you |
 | `open_pairs` | displacement suspicions: an old entry may be superseded by one of this session's writes | background judge |
-| `self_flags` | this session's own writes flagged by the self-check judges: **safety** (a suspected embedded plaintext credential), **correctness** (timestamp/attribution mismatch), and **necessity** (BORN_UNNECESSARY: activity narration / commit restatement / repo-readable fact — or EXPIRING: progress tick / event-scoped coordination). Emitted already sorted by disposition priority (safety → correctness → necessity). | background judge |
+| `self_flags` | this session's own writes flagged by the self-check judges: **safety** (a suspected embedded plaintext credential), **correctness** (timestamp/attribution mismatch, or non-English narrative — the store embeds English-only, so Chinese prose retrieves poorly), and **necessity** (BORN_UNNECESSARY: activity narration / commit restatement / repo-readable fact — or EXPIRING: progress tick / event-scoped coordination). Emitted already sorted by disposition priority (safety → correctness → necessity). | background judge |
 | `ttl_expired` | entries whose TTL deadline fired and who left the search pool | harvest loop (any session may dispose these) |
 
 Each flagged item carries a `suggested` field listing the applicable
@@ -58,9 +58,12 @@ If the flag is a false alarm (a location pointer, hash, or public identifier),
 design. Redact even entries already invalidated — the value survives pool exit.
 
 **2. Correctness flags** (`self_flags`, kind `correctness`): the fact is true
-but its date or actor is written wrong (timestamp/attribution mismatch) — fix
-with `update` (which also expires the flag); `stale dismiss` if the flag is
-mistaken. Never expire these.
+but written wrong — a date/actor mismatch (TIMESTAMP/ATTRIBUTION_SUSPECT) or a
+non-English narrative (LANGUAGE_SUSPECT; entries must be English prose because
+the store's embedding is English-only — only technical identifiers may keep
+non-English characters). Fix with `update` (rewrite the date/actor, or
+re-express the entry in English; this also expires the flag); `stale dismiss`
+if the flag is mistaken. Never expire these.
 
 **3. Necessity flags** (`self_flags`, kind `necessity`):
 ```bash

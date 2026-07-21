@@ -245,8 +245,10 @@ suspicion kinds:
   (verdicts: BORN_UNNECESSARY — activity narration / commit restatement /
   repo-readable fact; EXPIRING — progress tick / event-scoped coordination;
   DURABLE never opens a flag, and flags open only at confidence >= 0.8);
-- `timestamp`: the entry's claimed date/actor contradicts the CLI's
-  authoritative metadata (TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT);
+- `correctness`: the entry's claimed date/actor contradicts the CLI's
+  authoritative metadata (TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT), or its
+  narrative is non-English while the store embeds English-only
+  (LANGUAGE_SUSPECT — only technical identifiers may keep non-English chars);
 - `ttl_expiry`: a TTL deadline fired — the entry left the pool and awaits
   review: `stale confirm` accepts the expiry, `stale ttl` renews it.
 
@@ -292,13 +294,13 @@ Rules that matter in practice:
   interactive session.
 - `stale confirm` on a necessity flag expires the entry immediately
   (reversible via `ttl <memory_id> --clear`) — a self-suspicion has no
-  superseder to invalidate by. Timestamp flags are corrected via `update`
-  (which auto-expires flags judged against the old text) and closed with
-  `stale dismiss`.
+  superseder to invalidate by. Correctness flags are corrected via `update`
+  (fix the date/actor, or re-express the entry in English; this auto-expires
+  flags judged against the old text) and closed with `stale dismiss`.
 - Session handoff (the "过期审查" the user requests before ending a session):
   run `review`, then dispose every `self_flags` item — born-unnecessary own
   entries may be hard-`delete`d; still-alive snapshots get `stale ttl`;
-  timestamp flags get `update`. The `suggested` field on each flag spells
+  correctness flags get `update`. The `suggested` field on each flag spells
   out the options.
 - Deleting a memory closes open pairs that reference it. `delete` refuses to
   hard-delete a supersession-chain participant and downgrades to immediate

@@ -367,23 +367,24 @@ def judge_necessity(llm: Any, entry: dict[str, Any]) -> dict[str, Any]:
 # Timestamp / attribution mismatch judge (lifecycle design R2)
 # ---------------------------------------------------------------------------
 
-# Correctness judge — timestamp/attribution mismatches. The `correctness`
-# suspicion kind; verdict values are kept stable for stored-row compatibility.
-CORRECTNESS_VERDICTS = {"CONSISTENT", "TIMESTAMP_SUSPECT", "ATTRIBUTION_SUSPECT"}
+# Correctness judge — timestamp/attribution mismatches and non-English
+# narrative. The `correctness` suspicion kind; verdict values are kept stable
+# for stored-row compatibility (LANGUAGE_SUSPECT added 2026-07-21).
+CORRECTNESS_VERDICTS = {
+    "CONSISTENT", "TIMESTAMP_SUSPECT", "ATTRIBUTION_SUSPECT", "LANGUAGE_SUSPECT",
+}
 
 CORRECTNESS_PROMPT = """\
-You check one engineering memory entry for obvious timestamp or actor
-mismatches. Agents on long sessions lose track of time (an experiment
-crosses midnight and the text still says yesterday's date) or misattribute
-actions ("user did X" for the writing agent's own routine action). The CLI
-stamps authoritative metadata; you compare the entry text against it.
+You check one engineering memory entry for three defects: timestamp mismatch,
+actor misattribution, and non-English narrative. The CLI stamps authoritative
+metadata; compare the entry against it and against the store's writing rules.
 
 You are given: the entry text, the authoritative ingestion time (UTC, from
 the CLI clock), the recorded creation time, and the writer identity.
 
-Verdicts:
-- CONSISTENT: no clear contradiction. THE DEFAULT — use unless the
-  mismatch is unmistakable.
+Output exactly one verdict. CONSISTENT is the default — only flag an
+unmistakable case.
+- CONSISTENT: no clear defect.
 - TIMESTAMP_SUSPECT: the text narrates CURRENT or just-completed events
   (present/just-finished tense) under a date that contradicts the
   authoritative ingestion time by more than roughly one day. Narrating a
@@ -393,9 +394,22 @@ Verdicts:
   contradiction with the writer identity and context. Agents legitimately
   record the user's decisions and other agents' actions — flag only when
   the attribution is plainly impossible or reversed.
+- LANGUAGE_SUSPECT: the entry's NARRATIVE is written in a non-English
+  language (usually Chinese) — whole sentences or clauses in Chinese. The
+  local store embeds with an English-only model, so non-English prose
+  retrieves poorly; entries must be written in English. This is NOT a
+  violation (stay CONSISTENT) when the narrative is English and the only
+  non-English characters sit inside PRESERVED TECHNICAL IDENTIFIERS — file
+  paths, shell commands, env var names, host names, model/artifact names,
+  error strings — or a short quoted proper-noun token (a channel/group name)
+  with no standard English form. Judge the language of the SENTENCES, not of
+  quoted identifiers.
 
-confidence: probability a human reviewer confirms the mismatch.
-reason: one short sentence naming the contradiction (or "consistent").
+If more than one defect applies, prefer LANGUAGE_SUSPECT (rewriting the entry
+in English is the fix and subsumes the rest).
+
+confidence: probability a human reviewer confirms the flagged defect.
+reason: one short sentence naming the defect (or "consistent").
 
 Output JSON only:
 {"verdict":"...","confidence":0.0,"reason":"..."}
@@ -462,7 +476,7 @@ def judge_correctness(
     created_at: str | None,
     writer: str | None,
 ) -> dict[str, Any]:
-    """Flag obvious timestamp/attribution mismatches (advisory only)."""
+    """Flag timestamp/attribution mismatches and non-English narrative (advisory only)."""
     user = (
         f"## Authoritative metadata\n"
         f"ingested_at (CLI clock, UTC): {ingested_at}\n"
