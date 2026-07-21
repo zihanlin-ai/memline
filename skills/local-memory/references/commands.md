@@ -28,6 +28,19 @@ When called from Codex/Claude contexts, output defaults to agent-readable JSON.
 Use `--json` only when portability matters, and use `--output text` or
 `--output table` for human-readable output.
 
+## Start (session bootstrap)
+
+```bash
+mem0-local start                 # recall memories ingested in the last 1 day, newest first
+mem0-local start --days 3        # widen the recall window
+mem0-local start --limit 200
+```
+
+`start` is the one-liner session bootstrap: it lists recently ingested
+memories so a new session picks up recent context, then use semantic
+`search` for task-specific recall. Equivalent to a `list --filter` on an
+`ingested_at` range but with no JSON to hand-write.
+
 ## Add
 
 Normal add automatically records `created_at`, `ledger_timestamp`, `ingested_at`,

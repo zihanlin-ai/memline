@@ -45,6 +45,7 @@ KIND_DISPLACEMENT = "displacement"
 KIND_NECESSITY = "necessity"
 KIND_TIMESTAMP = "timestamp"
 KIND_TTL_EXPIRY = "ttl_expiry"
+KIND_SAFETY = "safety"
 
 MAX_CHAIN_DEPTH = 100
 # Verdicts below the kind's confidence floor are cached (never re-judged)
@@ -557,6 +558,28 @@ def _run_self_checks(
         report["necessity"] = verdict["verdict"]
         report["necessity_open"] = row["disposition"] == "open" and row["inserted"]
 
+    # Safety audit applies to every origin — imported history can leak
+    # credentials just as easily as live writes.
+    if store.has_judgment(new_id, new_id, new_text, kind=KIND_SAFETY):
+        report["safety"] = "cached"
+    else:
+        from mem0_local.judge import judge_safety
+
+        verdict = judge_safety(llm, entry)
+        row = store.record_judgment(
+            kind=KIND_SAFETY,
+            new_id=new_id,
+            old_id=new_id,
+            old_text=new_text,
+            verdict=verdict["verdict"],
+            confidence=verdict["confidence"],
+            reason=verdict["reason"],
+            judge_model=judge_model,
+            new_session_id=session_id,
+        )
+        report["safety"] = verdict["verdict"]
+        report["safety_open"] = row["disposition"] == "open" and row["inserted"]
+
     # Timestamp/attribution checks only make sense for live agent writes;
     # ledger imports carry historical dates by design.
     if payload.get("origin") == "ledger_import":
@@ -616,6 +639,19 @@ _OPENING_VERDICTS: dict[str, Callable[[str], bool]] = {
     KIND_NECESSITY: lambda v: v != "DURABLE",
     KIND_TIMESTAMP: lambda v: v != "CONSISTENT",
     KIND_TTL_EXPIRY: lambda v: True,
+    KIND_SAFETY: lambda v: v != "CLEAN",
+}
+
+# Per-kind floors: a flag below its kind's confidence floor is cached, never
+# opened. Necessity/timestamp use the strict floor (a borderline self-flag
+# costs reviewer trust); safety uses the base floor — missing a leaked
+# credential costs more than a spurious review moment.
+_KIND_FLOORS: dict[str, float] = {
+    KIND_DISPLACEMENT: 0.6,
+    KIND_NECESSITY: 0.8,
+    KIND_TIMESTAMP: 0.8,
+    KIND_SAFETY: 0.6,
+    KIND_TTL_EXPIRY: 0.0,
 }
 
 _PAIRS_SCHEMA = """
@@ -697,11 +733,7 @@ class PairStore(SqliteStore):
         kind: str = KIND_DISPLACEMENT,
     ) -> dict[str, Any]:
         """Insert one judgment; no-op if this exact pair version was judged."""
-        floor = (
-            SUSPICION_CONFIDENCE_FLOOR
-            if kind == KIND_DISPLACEMENT
-            else SELF_CHECK_CONFIDENCE_FLOOR
-        )
+        floor = _KIND_FLOORS.get(kind, SELF_CHECK_CONFIDENCE_FLOOR)
         opens = (
             _OPENING_VERDICTS.get(kind, lambda v: False)(verdict)
             and (confidence or 0.0) >= floor

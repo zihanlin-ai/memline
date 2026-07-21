@@ -25,7 +25,7 @@ The output has four work lists:
 |---|---|---|
 | `writes` | everything this session added | you |
 | `open_pairs` | displacement suspicions: an old entry may be superseded by one of this session's writes | background judge |
-| `self_flags` | this session's own writes flagged as BORN_UNNECESSARY (activity narration / commit restatement / repo-readable fact) or EXPIRING (progress tick / event-scoped coordination), plus timestamp/attribution mismatches | background judge |
+| `self_flags` | this session's own writes flagged as BORN_UNNECESSARY (activity narration / commit restatement / repo-readable fact) or EXPIRING (progress tick / event-scoped coordination), timestamp/attribution mismatches, and **SAFETY** (a suspected embedded plaintext credential) | background judge |
 | `ttl_expired` | entries whose TTL deadline fired and who left the search pool | harvest loop (any session may dispose these) |
 
 Each flagged item carries a `suggested` field listing the applicable
@@ -55,6 +55,15 @@ mem0-local update <memory_id> "<rewritten>"  # half-redundant: strip the derivab
 **Timestamp/attribution flags** (`self_flags`, kind `timestamp`): the fact is
 true but its date or actor is written wrong — fix with `update` (which also
 expires the flag); `stale dismiss` if the flag is mistaken. Never expire these.
+
+**Safety flags** (`self_flags`, kind `safety`) — PRIORITY: the entry may embed
+a plaintext credential (password, token, key, one-time code). The store rule
+is that entries reference a secret's LOCATION, never its value. `update
+<memory_id> "<same text, secret replaced by a pointer to its file/env var>"`
+redacts in place (keeps id/links/history, expires the flag), then verify
+`search "<secret literal>" --include-superseded` returns nothing. If the flag
+is a false alarm (a location pointer, hash, or public identifier), `stale
+dismiss`. The judge's reason never repeats the suspected value by design.
 
 **TTL expiries** (`ttl_expired`): the entry already left the pool at its
 deadline. `stale confirm <pair_id>` accepts that; `stale ttl <pair_id>` renews

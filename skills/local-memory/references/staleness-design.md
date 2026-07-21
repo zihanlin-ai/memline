@@ -397,6 +397,7 @@ disposition surface (`review` / `stale confirm|dismiss|ttl|merge`):
 | `necessity` | does the entry deserve long-term memory at all? | DURABLE / BORN_UNNECESSARY / EXPIRING (floor 0.8) |
 | `timestamp` | does the claimed date/actor contradict CLI metadata? | CONSISTENT / TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT (floor 0.8) |
 | `ttl_expiry` | a TTL deadline fired — accept or renew? | TTL_EXPIRED (always opens; any session may dispose) |
+| `safety` | does the entry embed a plaintext credential value? | CLEAN / SECRET_SUSPECT (floor 0.6 — missing a leak costs more than a spurious review moment) |
 
 Key mechanics on top of §2-§6:
 

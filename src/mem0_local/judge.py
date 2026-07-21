@@ -400,6 +400,58 @@ Output JSON only:
 """
 
 
+# ---------------------------------------------------------------------------
+# Safety judge — plaintext-credential audit (workspace rule: entries must
+# reference a credential's location, never contain its value)
+# ---------------------------------------------------------------------------
+
+SAFETY_VERDICTS = {"CLEAN", "SECRET_SUSPECT"}
+
+SAFETY_PROMPT = """\
+You audit one engineering memory entry for embedded live credentials.
+Store rule: entries must NEVER contain plaintext passwords, API keys,
+tokens, private keys, or one-time authorization values — they must
+reference the credential's file or secret location instead.
+
+Verdicts:
+- CLEAN: no credential value present. THE DEFAULT.
+- SECRET_SUSPECT: the entry embeds what looks like an actual credential
+  VALUE: a password string, a bearer/API token (sk-..., ghp_..., long
+  random strings in an auth context), private key material, a
+  connection string with an inline password, a one-time code.
+
+NOT violations (all CLEAN):
+- pointers to credential locations: file paths ("token stored in
+  utils/modelscope-token.env"), env var NAMES, "password in hosts.yaml";
+- public identifiers: hostnames, IPs, ports, usernames, repo/endpoint
+  URLs without embedded credentials;
+- content hashes (SHA256 of artifacts), commit hashes, UUIDs, PIDs;
+- placeholder/example values: <token>, xxx, ****, "your-key-here".
+
+CRITICAL OUTPUT RULE: never reproduce the suspected secret (or any part
+of it) in your reason. Describe only its TYPE and approximate position,
+e.g. "password value appears after 'rejects password'".
+
+confidence: probability a human reviewer confirms the finding.
+reason: one short sentence (type + position; never the value).
+
+Output JSON only:
+{"verdict":"...","confidence":0.0,"reason":"..."}
+"""
+
+
+def judge_safety(llm: Any, entry: dict[str, Any]) -> dict[str, Any]:
+    """Flag entries that embed plaintext credential values (advisory only)."""
+    response = llm.generate_response(
+        messages=[
+            {"role": "system", "content": SAFETY_PROMPT},
+            {"role": "user", "content": f"## Entry text\n{entry.get('text', '')}"},
+        ],
+        response_format={"type": "json_object"},
+    )
+    return parse_single_judgment(response, SAFETY_VERDICTS, default_verdict="CLEAN")
+
+
 def judge_timestamp(
     llm: Any,
     entry: dict[str, Any],

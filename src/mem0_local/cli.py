@@ -9,7 +9,7 @@ import re
 import stat
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -905,6 +905,14 @@ def _flag_suggestion(pair: dict[str, Any]) -> str:
             "fix via `update <memory_id> '<corrected text>'` (expires this flag) | "
             "false positive -> `stale dismiss <pair_id>`"
         )
+    if pair.get("kind") == "safety":
+        return (
+            "PRIORITY — suspected plaintext credential: redact via "
+            "`update <memory_id> '<same text with the secret replaced by its "
+            "location pointer>'` (keeps id/links/history, expires this flag), "
+            "then verify `search '<secret>' --include-superseded` returns "
+            "nothing | false positive -> `stale dismiss <pair_id>`"
+        )
     if pair.get("kind") == "ttl_expiry":
         return (
             "entry already left the pool at its deadline: accept -> "
@@ -1230,6 +1238,39 @@ def review(
             ),
         },
         command="review",
+        fmt=chosen_format(output_format, json_flag),
+    )
+
+
+@app.command()
+def start(
+    days: float = typer.Option(1.0, "--days", help="Recall window in days (by ingested_at)."),
+    limit: int = typer.Option(100, "--limit", help="Max entries returned."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Session bootstrap: recall recently ingested memories (default: last
+    1 day), newest first. Use at the start of a new session, then `search`
+    for task-specific recall."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    result = execute(
+        "list",
+        {
+            "filters": {"user_id": DEFAULT_USER_ID, "ingested_at": {"gte": since}},
+            "top_k": limit,
+            "start": 0,
+            "end": limit,
+        },
+    )
+    items = normalize_items(result) or (result if isinstance(result, list) else [])
+    items = sorted(
+        items,
+        key=lambda x: (x.get("metadata") or {}).get("ingested_at") or x.get("created_at") or "",
+        reverse=True,
+    )
+    output(
+        {"since": since, "count": len(items), "memories": items},
+        command="start",
         fmt=chosen_format(output_format, json_flag),
     )
 

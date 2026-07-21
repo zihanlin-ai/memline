@@ -255,8 +255,8 @@ class RunStaleCheckTests(unittest.TestCase):
         open_pair = store.open_pairs(session_id="s1", kind="displacement")[0]
         self.assertEqual(open_pair["old_id"], "old1")
         # Self, invalidated, and pinned entries were never sent to the
-        # displacement judge; necessity + timestamp self-checks add 2 calls.
-        self.assertEqual(llm.calls, 3)
+        # displacement judge; necessity + timestamp + safety self-checks add 3.
+        self.assertEqual(llm.calls, 4)
 
     def test_rerun_hits_pair_cache(self) -> None:
         client = self._client()
@@ -270,9 +270,10 @@ class RunStaleCheckTests(unittest.TestCase):
         self.assertEqual(again["cached"], 2)
         self.assertEqual(again["necessity"], "cached")
         self.assertEqual(again["timestamp"], "cached")
-        # 3 calls on the first run (necessity, timestamp, displacement);
+        self.assertEqual(again["safety"], "cached")
+        # 4 calls on the first run (necessity, timestamp, safety, displacement);
         # everything version-cached on the rerun.
-        self.assertEqual(llm.calls, 3)
+        self.assertEqual(llm.calls, 4)
 
     def test_judged_either_covers_both_orientations(self) -> None:
         store = staleness.pair_store()
@@ -379,12 +380,15 @@ class PairStoreTests(unittest.TestCase):
 class RoutingFakeLlm:
     """Answers each judge by recognizing its system prompt."""
 
-    def __init__(self, necessity: dict, timestamp: dict, judgments: list[dict] | None = None):
+    def __init__(self, necessity: dict, timestamp: dict, judgments: list[dict] | None = None,
+                 safety: dict | None = None):
         self._necessity = necessity
         self._timestamp = timestamp
+        self._safety = safety or {"verdict": "CLEAN", "confidence": 0.9, "reason": "clean"}
         self._judgments = judgments or []
         self.necessity_calls = 0
         self.timestamp_calls = 0
+        self.safety_calls = 0
         self.displacement_calls = 0
 
     def generate_response(self, messages, response_format=None):
@@ -394,6 +398,9 @@ class RoutingFakeLlm:
         if "memory-necessity judge" in system:
             self.necessity_calls += 1
             return _json.dumps(self._necessity)
+        if "embedded live credentials" in system:
+            self.safety_calls += 1
+            return _json.dumps(self._safety)
         if "timestamp or actor" in system:
             self.timestamp_calls += 1
             return _json.dumps(self._timestamp)
@@ -458,8 +465,44 @@ class SelfCheckTests(unittest.TestCase):
         again = staleness.run_stale_check(self._client(), "m1", llm=llm)
         self.assertEqual(again["necessity"], "cached")
         self.assertEqual(again["timestamp"], "cached")
+        self.assertEqual(again["safety"], "cached")
         self.assertEqual(llm.necessity_calls, 1)
         self.assertEqual(llm.timestamp_calls, 1)
+        self.assertEqual(llm.safety_calls, 1)
+
+    def test_safety_flag_opens_on_suspected_secret(self) -> None:
+        llm = RoutingFakeLlm(
+            {"verdict": "DURABLE", "confidence": 0.9, "reason": "keep"},
+            {"verdict": "CONSISTENT", "confidence": 0.9, "reason": "ok"},
+            safety={"verdict": "SECRET_SUSPECT", "confidence": 0.9,
+                    "reason": "password value after 'rejects password'"},
+        )
+        result = staleness.run_stale_check(self._client(), "m1", llm=llm)
+        self.assertEqual(result["safety"], "SECRET_SUSPECT")
+        self.assertTrue(result["safety_open"])
+        rows = staleness.pair_store().open_pairs(kind="safety")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["old_id"], "m1")
+        # Safety opens at the base 0.6 floor, unlike necessity/timestamp (0.8).
+        staleness.pair_store()._conn.execute("DELETE FROM pairs")
+        row = staleness.pair_store().record_judgment(
+            kind=staleness.KIND_SAFETY, new_id="x", old_id="x", old_text="t",
+            verdict="SECRET_SUSPECT", confidence=0.65, reason="",
+        )
+        self.assertEqual(row["disposition"], "open")
+
+    def test_ledger_import_still_gets_safety_check(self) -> None:
+        llm = RoutingFakeLlm(
+            {"verdict": "DURABLE", "confidence": 0.9, "reason": "keep"},
+            {"verdict": "CONSISTENT", "confidence": 0.9, "reason": "ok"},
+            safety={"verdict": "SECRET_SUSPECT", "confidence": 0.9, "reason": "token value"},
+        )
+        result = staleness.run_stale_check(
+            self._client({"origin": "ledger_import"}), "m1", llm=llm
+        )
+        self.assertNotIn("timestamp", result)  # ledger skips timestamp
+        self.assertEqual(result["safety"], "SECRET_SUSPECT")  # but not safety
+        self.assertEqual(llm.safety_calls, 1)
 
     def test_pinned_entry_skips_everything(self) -> None:
         llm = RoutingFakeLlm({}, {})

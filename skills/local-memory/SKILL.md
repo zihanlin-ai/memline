@@ -13,6 +13,7 @@ Call `mem0-local` directly; it is installed on PATH.
 mem0-local --help
 mem0-local <command> --help
 
+mem0-local start                                     # session bootstrap: recall recently ingested memories (last 1d)
 mem0-local add "accurate memory text"
 mem0-local add "newer fact" --supersedes <old_id>   # when this write knowingly replaces an old entry
 mem0-local search "query"                            # retired entries excluded by default
