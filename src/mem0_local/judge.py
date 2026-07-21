@@ -16,6 +16,14 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+# The judges are simple single-verdict classifiers; chain-of-thought adds
+# nothing but latency and cost, and on reasoning models (e.g. deepseek-v4-flash
+# via OpenRouter) it can consume the entire max_tokens budget on reasoning and
+# return an EMPTY content with finish_reason=length. Disabling reasoning makes
+# every judge call deterministic, fast, and immune to that empty-response mode.
+# OpenRouter reads `extra_body["reasoning"]`; non-reasoning backends ignore it.
+_NO_REASONING = {"reasoning": {"enabled": False}}
+
 VERDICTS = {"SUPERSEDED", "DUPLICATE", "KEPT"}
 
 SYSTEM_PROMPT = """\
@@ -193,6 +201,7 @@ def judge(
             {"role": "user", "content": build_user_message(new_entry, candidates)},
         ],
         response_format={"type": "json_object"},
+        extra_body=_NO_REASONING,
     )
     return parse_judgments(response, {str(c["id"]) for c in candidates})
 
@@ -358,6 +367,7 @@ def judge_necessity(llm: Any, entry: dict[str, Any]) -> dict[str, Any]:
             {"role": "user", "content": user},
         ],
         response_format={"type": "json_object"},
+        extra_body=_NO_REASONING,
     )
     return parse_single_judgment(
         response, NECESSITY_VERDICTS, default_verdict="DURABLE"
@@ -489,6 +499,7 @@ def judge_safety(llm: Any, entry: dict[str, Any]) -> dict[str, Any]:
             {"role": "user", "content": f"## Entry text\n{entry.get('text', '')}"},
         ],
         response_format={"type": "json_object"},
+        extra_body=_NO_REASONING,
     )
     return parse_single_judgment(response, SAFETY_VERDICTS, default_verdict="CLEAN")
 
@@ -532,6 +543,7 @@ def judge_correctness(
             {"role": "user", "content": user},
         ],
         response_format={"type": "json_object"},
+        extra_body=_NO_REASONING,
     )
     return parse_single_judgment(
         response, CORRECTNESS_VERDICTS, default_verdict="CONSISTENT"

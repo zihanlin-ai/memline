@@ -210,7 +210,7 @@ class FakeLlm:
         self._judgments = judgments
         self.calls = 0
 
-    def generate_response(self, messages, response_format=None):
+    def generate_response(self, messages, response_format=None, **kwargs):
         self.calls += 1
         import json as _json
 
@@ -391,7 +391,7 @@ class RoutingFakeLlm:
         self.safety_calls = 0
         self.displacement_calls = 0
 
-    def generate_response(self, messages, response_format=None):
+    def generate_response(self, messages, response_format=None, **kwargs):
         import json as _json
 
         system = messages[0]["content"]
