@@ -925,6 +925,54 @@ def _flag_suggestion(pair: dict[str, Any]) -> str:
     )
 
 
+def _load_open_pair(pair_id: str) -> tuple[Any, dict[str, Any]]:
+    """Fetch a suspicion pair and require it to be open."""
+    from mem0_local.staleness import pair_store
+
+    store = pair_store()
+    pair = store.get(pair_id)
+    if not pair:
+        raise click.ClickException(f"pair not found: {pair_id}")
+    if pair["disposition"] != "open":
+        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    return store, pair
+
+
+def _require_disposition_authority(pair: dict[str, Any], force: bool, action: str) -> None:
+    """Design rule: non-interactive sessions dispose only their own writes.
+
+    ttl-expiry flags are sessionless lifecycle events — any session running
+    review may dispose them (accepting an already-effective expiry or
+    renewing is safe in both directions).
+    """
+    if force or _interactive_tty():
+        return
+    if (pair.get("kind") or "displacement") == "ttl_expiry":
+        return
+    own_session = detect_writer_context().get("session_id")
+    if not own_session or pair.get("new_session_id") != own_session:
+        raise click.ClickException(
+            f"{action} denied: non-interactive sessions may only dispose "
+            "suspicions raised by their own writes (design: disposition "
+            "authority). Ask the user to dispose this pair from an interactive "
+            "session, or pass --force when the user has approved it out-of-band."
+        )
+
+
+def _dispose_with_rollback(
+    store: Any, pair_id: str, disposition: str, actor: str, mutate: Any
+) -> Any:
+    """Dispose first (so a follow-up invalidate's close_for_old cannot
+    relabel this pair), run the follow-up mutation, and reopen the pair on
+    failure so it stays reviewable instead of stranding half-executed."""
+    store.dispose(pair_id, disposition, disposed_by=actor)
+    try:
+        return mutate()
+    except Exception:
+        store.reopen(pair_id)
+        raise
+
+
 @stale_app.command("list")
 def stale_list(
     session: Optional[str] = typer.Option(None, "--session", help="Only pairs raised by this session's writes."),
@@ -952,58 +1000,37 @@ def stale_confirm(
     session's writes; cross-session backlog needs an interactive session or
     explicit user approval recorded via --force.
     """
-    from mem0_local.staleness import pair_store
-
-    store = pair_store()
-    pair = store.get(pair_id)
-    if not pair:
-        raise click.ClickException(f"pair not found: {pair_id}")
-    if pair["disposition"] != "open":
-        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    store, pair = _load_open_pair(pair_id)
     kind = pair.get("kind") or "displacement"
     if kind == "timestamp":
         raise click.ClickException(
             "timestamp suspicions are corrected via `update` (which expires the "
             "flag) or closed with `stale dismiss`; confirm does not apply."
         )
-    context = detect_writer_context()
-    if not force and not _interactive_tty():
-        own_session = context.get("session_id")
-        if not own_session or pair.get("new_session_id") != own_session:
-            raise click.ClickException(
-                "confirm denied: non-interactive sessions may only confirm suspicions "
-                "raised by their own writes (design: disposition authority). "
-                "Ask the user to confirm this pair from an interactive session, or "
-                "pass --force when the user has approved it out-of-band."
-            )
-    actor = context.get("source") or MANUAL_SOURCE
-    # Dispose first so invalidate's close_for_old does not relabel this pair
-    # as 'obsoleted'; reopen it if the follow-up mutation fails, so the pair
-    # stays reviewable instead of stranded as confirmed-but-not-executed.
-    store.dispose(pair_id, "confirmed", disposed_by=actor)
-    try:
+    _require_disposition_authority(pair, force, "confirm")
+    actor = detect_writer_context().get("source") or MANUAL_SOURCE
+
+    def mutate() -> dict[str, Any]:
         if kind == "ttl_expiry":
             # The entry already left the pool at its deadline; confirming
             # simply accepts that state.
-            result: dict[str, Any] = {"expiry_accepted": pair["old_id"]}
-        elif kind == "necessity":
+            return {"expiry_accepted": pair["old_id"]}
+        if kind == "necessity":
             # A self-suspicion has no superseder; confirming it means the
             # entry leaves the pool now via reversible expiry — materialized
             # directly, so the harvest loop never re-asks about a decision
             # the reviewer just made.
-            result = {"expired": _apply_ttl(pair["old_id"], expire_now=True)}
-        else:
-            result = {
-                "invalidate": run_invalidate(
-                    pair["old_id"],
-                    [pair["new_id"]],
-                    reason=pair.get("reason") or f"confirmed staleness suspicion {pair_id}",
-                    raise_on_error=True,
-                )
-            }
-    except Exception:
-        store.reopen(pair_id)
-        raise
+            return {"expired": _apply_ttl(pair["old_id"], expire_now=True)}
+        return {
+            "invalidate": run_invalidate(
+                pair["old_id"],
+                [pair["new_id"]],
+                reason=pair.get("reason") or f"confirmed staleness suspicion {pair_id}",
+                raise_on_error=True,
+            )
+        }
+
+    result = _dispose_with_rollback(store, pair_id, "confirmed", actor, mutate)
     output(
         {"pair_id": pair_id, "disposition": "confirmed", **result},
         command="stale-confirm",
@@ -1021,28 +1048,17 @@ def stale_ttl(
     """Dispose a snapshot-type suspicion as still-alive: keep the entry in
     the pool now, let it expire naturally at the deadline (reversible via
     `ttl <memory_id> --clear`)."""
-    from mem0_local.staleness import pair_store
-
-    store = pair_store()
-    pair = store.get(pair_id)
-    if not pair:
-        raise click.ClickException(f"pair not found: {pair_id}")
-    if pair["disposition"] != "open":
-        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    store, pair = _load_open_pair(pair_id)
     if (pair.get("kind") or "displacement") not in {"necessity", "ttl_expiry"}:
         raise click.ClickException(
             "ttl disposition applies to necessity and ttl-expiry suspicions; "
             "displacement pairs use confirm/dismiss/merge, timestamp flags "
             "use update/dismiss."
         )
-    context = detect_writer_context()
-    actor = context.get("source") or MANUAL_SOURCE
-    store.dispose(pair_id, "ttl", disposed_by=actor)
-    try:
-        result = _apply_ttl(pair["old_id"], days=days)
-    except Exception:
-        store.reopen(pair_id)
-        raise
+    actor = detect_writer_context().get("source") or MANUAL_SOURCE
+    result = _dispose_with_rollback(
+        store, pair_id, "ttl", actor, lambda: _apply_ttl(pair["old_id"], days=days)
+    )
     output(
         {"pair_id": pair_id, "disposition": "ttl", "ttl": result},
         command="stale-ttl",
@@ -1058,16 +1074,9 @@ def stale_dismiss(
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Dismiss a suspicion (pair-level, permanent). --pin exempts the memory entirely."""
-    from mem0_local.staleness import pair_store
-
-    store = pair_store()
-    pair = store.get(pair_id)
-    if not pair:
-        raise click.ClickException(f"pair not found: {pair_id}")
-    context = detect_writer_context()
-    actor = context.get("source") or MANUAL_SOURCE
-    if not store.dispose(pair_id, "dismissed", disposed_by=actor):
-        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    store, pair = _load_open_pair(pair_id)
+    actor = detect_writer_context().get("source") or MANUAL_SOURCE
+    store.dispose(pair_id, "dismissed", disposed_by=actor)
     result: dict[str, Any] = {"pair_id": pair_id, "disposition": "dismissed"}
     if pin:
         with audited(
@@ -1095,25 +1104,10 @@ def stale_merge(
     old answer: one consolidated entry stays in the pool, the old original is
     preserved in history/manifests as usual. Same authority rule as confirm.
     """
-    from mem0_local.staleness import pair_store
-
-    store = pair_store()
-    pair = store.get(pair_id)
-    if not pair:
-        raise click.ClickException(f"pair not found: {pair_id}")
-    if pair["disposition"] != "open":
-        raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
+    store, pair = _load_open_pair(pair_id)
     if (pair.get("kind") or "displacement") != "displacement":
         raise click.ClickException("merge applies only to displacement pairs.")
-    context = detect_writer_context()
-    if not force and not _interactive_tty():
-        own_session = context.get("session_id")
-        if not own_session or pair.get("new_session_id") != own_session:
-            raise click.ClickException(
-                "merge denied: non-interactive sessions may only dispose suspicions "
-                "raised by their own writes (design: disposition authority); pass "
-                "--force when the user has approved it out-of-band."
-            )
+    _require_disposition_authority(pair, force, "merge")
     new_id, old_id = pair["new_id"], pair["old_id"]
     # Mirrors the update command's metadata handling; audited as an update.
     existing = execute("get", {"memory_id": new_id})
@@ -1129,17 +1123,15 @@ def stale_merge(
         span.result = execute(
             "update", {"memory_id": new_id, "text": merged_text, "metadata": meta}
         )
-    actor = context.get("source") or MANUAL_SOURCE
+    actor = detect_writer_context().get("source") or MANUAL_SOURCE
     # Same rollback rule as confirm: reopen the pair if the invalidate fails
     # (the consolidated update already landed and is retryable).
-    store.dispose(pair_id, "merged", disposed_by=actor)
-    try:
-        invalidate_result = run_invalidate(
+    invalidate_result = _dispose_with_rollback(
+        store, pair_id, "merged", actor,
+        lambda: run_invalidate(
             old_id, [new_id], reason=f"merged into {new_id} (pair {pair_id})", raise_on_error=True
-        )
-    except Exception:
-        store.reopen(pair_id)
-        raise
+        ),
+    )
     output(
         {
             "pair_id": pair_id,

@@ -404,6 +404,26 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
                 )
         self.assertEqual(self.store.get(row["pair_id"])["disposition"], "open")
 
+    def test_ttl_expiry_flags_are_disposable_by_any_session(self) -> None:
+        """Expiry flags are sessionless lifecycle events: a non-interactive
+        session that did NOT write the entry may still accept the expiry."""
+        from unittest.mock import patch
+        from mem0_local import cli
+
+        row = self.store.record_judgment(
+            kind=KIND_TTL_EXPIRY, new_id="m", old_id="m", old_text="t@@deadline",
+            verdict="TTL_EXPIRED", confidence=1.0, reason="expired",
+        )
+        with (
+            patch.object(cli, "detect_writer_context", return_value={"session_id": "someone", "source": "claude"}),
+            patch.object(cli, "_interactive_tty", return_value=False),
+            patch.object(cli, "output"),
+        ):
+            cli.stale_confirm(
+                pair_id=row["pair_id"], force=False, json_flag=True, output_format="json"
+            )
+        self.assertEqual(self.store.get(row["pair_id"])["disposition"], "confirmed")
+
     def test_kind_guards_reject_wrong_dispositions(self) -> None:
         from unittest.mock import patch
         import click
