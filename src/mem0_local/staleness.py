@@ -39,16 +39,21 @@ TTL_EXPIRED_AT = "ttl_expired_at"
 
 # Suspicion-pair kinds: displacement = new entry displaces an old one;
 # necessity = the entry itself may not deserve long-term memory (R1);
-# timestamp = the entry's claimed time/actor contradicts CLI metadata (R2).
+# timestamp = the entry's claimed time/actor contradicts CLI metadata (R2);
+# ttl_expiry = a TTL deadline fired and awaits review (accept or renew).
 KIND_DISPLACEMENT = "displacement"
 KIND_NECESSITY = "necessity"
 KIND_TIMESTAMP = "timestamp"
+KIND_TTL_EXPIRY = "ttl_expiry"
 
 MAX_CHAIN_DEPTH = 100
-# Verdicts below this confidence are cached (never re-judged) but do not
-# open a suspicion for review.
+# Verdicts below the kind's confidence floor are cached (never re-judged)
+# but do not open a suspicion for review. Self-checks use a stricter floor:
+# eval showed the 0.6-0.8 confidence band is where occasional wrong-direction
+# wobble lives, and a borderline self-flag costs reviewer trust.
 SUSPICION_CONFIDENCE_FLOOR = 0.6
-DEFAULT_TTL_DAYS = 30
+SELF_CHECK_CONFIDENCE_FLOOR = 0.8
+DEFAULT_TTL_DAYS = 7
 
 STALE_DB = STORE_DIR / "stale.db"
 
@@ -610,6 +615,7 @@ _OPENING_VERDICTS: dict[str, Callable[[str], bool]] = {
     KIND_DISPLACEMENT: lambda v: v in {"SUPERSEDED", "DUPLICATE"},
     KIND_NECESSITY: lambda v: v != "DURABLE",
     KIND_TIMESTAMP: lambda v: v != "CONSISTENT",
+    KIND_TTL_EXPIRY: lambda v: True,
 }
 
 _PAIRS_SCHEMA = """
@@ -691,9 +697,14 @@ class PairStore(SqliteStore):
         kind: str = KIND_DISPLACEMENT,
     ) -> dict[str, Any]:
         """Insert one judgment; no-op if this exact pair version was judged."""
+        floor = (
+            SUSPICION_CONFIDENCE_FLOOR
+            if kind == KIND_DISPLACEMENT
+            else SELF_CHECK_CONFIDENCE_FLOOR
+        )
         opens = (
             _OPENING_VERDICTS.get(kind, lambda v: False)(verdict)
-            and (confidence or 0.0) >= SUSPICION_CONFIDENCE_FLOOR
+            and (confidence or 0.0) >= floor
         )
         row = {
             "pair_id": str(uuid.uuid4()),
@@ -924,7 +935,14 @@ def set_ttl(
         if expires_at is None:
             delta = timedelta(days=days if days is not None else DEFAULT_TTL_DAYS)
             expires_at = (datetime.now(timezone.utc) + delta).isoformat()
-        patch = {TTL_EXPIRES_AT: expires_at, "ttl_set_at": now, "ttl_set_by": actor_id}
+        # Setting a new deadline is also the renewal path: clear any
+        # materialized expiry so the entry re-enters the pool.
+        patch = {
+            TTL_EXPIRES_AT: expires_at,
+            TTL_EXPIRED_AT: None,
+            "ttl_set_at": now,
+            "ttl_set_by": actor_id,
+        }
         result = {"id": memory_id, TTL_EXPIRES_AT: expires_at}
     client.vector_store.update(vector_id=memory_id, vector=None, payload=patch)
     text = str(payload.get("data") or "")
@@ -940,11 +958,19 @@ def set_ttl(
 
 def harvest_expired(client: Any, *, now: str | None = None, limit: int = 1000) -> dict[str, Any]:
     """Materialize lazy TTL expiries: stamp ``ttl_expired_at``, close open
-    suspicions on the entry, write a history event. Correctness never depends
-    on this running — the search filter is already lazy."""
+    suspicions on the entry, write a history event, and open a ``ttl_expiry``
+    review flag so a later session decides — accept the expiry or renew the
+    TTL. Correctness never depends on this running — the search filter is
+    already lazy."""
     now = now or _now_iso()
     try:
-        raw = client.get_all(filters={TTL_EXPIRES_AT: {"lte": now}}, top_k=limit)
+        from mem0_local.config import DEFAULT_USER_ID
+
+        # mem0's get_all requires a scope key alongside custom filters.
+        raw = client.get_all(
+            filters={"user_id": DEFAULT_USER_ID, TTL_EXPIRES_AT: {"lte": now}},
+            top_k=limit,
+        )
     except Exception as exc:  # noqa: BLE001 - range filter support may vary.
         return {"harvested": 0, "error": f"ttl scan failed: {exc}"}
     items = raw.get("results") if isinstance(raw, dict) else raw
@@ -968,8 +994,25 @@ def harvest_expired(client: Any, *, now: str | None = None, limit: int = 1000) -
             )
         except Exception:  # noqa: BLE001
             pass
+        expires = str(meta.get(TTL_EXPIRES_AT) or item.get(TTL_EXPIRES_AT) or "")
         try:
-            pair_store().close_for_old(memory_id, "expired")
+            store = pair_store()
+            # Close other open suspicions first so they cannot swallow the
+            # fresh expiry flag; the flag's text is salted with the deadline
+            # so each renewal cycle re-arms exactly one new flag.
+            store.close_for_old(memory_id, "expired")
+            store.record_judgment(
+                kind=KIND_TTL_EXPIRY,
+                new_id=memory_id,
+                old_id=memory_id,
+                old_text=f"{item.get('memory') or ''}@@{expires}",
+                verdict="TTL_EXPIRED",
+                confidence=1.0,
+                reason=(
+                    f"ttl expired at {expires or now}; the entry left the search "
+                    "pool. `stale confirm` accepts the expiry, `stale ttl` renews."
+                ),
+            )
         except Exception:  # noqa: BLE001
             pass
         harvested += 1

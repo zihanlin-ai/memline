@@ -425,11 +425,11 @@ class SelfCheckTests(unittest.TestCase):
 
     def test_necessity_flag_opens_self_pair_without_candidates(self) -> None:
         llm = RoutingFakeLlm(
-            {"verdict": "PROGRESS_TICK", "confidence": 0.9, "reason": "tick"},
+            {"verdict": "EXPIRING", "confidence": 0.9, "reason": "tick"},
             {"verdict": "CONSISTENT", "confidence": 0.9, "reason": "ok"},
         )
         result = staleness.run_stale_check(self._client(), "m1", session_id="s1", llm=llm)
-        self.assertEqual(result["necessity"], "PROGRESS_TICK")
+        self.assertEqual(result["necessity"], "EXPIRING")
         self.assertTrue(result["necessity_open"])
         self.assertEqual(result["timestamp"], "CONSISTENT")
         rows = staleness.pair_store().open_pairs(kind="necessity")
@@ -506,6 +506,12 @@ class TtlTests(unittest.TestCase):
         with self.assertRaises(StalenessError):
             staleness.set_ttl(client, "ghost", days=1)
 
+    def test_renewal_clears_materialized_expiry(self) -> None:
+        client = FakeClient({"m1": {"data": "snapshot", "ttl_expires_at": "2020-01-01", "ttl_expired_at": "2020-01-01"}})
+        staleness.set_ttl(client, "m1", days=7)
+        self.assertIsNone(client.vector_store.payloads["m1"]["ttl_expired_at"])
+        self.assertGreater(client.vector_store.payloads["m1"]["ttl_expires_at"], "2026")
+
     def test_search_filters_expired_entries(self) -> None:
         items = [
             {"id": "live", "memory": "a", "metadata": {}},
@@ -535,7 +541,12 @@ class TtlTests(unittest.TestCase):
         result = staleness.harvest_expired(client)
         self.assertEqual(result["harvested"], 1)
         self.assertTrue(client.vector_store.payloads["gone"]["ttl_expired_at"])
-        self.assertEqual(store.open_count(), 0)
+        # The prior necessity pair is closed; a fresh ttl_expiry flag opens
+        # so review can accept the expiry or renew the TTL.
+        flags = store.open_pairs(kind="ttl_expiry")
+        self.assertEqual(len(flags), 1)
+        self.assertEqual(flags[0]["verdict"], "TTL_EXPIRED")
+        self.assertEqual(store.open_pairs(kind="necessity"), [])
 
     def test_delete_guard_detects_participation(self) -> None:
         client = FakeClient({"node": {"data": "x", "superseded_by": ["y"]}})

@@ -229,16 +229,19 @@ suspicion kinds:
 
 - `displacement`: an existing entry may be superseded by the new one;
 - `necessity`: the new entry itself may not deserve long-term memory
-  (verdicts: PROGRESS_TICK, ACTIVITY_LOG, COMMIT_RECORD, REPO_FACT,
-  EVENT_SCOPED; DURABLE never opens a flag);
+  (verdicts: BORN_UNNECESSARY — activity narration / commit restatement /
+  repo-readable fact; EXPIRING — progress tick / event-scoped coordination;
+  DURABLE never opens a flag, and flags open only at confidence >= 0.8);
 - `timestamp`: the entry's claimed date/actor contradicts the CLI's
-  authoritative metadata (TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT).
+  authoritative metadata (TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT);
+- `ttl_expiry`: a TTL deadline fired — the entry left the pool and awaits
+  review: `stale confirm` accepts the expiry, `stale ttl` renews it.
 
 ```bash
 mem0-local add "newer fact" --supersedes <old_id>[,<old_id2>]  # invalidate at write time
 mem0-local invalidate <memory_id> --by <new_id> [--reason "..."]
 mem0-local revive <memory_id>                                  # undo an invalidation
-mem0-local ttl <memory_id> [--days 30] [--clear]               # schedule/cancel reversible expiry
+mem0-local ttl <memory_id> [--days 7] [--clear]               # schedule/cancel reversible expiry
 mem0-local search "query" --include-superseded                 # history digs (includes expired)
 mem0-local get <memory_id> --resolve-head                      # follow the supersession chain
 mem0-local review [--session <id>] [--wait]                    # handoff: writes + raised suspicions
@@ -246,14 +249,16 @@ mem0-local stale list [--session <id>]
 mem0-local stale confirm <pair_id>
 mem0-local stale dismiss <pair_id> [--pin]
 mem0-local stale merge <pair_id> "<consolidated text>"
-mem0-local stale ttl <pair_id> [--days 30]                     # snapshot still alive: expire later
+mem0-local stale ttl <pair_id> [--days 7]                     # snapshot still alive: expire later
 ```
 
-TTL semantics: `ttl` schedules a reversible pool-exit deadline (default 30
+TTL semantics: `ttl` schedules a reversible pool-exit deadline (default 7
 days). The search filter honors it lazily, so the entry leaves default search
 at the deadline even if the daemon is down; the daemon materializes expiries
-in the background. `ttl --clear` re-enters the pool at any time, including
-after expiry.
+in the background and opens a `ttl_expiry` review flag for each, listed in
+`review` under `ttl_expired` (any session may dispose those: confirm accepts,
+`stale ttl` renews and re-enters the pool). `ttl --clear` re-enters the pool
+at any time; setting a new deadline also acts as renewal.
 
 `stale merge` is for pairs where the new entry ADDS detail rather than
 replacing the old answer: the newer memory is updated to the consolidated

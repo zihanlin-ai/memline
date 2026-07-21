@@ -874,7 +874,7 @@ def _apply_ttl(memory_id: str, *, days: float | None = None, clear: bool = False
 @app.command()
 def ttl(
     memory_id: str = typer.Argument(..., help="Memory ID to schedule (or clear) expiry for."),
-    days: Optional[float] = typer.Option(None, "--days", help="Days until the entry leaves the search pool (default 30)."),
+    days: Optional[float] = typer.Option(None, "--days", help="Days until the entry leaves the search pool (default 7)."),
     clear: bool = typer.Option(False, "--clear", help="Remove any scheduled/materialized expiry (re-enters the pool)."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
@@ -886,6 +886,11 @@ def ttl(
     output(result, command="ttl", fmt=chosen_format(output_format, json_flag))
 
 
+# Legacy 5-way necessity verdicts map onto the two disposition families
+# (pre-v5 marks recorded by the 2026-07 backlog scan).
+_EXPIRING_VERDICTS = {"EXPIRING", "PROGRESS_TICK", "EVENT_SCOPED"}
+
+
 def _flag_suggestion(pair: dict[str, Any]) -> str:
     """Reviewer guidance per suspicion kind/verdict (lifecycle design R4)."""
     if pair.get("kind") == "timestamp":
@@ -893,10 +898,16 @@ def _flag_suggestion(pair: dict[str, Any]) -> str:
             "fix via `update <memory_id> '<corrected text>'` (expires this flag) | "
             "false positive -> `stale dismiss <pair_id>`"
         )
-    if pair.get("verdict") in {"PROGRESS_TICK", "EVENT_SCOPED"}:
+    if pair.get("kind") == "ttl_expiry":
+        return (
+            "entry already left the pool at its deadline: accept -> "
+            "`stale confirm <pair_id>` | still needed -> `stale ttl <pair_id> "
+            "[--days 7]` (renews and re-enters the pool)"
+        )
+    if pair.get("verdict") in _EXPIRING_VERDICTS:
         return (
             "settled/closed -> `stale confirm <pair_id>` (expires now) | "
-            "still alive -> `stale ttl <pair_id> [--days 30]` | "
+            "still alive -> `stale ttl <pair_id> [--days 7]` | "
             "false positive -> `stale dismiss <pair_id> [--pin]`"
         )
     return (
@@ -964,10 +975,14 @@ def stale_confirm(
     # stays reviewable instead of stranded as confirmed-but-not-executed.
     store.dispose(pair_id, "confirmed", disposed_by=actor)
     try:
-        if kind == "necessity":
+        if kind == "ttl_expiry":
+            # The entry already left the pool at its deadline; confirming
+            # simply accepts that state.
+            result: dict[str, Any] = {"expiry_accepted": pair["old_id"]}
+        elif kind == "necessity":
             # A self-suspicion has no superseder; confirming it means the
             # entry leaves the pool now via reversible expiry.
-            result: dict[str, Any] = {"expired": _apply_ttl(pair["old_id"], days=0)}
+            result = {"expired": _apply_ttl(pair["old_id"], days=0)}
         else:
             result = {
                 "invalidate": run_invalidate(
@@ -990,7 +1005,7 @@ def stale_confirm(
 @stale_app.command("ttl")
 def stale_ttl(
     pair_id: str = typer.Argument(..., help="Open necessity suspicion pair id."),
-    days: Optional[float] = typer.Option(None, "--days", help="Days until natural expiry (default 30)."),
+    days: Optional[float] = typer.Option(None, "--days", help="Days until natural expiry (default 7)."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
@@ -1005,10 +1020,11 @@ def stale_ttl(
         raise click.ClickException(f"pair not found: {pair_id}")
     if pair["disposition"] != "open":
         raise click.ClickException(f"pair is not open (disposition={pair['disposition']})")
-    if (pair.get("kind") or "displacement") != "necessity":
+    if (pair.get("kind") or "displacement") not in {"necessity", "ttl_expiry"}:
         raise click.ClickException(
-            "ttl disposition applies to necessity suspicions; displacement pairs "
-            "use confirm/dismiss/merge, timestamp flags use update/dismiss."
+            "ttl disposition applies to necessity and ttl-expiry suspicions; "
+            "displacement pairs use confirm/dismiss/merge, timestamp flags "
+            "use update/dismiss."
         )
     context = detect_writer_context()
     actor = context.get("source") or MANUAL_SOURCE
@@ -1169,23 +1185,28 @@ def review(
 
     all_pairs = pair_store().open_pairs(session_id=session)
     displacement = [p for p in all_pairs if (p.get("kind") or "displacement") == "displacement"]
-    self_flags = []
-    for p in all_pairs:
-        if (p.get("kind") or "displacement") == "displacement":
-            continue
+
+    def flag_view(p: dict[str, Any]) -> dict[str, Any]:
         row = _fetch_memory(p["old_id"])
-        self_flags.append(
-            {
-                "pair_id": p["pair_id"],
-                "kind": p["kind"],
-                "memory_id": p["old_id"],
-                "verdict": p["verdict"],
-                "confidence": p["confidence"],
-                "reason": p["reason"],
-                "memory": str(row.get("memory") or "")[:160] if row else "<deleted>",
-                "suggested": _flag_suggestion(p),
-            }
-        )
+        return {
+            "pair_id": p["pair_id"],
+            "kind": p["kind"],
+            "memory_id": p["old_id"],
+            "verdict": p["verdict"],
+            "confidence": p["confidence"],
+            "reason": p["reason"],
+            "memory": str(row.get("memory") or "")[:160] if row else "<deleted>",
+            "suggested": _flag_suggestion(p),
+        }
+
+    self_flags = [
+        flag_view(p)
+        for p in all_pairs
+        if (p.get("kind") or "displacement") not in {"displacement", "ttl_expiry"}
+    ]
+    # TTL expiries are lifecycle events, not this session's writes: any
+    # session running review may dispose them (accept or renew).
+    ttl_expired = [flag_view(p) for p in pair_store().open_pairs(kind="ttl_expiry")]
     output(
         {
             "session": session,
@@ -1197,12 +1218,14 @@ def review(
             "pending_stale_checks": pending,
             "open_pairs": _enrich_pairs(displacement),
             "self_flags": self_flags,
+            "ttl_expired": ttl_expired,
             "how_to_dispose": (
                 "displacement: stale confirm <pair_id> | stale dismiss <pair_id> [--pin] | "
                 "stale merge <pair_id> '<consolidated text>' | update <old_id> '<corrected text>'. "
-                "necessity: stale confirm (expire now) | stale ttl <pair_id> [--days 30] | "
+                "necessity: stale confirm (expire now) | stale ttl <pair_id> [--days 7] | "
                 "delete <memory_id> (own fresh born-unnecessary entry) | stale dismiss [--pin]. "
-                "timestamp: update <memory_id> '<corrected>' | stale dismiss <pair_id>."
+                "timestamp: update <memory_id> '<corrected>' | stale dismiss <pair_id>. "
+                "ttl_expiry: stale confirm (accept) | stale ttl <pair_id> (renew, re-enters pool)."
             ),
         },
         command="review",

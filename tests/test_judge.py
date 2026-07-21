@@ -82,11 +82,11 @@ class ParseSingleJudgmentTests(unittest.TestCase):
         from mem0_local.judge import NECESSITY_VERDICTS, parse_single_judgment
 
         out = parse_single_judgment(
-            json.dumps({"verdict": "progress_tick", "confidence": 0.9, "reason": "r"}),
+            json.dumps({"verdict": "born_unnecessary", "confidence": 0.9, "reason": "r"}),
             NECESSITY_VERDICTS,
             default_verdict="DURABLE",
         )
-        self.assertEqual(out["verdict"], "PROGRESS_TICK")
+        self.assertEqual(out["verdict"], "BORN_UNNECESSARY")
 
     def test_unknown_verdict_falls_back_to_default(self) -> None:
         from mem0_local.judge import NECESSITY_VERDICTS, parse_single_judgment

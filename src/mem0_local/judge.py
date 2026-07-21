@@ -200,18 +200,13 @@ def judge(
 # Necessity judge (lifecycle design R1)
 # ---------------------------------------------------------------------------
 
-NECESSITY_VERDICTS = {
-    "DURABLE",
-    "PROGRESS_TICK",
-    "ACTIVITY_LOG",
-    "COMMIT_RECORD",
-    "REPO_FACT",
-    "EVENT_SCOPED",
-}
+NECESSITY_VERDICTS = {"DURABLE", "BORN_UNNECESSARY", "EXPIRING"}
 
-# Prompt "v4" — gated by tools/necessity_judge_eval.py (2026-07-20): accuracy
-# 91-94%, flag precision 100%, zero false flags on the DURABLE trap subset
-# (lessons / corrections / high-cost audit conclusions) across all runs.
+# Prompt "v5" — two flag verdicts matching the two real disposition
+# families; the fine-grained recognition patterns from v4 live on as
+# bullets under each verdict. Adds the pointer/constraint protection
+# rules distilled from the 2026-07-21 backlog-scan review (14 wrong-
+# direction cases, all one family). Gated by tools/necessity_judge_eval.py.
 NECESSITY_PROMPT = """\
 You are a memory-necessity judge for an engineering memory store. Entries
 are dated snapshots written by coding agents during infrastructure work.
@@ -220,61 +215,97 @@ to a category that should be flagged for review.
 
 Verdicts:
 - DURABLE: worth keeping. THE DEFAULT — use whenever uncertain.
-- PROGRESS_TICK: the IN-FLIGHT state of a still-running process, worthless
-  within hours: percent complete, counts that are still changing
-  (done/running/pending), current load/traffic over a window, "launched
-  with PID N", "paused at step N", mid-run metrics. NOT this category:
-  the COMPLETED result of a controlled experiment/benchmark/comparison
-  together with its configuration — that is a DURABLE measurement even
-  if dated. But an observation of live OPERATIONAL state — current
-  traffic/latency over a window, queue depth, which hosts are idle/busy,
-  service health at a moment — is still PROGRESS_TICK even when the
-  probe itself completed: the observed state churns on its own.
-- ACTIVITY_LOG: narrates that an agent performed or should perform routine
-  actions ("agent read X then searched Y", "deleted directory as
-  requested", "updated file at 11:39", "A recommended B record their
-  findings") with no reusable technical fact beyond the action itself.
-- COMMIT_RECORD: the entry's central content is what a git commit/PR
-  contains, changed, or its metadata (hash, title, author, timestamps),
-  or an assertion that changes are now committed/pushed. git log/show
-  already stores all of this. Attached context like "tests passed" does
-  not rescue it — review rewrites to keep such fragments. Only when the
-  commit reference is incidental to a finding that stands on its own
-  ("root cause was X; fixed in commit Y") is the entry DURABLE.
-- REPO_FACT: restates what an agent could get by simply opening a named
-  checked-in file: a doc/skill's content, a config default, what a script
-  does. Phrasing it as a "mechanism" or "design decision" does not rescue
-  it if the file says the same thing. Only hard-won insight beyond the
-  file's text (a footgun, a proven interaction) makes it DURABLE.
-- EVENT_SCOPED: legitimate record whose usefulness is tied to an ongoing
-  event, campaign, or handoff. Cues: "pending", "blocked until",
-  "awaiting", "not yet done", "next gate is", "requires X before Y",
-  "machines held/locked for the run", staging/preparation state for an
-  upcoming batch. The payload is an open dependency or coordination
-  state, not a finding; it should expire when the event closes. (An
-  in-flight NUMBER is PROGRESS_TICK; an open TO-DO/dependency is
-  EVENT_SCOPED.)
+- BORN_UNNECESSARY: the entry never deserved long-term memory. Patterns:
+  * activity narration: it narrates that an agent performed or should
+    perform routine actions ("agent read X then searched Y", "deleted
+    directory as requested", "updated file at 11:39", "A recommended B
+    record their findings") with no reusable technical fact beyond the
+    action itself;
+  * commit restatement: its central content is what a git commit/PR
+    contains, changed, or its metadata (hash, title, author,
+    timestamps), or that changes are now committed/pushed — git
+    log/show already stores this, and attached context like "tests
+    passed" does not rescue it (review rewrites to keep such
+    fragments); only when the commit reference is incidental to a
+    finding that stands on its own ("root cause was X; fixed in commit
+    Y") is the entry DURABLE;
+  * repo-readable fact: it restates what an agent could get by simply
+    opening a named checked-in file (a doc's content, a config default,
+    what a script does); phrasing it as a "mechanism" or "design
+    decision" does not rescue it if the file says the same thing.
+- EXPIRING: legitimate to record, but its usefulness decays with an
+  ongoing process or event; it should expire when that closes. Patterns:
+  * progress tick: the IN-FLIGHT state of a still-running process —
+    percent complete, counts still changing (done/running/pending),
+    current load/traffic over a window, "launched with PID N", mid-run
+    metrics at step N — and observations of live OPERATIONAL state
+    (queue depth, which hosts are idle/busy, service health at a
+    moment) even when the probe itself completed: the observed state
+    churns on its own;
+  * event-scoped coordination: open dependencies and handoff state —
+    "pending", "blocked until", "awaiting", "not yet done", "next gate
+    is", "requires X before Y", "machines held/locked for the run",
+    staging/preparation for an upcoming batch.
 
-Hard rules — these override everything above:
+Hard rules — these override the patterns above. A flag verdict is only
+allowed when NO hard rule applies; when an entry mixes a flag pattern
+with any hard-rule payload, the hard rule wins:
 1. Judge by RE-ACQUISITION COST, not theoretical derivability. A
    conclusion distilled from hours of auditing, debugging, instrumented
    experiments, or sweeps is DURABLE even if re-derivable from code
    ("audited the call chain and proved X", "mechanism investigation
    found Y").
-2. Corrections, retractions, and hard-won lessons are ALWAYS DURABLE:
+2. Corrections, retractions, invalidation-of-evidence records ("those
+   runs are void because X"), and hard-won lessons are ALWAYS DURABLE:
    entries marking earlier conclusions wrong/superseded/withdrawn, and
-   learned-the-hard-way rules (footguns, gotchas, mandatory safeguards).
-   They prevent future agents from repeating mistakes.
-3. COMPLETED measurements/comparisons with their configuration,
-   decisions/rules with rationale, root-cause findings, external-world
-   facts (hosts, auth quirks, artifact paths, hashes), and pointers to
-   archives are DURABLE.
-4. When uncertain between a flag category and DURABLE, choose DURABLE.
-   When certain it should be flagged but torn between two flag
-   categories, pick the one matching the entry's dominant content.
+   learned-the-hard-way rules (footguns, gotchas, mandatory
+   safeguards). They prevent future agents from repeating mistakes.
+3. COMPLETED measurements/comparisons with their configuration — even
+   partial sub-results carrying substantive numbers — decisions/rules
+   with rationale, root-cause findings, and external-world facts
+   (hosts, auth quirks, hashes) are DURABLE.
+4. An entry is DURABLE when its payload is the canonical location of a
+   LASTING asset — where a credential, key, or token lives; a
+   repository, endpoint, or community-post URL; an archive or delivery
+   path; which executor/host a procedure must run on — even when most
+   of the entry narrates routine actions around that location. This
+   does NOT cover working files of an in-flight investigation (logs,
+   draft responses, scratch scripts): those follow the patterns above.
+5. Standing constraints and authorizations that BIND future behavior
+   are DURABLE while in force: resource whitelists, scope boundaries,
+   user-set rules — even when stated during one campaign. A wait is
+   not a constraint: "machines must be freed first", "requires X
+   before proceeding", "closure needs Y" are EXPIRING coordination
+   state. Closure/handoff summaries stating a final outcome
+   ("verification closed, results at X", "current baseline is Y") are
+   DURABLE conclusions.
+6. When uncertain between a flag verdict and DURABLE, choose DURABLE.
+
+Examples of the required judgment style:
+1. "Attempted to clone repo X: the HTTPS URL <url> failed 504 behind
+   the corporate proxy; after NO_PROXY=<host>, the ssh:2222 URL
+   worked." -> DURABLE (canonical repo URLs + proxy footgun, rules
+   4+2), despite the attempt narration.
+2. "Pressure tests so far: 65 clean probes, 0 corruption, spontaneous
+   repro rate ~0. Awaiting the eviction run (N=400)." -> DURABLE
+   (completed sub-result with substantive numbers, rule 3), despite
+   the awaiting tail.
+3. "User confirmed the current baseline is run X step 3300 (72.5k
+   rows, accept_len 4.1)." -> DURABLE (final-outcome statement,
+   rule 5).
+4. "Grid config X at 31.8% progress, TPS=1.50, scheduler PID alive."
+   -> EXPIRING (progress tick).
+5. "Committed and pushed commit 080f2a5 titled 'Support scoped
+   search', adding search/list filters." -> BORN_UNNECESSARY (commit
+   restatement).
+6. "After creating the shareable key /path/login_<host>_ed25519 for
+   root@<host>, deleted the temporary key files, kept only the
+   shareable key, re-verified login." -> DURABLE (credential
+   location, rule 4), despite the cleanup narration dominating the
+   text.
 
 confidence: probability a human reviewer confirms your verdict.
-reason: ONE short sentence naming what the entry is. Never quote long
+reason: ONE short sentence naming the matched pattern. Never quote long
 fragments of the entry.
 
 Output JSON only:

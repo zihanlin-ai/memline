@@ -30,53 +30,46 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DEFAULT_SET = HERE / "necessity_judge_eval_set.jsonl"
 
-VERDICTS = {
-    "DURABLE",
-    "PROGRESS_TICK",
-    "ACTIVITY_LOG",
-    "COMMIT_RECORD",
-    "REPO_FACT",
-    "EVENT_SCOPED",
-}
+VERDICTS = {"DURABLE", "BORN_UNNECESSARY", "EXPIRING"}
 
 # (id_prefix, label, trap, note)
 LABELED_ENTRIES: list[tuple[str, str, bool, str]] = [
     # --- PROGRESS_TICK: point-in-time progress/load numbers ---
-    ("3e4e0a0d", "PROGRESS_TICK", False, "grid plan counts done/failed/running/pending"),
-    ("baedb913", "PROGRESS_TICK", False, "run progress 31.82% TPS=1.50"),
-    ("bf45b01d", "PROGRESS_TICK", False, "proxy load snapshot over last 60s"),
-    ("4fd2b81f", "PROGRESS_TICK", False, "proxy no-queue-buildup snapshot"),
-    ("5d38f02b", "PROGRESS_TICK", False, "run launched with PID, being monitored"),
-    ("b8692997", "PROGRESS_TICK", False, "trace run progress 3488/10156 rows"),
-    ("dffdd538", "PROGRESS_TICK", False, "collection progress at timestamp"),
-    ("7eee3f0f", "PROGRESS_TICK", False, "process paused via SIGSTOP, progress at pause"),
-    ("24f6590f", "PROGRESS_TICK", False, "self-declared session-scoped idle-probe snapshot"),
+    ("3e4e0a0d", "EXPIRING", False, "grid plan counts done/failed/running/pending"),
+    ("baedb913", "EXPIRING", False, "run progress 31.82% TPS=1.50"),
+    ("bf45b01d", "EXPIRING", False, "proxy load snapshot over last 60s"),
+    ("4fd2b81f", "EXPIRING", False, "proxy no-queue-buildup snapshot"),
+    ("5d38f02b", "EXPIRING", False, "run launched with PID, being monitored"),
+    ("b8692997", "EXPIRING", False, "trace run progress 3488/10156 rows"),
+    ("dffdd538", "EXPIRING", False, "collection progress at timestamp"),
+    ("7eee3f0f", "EXPIRING", False, "process paused via SIGSTOP, progress at pause"),
+    ("24f6590f", "EXPIRING", False, "self-declared session-scoped idle-probe snapshot"),
     # --- ACTIVITY_LOG: narration of routine agent actions ---
-    ("ab89e12f", "ACTIVITY_LOG", False, "agent read memory files as asked; no facts"),
-    ("34963c08", "ACTIVITY_LOG", False, "agent deleted directory as requested"),
-    ("74c84eb4", "ACTIVITY_LOG", False, "harness files updated at times X and Y"),
-    ("12710987", "ACTIVITY_LOG", False, "one agent recommended another write a ledger"),
-    ("338778ea", "ACTIVITY_LOG", False, "audit-response iteration completed narration"),
-    ("6447c20c", "ACTIVITY_LOG", False, "agent reread audit and appended response file"),
+    ("ab89e12f", "BORN_UNNECESSARY", False, "agent read memory files as asked; no facts"),
+    ("34963c08", "BORN_UNNECESSARY", False, "agent deleted directory as requested"),
+    ("74c84eb4", "BORN_UNNECESSARY", False, "harness files updated at times X and Y"),
+    ("12710987", "BORN_UNNECESSARY", False, "one agent recommended another write a ledger"),
+    ("338778ea", "BORN_UNNECESSARY", False, "audit-response iteration completed narration"),
+    ("6447c20c", "BORN_UNNECESSARY", False, "agent reread audit and appended response file"),
     # --- COMMIT_RECORD: restates git commit content/metadata ---
-    ("0d413aae", "COMMIT_RECORD", False, "commit author/committer/timestamp metadata"),
-    ("67b3d9bc", "COMMIT_RECORD", False, "committed-and-pushed with title and flags"),
-    ("8ae4bd8c", "COMMIT_RECORD", False, "what the CI-fix commit modified"),
-    ("647d2d76", "COMMIT_RECORD", False, "changes are now part of committed history"),
-    ("1f03b117", "COMMIT_RECORD", False, "commit added early-stop args (mixed: tests note)"),
+    ("0d413aae", "BORN_UNNECESSARY", False, "commit author/committer/timestamp metadata"),
+    ("67b3d9bc", "BORN_UNNECESSARY", False, "committed-and-pushed with title and flags"),
+    ("8ae4bd8c", "BORN_UNNECESSARY", False, "what the CI-fix commit modified"),
+    ("647d2d76", "BORN_UNNECESSARY", False, "changes are now part of committed history"),
+    ("1f03b117", "BORN_UNNECESSARY", False, "commit added early-stop args (mixed: tests note)"),
     # --- REPO_FACT: restates repo-file-readable content ---
-    ("d803a6c8", "REPO_FACT", False, "verbatim digest of a checked-in SKILL.md"),
-    ("d8e1ac9d", "REPO_FACT", False, "code-readable default value of a flag"),
-    ("2c6c2b0a", "REPO_FACT", False, "README-readable changelog trigger semantics"),
+    ("d803a6c8", "BORN_UNNECESSARY", False, "verbatim digest of a checked-in SKILL.md"),
+    ("d8e1ac9d", "BORN_UNNECESSARY", False, "code-readable default value of a flag"),
+    ("2c6c2b0a", "BORN_UNNECESSARY", False, "README-readable changelog trigger semantics"),
     # --- EVENT_SCOPED: legitimate but tied to an ongoing event ---
-    ("374e1ddf", "EVENT_SCOPED", False, "launch blocked until staging done"),
-    ("231ef112", "EVENT_SCOPED", False, "fix passed tests, next gate re-measure"),
-    ("1c163dbd", "EVENT_SCOPED", False, "pending config update after sweep"),
-    ("4f5f21b5", "EVENT_SCOPED", False, "pending fixes list"),
-    ("40980cf6", "EVENT_SCOPED", False, "hosts file not yet updated, hosts held"),
-    ("52708c43", "EVENT_SCOPED", False, "closure requires logs to be established"),
-    ("784a8456", "EVENT_SCOPED", False, "grid awaits freed machines"),
-    ("c751d4b5", "EVENT_SCOPED", False, "env prep for newly-freed batch"),
+    ("374e1ddf", "EXPIRING", False, "launch blocked until staging done"),
+    ("231ef112", "EXPIRING", False, "fix passed tests, next gate re-measure"),
+    ("1c163dbd", "EXPIRING", False, "pending config update after sweep"),
+    ("4f5f21b5", "EXPIRING", False, "pending fixes list"),
+    ("40980cf6", "EXPIRING", False, "hosts file not yet updated, hosts held"),
+    ("52708c43", "EXPIRING", False, "closure requires logs to be established"),
+    ("784a8456", "EXPIRING", False, "grid awaits freed machines"),
+    ("c751d4b5", "EXPIRING", False, "env prep for newly-freed batch"),
     # --- DURABLE: measurements with config ---
     ("648c0c42", "DURABLE", False, "measured prefix_hit for workload"),
     ("048926e0", "DURABLE", False, "per-dataset accept_len measurement"),
@@ -122,6 +115,18 @@ LABELED_ENTRIES: list[tuple[str, str, bool, str]] = [
     # --- DURABLE: external/ops facts ---
     ("fdea50e1", "DURABLE", False, "SSH auth fact: must use root on host"),
     ("2f2b56a7", "DURABLE", False, "model quant config incompatibility fact"),
+    # --- DURABLE traps: pointers/results/constraints wrapped in action
+    # narration (the 14-case family from the 2026-07-21 backlog-scan review) ---
+    ("12122cb1", "DURABLE", True, "credential location: modelscope token file"),
+    ("08f214a2", "DURABLE", True, "shareable SSH key location for root@host"),
+    ("393de51b", "DURABLE", True, "created private repo: canonical URL payload"),
+    ("45012c42", "DURABLE", True, "clone attempt carrying canonical URLs + proxy footgun"),
+    ("1576eb96", "DURABLE", True, "uncommitted delivery directory pointer"),
+    ("25fcb4ae", "DURABLE", True, "completed sub-result: 65 clean probes, repro ~0"),
+    ("82bd3ca9", "DURABLE", True, "active authorization boundary: allowed hosts"),
+    ("37a9fb39", "DURABLE", True, "deployment convention: ansible runs on remote executor"),
+    ("a16e9170", "DURABLE", True, "experiment-invalidation record (void runs + cause)"),
+    ("227a14ea", "DURABLE", True, "user-confirmed current baseline statement"),
 ]
 
 
@@ -400,7 +405,10 @@ def run(set_path: Path, prompt_name: str) -> int:
         ok = pred["verdict"] == entry["label"]
         if not ok:
             misses.append((entry, pred))
-        if entry["trap"] and pred["verdict"] != "DURABLE":
+        # Production only OPENS a necessity suspicion at confidence >= 0.8
+        # (SELF_CHECK_CONFIDENCE_FLOOR); below that the verdict is cached and
+        # never reaches a reviewer, so the critical gate mirrors that.
+        if entry["trap"] and pred["verdict"] not in {"DURABLE", "ERROR"} and pred["confidence"] >= 0.8:
             trap_flags += 1
         print(
             f"{'ok  ' if ok else 'MISS'} label={entry['label']:13s} "
@@ -422,7 +430,7 @@ def run(set_path: Path, prompt_name: str) -> int:
     if flagged_pred:
         print(f"flag precision (non-DURABLE): {flagged_hit}/{flagged_pred} = {flagged_hit/flagged_pred:.2%}")
     print(f"flag recall: {flagged_hit}/{flag_true} = {flagged_hit/flag_true:.2%}")
-    print(f"trap false-flags (CRITICAL, must be 0): {trap_flags}")
+    print(f"trap false-flags opened at conf>=0.8 (CRITICAL, must be 0): {trap_flags}")
     if misses:
         print(f"\n{len(misses)} misses:")
         for entry, pred in misses:
