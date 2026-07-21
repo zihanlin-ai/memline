@@ -850,16 +850,17 @@ class PairStore(SqliteStore):
         disposition: str,
         *,
         disposed_by: str | None = None,
+        kind: str | None = None,
     ) -> int:
-        """Close all open pairs targeting ``old_id`` (e.g. it was invalidated)."""
+        """Close all open pairs targeting ``old_id`` (e.g. it was invalidated),
+        optionally restricted to one suspicion kind."""
+        query = "UPDATE pairs SET disposition=?, disposed_by=?, disposed_at=? WHERE old_id=? AND disposition='open'"
+        params: list[Any] = [disposition, disposed_by, _now_iso(), old_id]
+        if kind:
+            query += " AND kind=?"
+            params.append(kind)
         with self._lock:
-            cursor = self._conn.execute(
-                """
-                UPDATE pairs SET disposition=?, disposed_by=?, disposed_at=?
-                WHERE old_id=? AND disposition='open'
-                """,
-                (disposition, disposed_by, _now_iso(), old_id),
-            )
+            cursor = self._conn.execute(query, params)
             self._conn.commit()
         return cursor.rowcount
 
@@ -916,13 +917,17 @@ def set_ttl(
     days: float | None = None,
     expires_at: str | None = None,
     clear: bool = False,
+    expire_now: bool = False,
     actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Schedule (or clear) reversible pool-exit for one memory.
 
     Payload-only mutation like invalidate; the search filter honors
     ``ttl_expires_at`` lazily, so the entry leaves the pool at the deadline
-    even if no harvest loop ever runs.
+    even if no harvest loop ever runs. ``expire_now`` materializes the expiry
+    immediately (used by reviewed decisions — necessity confirm, delete
+    downgrade) so the harvest loop does not re-open a review flag for a
+    call a human already made.
     """
     payload = _point_payload(client, memory_id)
     if payload is None:
@@ -931,6 +936,14 @@ def set_ttl(
     if clear:
         patch: dict[str, Any] = {TTL_EXPIRES_AT: None, TTL_EXPIRED_AT: None}
         result = {"id": memory_id, "ttl_cleared": True}
+    elif expire_now:
+        patch = {
+            TTL_EXPIRES_AT: now,
+            TTL_EXPIRED_AT: now,
+            "ttl_set_at": now,
+            "ttl_set_by": actor_id,
+        }
+        result = {"id": memory_id, TTL_EXPIRES_AT: now, TTL_EXPIRED_AT: now}
     else:
         if expires_at is None:
             delta = timedelta(days=days if days is not None else DEFAULT_TTL_DAYS)
@@ -945,11 +958,20 @@ def set_ttl(
         }
         result = {"id": memory_id, TTL_EXPIRES_AT: expires_at}
     client.vector_store.update(vector_id=memory_id, vector=None, payload=patch)
+    # Any open expiry flag is moot once the deadline is cleared or renewed —
+    # every renewal path must close it, not just `stale ttl`, or review keeps
+    # advising about an entry that is already back in the pool.
+    try:
+        pair_store().close_for_old(
+            memory_id, "ttl", disposed_by=actor_id, kind=KIND_TTL_EXPIRY
+        )
+    except Exception:  # noqa: BLE001 - flag hygiene must never break set_ttl.
+        pass
     text = str(payload.get("data") or "")
+    event = "TTL_CLEAR" if clear else ("TTL_EXPIRE" if expire_now else "TTL_SET")
     try:
         client.db.add_history(
-            memory_id, text, text, "TTL_CLEAR" if clear else "TTL_SET",
-            updated_at=now, actor_id=actor_id,
+            memory_id, text, text, event, updated_at=now, actor_id=actor_id,
         )
     except Exception:  # noqa: BLE001 - history is best-effort.
         pass

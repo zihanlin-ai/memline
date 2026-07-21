@@ -512,6 +512,34 @@ class TtlTests(unittest.TestCase):
         self.assertIsNone(client.vector_store.payloads["m1"]["ttl_expired_at"])
         self.assertGreater(client.vector_store.payloads["m1"]["ttl_expires_at"], "2026")
 
+    def test_expire_now_materializes_and_harvest_skips(self) -> None:
+        client = FakeClient({"m1": {"data": "snapshot"}})
+        result = staleness.set_ttl(client, "m1", expire_now=True, actor_id="claude")
+        payload = client.vector_store.payloads["m1"]
+        self.assertTrue(payload["ttl_expired_at"])
+        self.assertEqual(payload["ttl_expires_at"], payload["ttl_expired_at"])
+        self.assertIn("ttl_expired_at", result)
+        # Harvest skips already-materialized expiries: no review flag opens.
+        client.get_all = lambda **kw: {"results": [
+            {"id": "m1", "memory": "snapshot", "metadata": dict(payload)},
+        ]}
+        harvest = staleness.harvest_expired(client)
+        self.assertEqual(harvest["harvested"], 0)
+        self.assertEqual(staleness.pair_store().open_pairs(kind="ttl_expiry"), [])
+
+    def test_renewal_closes_open_expiry_flag(self) -> None:
+        client = FakeClient({"m1": {"data": "snapshot", "ttl_expires_at": "2020-01-01", "ttl_expired_at": "2020-01-01"}})
+        store = staleness.pair_store()
+        row = store.record_judgment(
+            kind="ttl_expiry", new_id="m1", old_id="m1", old_text="snapshot@@2020-01-01",
+            verdict="TTL_EXPIRED", confidence=1.0, reason="expired",
+        )
+        self.assertEqual(store.get(row["pair_id"])["disposition"], "open")
+        # Direct renewal (not via `stale ttl`) must also close the flag.
+        staleness.set_ttl(client, "m1", days=7)
+        self.assertEqual(store.get(row["pair_id"])["disposition"], "ttl")
+        self.assertIsNone(client.vector_store.payloads["m1"]["ttl_expired_at"])
+
     def test_search_filters_expired_entries(self) -> None:
         items = [
             {"id": "live", "memory": "a", "metadata": {}},

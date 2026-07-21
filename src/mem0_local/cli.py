@@ -857,13 +857,20 @@ def updated_memory_metadata(
     return meta
 
 
-def _apply_ttl(memory_id: str, *, days: float | None = None, clear: bool = False) -> dict[str, Any]:
+def _apply_ttl(
+    memory_id: str,
+    *,
+    days: float | None = None,
+    clear: bool = False,
+    expire_now: bool = False,
+) -> dict[str, Any]:
     """Set/clear a reversible pool-exit deadline on one memory, audited."""
     context = detect_writer_context()
     op_args = {
         "memory_id": memory_id,
         "days": days,
         "clear": clear,
+        "expire_now": expire_now,
         "actor_id": context.get("source") or MANUAL_SOURCE,
     }
     with audited("ttl", input_payload=op_args) as span:
@@ -981,8 +988,10 @@ def stale_confirm(
             result: dict[str, Any] = {"expiry_accepted": pair["old_id"]}
         elif kind == "necessity":
             # A self-suspicion has no superseder; confirming it means the
-            # entry leaves the pool now via reversible expiry.
-            result = {"expired": _apply_ttl(pair["old_id"], days=0)}
+            # entry leaves the pool now via reversible expiry — materialized
+            # directly, so the harvest loop never re-asks about a decision
+            # the reviewer just made.
+            result = {"expired": _apply_ttl(pair["old_id"], expire_now=True)}
         else:
             result = {
                 "invalidate": run_invalidate(

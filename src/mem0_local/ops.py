@@ -103,8 +103,9 @@ def _delete(client: Any, args: dict[str, Any]) -> Any:
     if guard["participates"]:
         # Chain participants are never hard-deleted (dangling superseded_by
         # pointers would break resolve_head); downgrade to immediate
-        # reversible expiry instead (design §9).
-        result = set_ttl(client, memory_id, days=0, actor_id=args.get("actor_id"))
+        # reversible expiry instead (design §9). Materialized directly so
+        # the harvest loop does not re-open a review flag for it.
+        result = set_ttl(client, memory_id, expire_now=True, actor_id=args.get("actor_id"))
         return {
             "id": memory_id,
             "deleted": False,
@@ -124,6 +125,7 @@ def _set_ttl(client: Any, args: dict[str, Any]) -> Any:
         days=args.get("days"),
         expires_at=args.get("expires_at"),
         clear=args.get("clear", False),
+        expire_now=args.get("expire_now", False),
         actor_id=args.get("actor_id"),
     )
 
