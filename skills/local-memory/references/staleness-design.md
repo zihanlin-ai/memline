@@ -13,6 +13,11 @@ Judge eval gate: 24 labeled real pairs, accuracy 87.5%, SUPERSEDED precision
 90% / recall 81.8% (`tools/stale_judge_eval.py`).
 This file is the behavioral spec; update it if the design changes.
 
+LIFECYCLE EXTENSION (2026-07-20/21): the displacement machinery below was
+extended into a full memory-lifecycle system — see §9 for the delta and
+`/workspace/reference/mem-lifecycle-design-2026-07-20.md` for the
+authoritative requirements/decision record.
+
 ## 1. Problem & Requirements
 
 The store holds ~5.6k verbatim entries growing ~160/day (2026-07). Hybrid
@@ -379,3 +384,46 @@ Success criterion: the recall regression script (to be stored in
 `.agent-memory/utils/`) shows identifier queries unchanged (rank-1 kept) and
 state queries returning the current version first with superseded versions
 absent from default search.
+
+## 9. Lifecycle Extension (2026-07-20/21)
+
+The suspicion-pair machinery of §2.2 was generalized: `pairs` gained a
+`kind` column and the store now carries four suspicion kinds sharing one
+disposition surface (`review` / `stale confirm|dismiss|ttl|merge`):
+
+| kind | question | verdicts (flag opens at floor) |
+|---|---|---|
+| `displacement` | does the new entry displace an old one? | SUPERSEDED / DUPLICATE / KEPT (floor 0.6) |
+| `necessity` | does the entry deserve long-term memory at all? | DURABLE / BORN_UNNECESSARY / EXPIRING (floor 0.8) |
+| `timestamp` | does the claimed date/actor contradict CLI metadata? | CONSISTENT / TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT (floor 0.8) |
+| `ttl_expiry` | a TTL deadline fired — accept or renew? | TTL_EXPIRED (always opens; any session may dispose) |
+
+Key mechanics on top of §2-§6:
+
+- Necessity/timestamp checks are SELF-pairs (`new_id == old_id`),
+  version-scoped by the entry text like every judgment; `update` expires
+  open flags judged against the old text. Pinned entries skip everything;
+  ledger imports skip the timestamp check. Judge prompts are eval-gated by
+  `tools/necessity_judge_eval.py` (v5: flag precision 100%, zero trap
+  false-flags on lessons/corrections/audit-conclusions/pointer families).
+- TTL: `ttl <id> [--days 7] [--clear]` schedules reversible pool exit.
+  The search filter enforces `ttl_expires_at` lazily (correctness never
+  depends on the daemon); the daemon harvest materializes expiries every
+  6h and opens a `ttl_expiry` review flag per entry (deadline-salted, so
+  each renewal cycle re-arms exactly once). Setting a new deadline is
+  renewal and clears any materialized expiry. Reviewed decisions
+  (necessity confirm, delete downgrade) materialize instantly and are
+  never re-asked by harvest.
+- Delete guard: supersession-chain participants are never hard-deleted;
+  `delete` downgrades them to immediate reversible expiry
+  (`downgraded_to_expiry`), keeping `resolve_head` sound.
+- Invariants, executable as tests (`tests/test_lifecycle_boundaries.py`):
+  I1 marks never execute; I2 every pool exit is reversible and loss exists
+  only at the audit layer; I3 lazy correctness without any live daemon;
+  I4 reviewed decisions are final. Plus the disposition rule (invariant
+  #6, user-mandated): judge output — including re-judging — is advisory
+  triage; every disposal requires the reviewer to personally read the
+  entry and decide. Workflow: [handoff-review.md](handoff-review.md).
+- Disclosure policy: none of this surfaces during task execution. The
+  task-time interface is `add` + `search` (+`--supersedes`); the full
+  disposition surface loads only at a user-requested session handoff.
