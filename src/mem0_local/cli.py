@@ -900,7 +900,7 @@ _EXPIRING_VERDICTS = {"EXPIRING", "PROGRESS_TICK", "EVENT_SCOPED"}
 
 def _flag_suggestion(pair: dict[str, Any]) -> str:
     """Reviewer guidance per suspicion kind/verdict (lifecycle design R4)."""
-    if pair.get("kind") == "timestamp":
+    if pair.get("kind") == "correctness":
         return (
             "fix via `update <memory_id> '<corrected text>'` (expires this flag) | "
             "false positive -> `stale dismiss <pair_id>`"
@@ -1010,9 +1010,9 @@ def stale_confirm(
     """
     store, pair = _load_open_pair(pair_id)
     kind = pair.get("kind") or "displacement"
-    if kind == "timestamp":
+    if kind == "correctness":
         raise click.ClickException(
-            "timestamp suspicions are corrected via `update` (which expires the "
+            "correctness suspicions are corrected via `update` (which expires the "
             "flag) or closed with `stale dismiss`; confirm does not apply."
         )
     _require_disposition_authority(pair, force, "confirm")
@@ -1208,11 +1208,19 @@ def review(
             "suggested": _flag_suggestion(p),
         }
 
-    self_flags = [
-        flag_view(p)
-        for p in all_pairs
-        if (p.get("kind") or "displacement") not in {"displacement", "ttl_expiry"}
-    ]
+    # Disposition order (design 2026-07-21): safety first (redact before
+    # anything else can invalidate and strand the plaintext), then correctness
+    # (fix the fact), then necessity (may then invalidate). Displacement is
+    # handled last, from `open_pairs`.
+    _SELF_FLAG_ORDER = {"safety": 0, "correctness": 1, "necessity": 2}
+    self_flags = sorted(
+        (
+            flag_view(p)
+            for p in all_pairs
+            if (p.get("kind") or "displacement") not in {"displacement", "ttl_expiry"}
+        ),
+        key=lambda f: _SELF_FLAG_ORDER.get(f["kind"], 9),
+    )
     # TTL expiries are lifecycle events, not this session's writes: any
     # session running review may dispose them (accept or renew).
     ttl_expired = [flag_view(p) for p in pair_store().open_pairs(kind="ttl_expiry")]
@@ -1229,11 +1237,15 @@ def review(
             "self_flags": self_flags,
             "ttl_expired": ttl_expired,
             "how_to_dispose": (
-                "displacement: stale confirm <pair_id> | stale dismiss <pair_id> [--pin] | "
-                "stale merge <pair_id> '<consolidated text>' | update <old_id> '<corrected text>'. "
+                "self_flags are ordered by disposition priority: safety -> "
+                "correctness -> necessity. "
+                "safety: update <memory_id> '<secret replaced by its location pointer>' "
+                "(redact in place, then verify search '<secret>' --include-superseded is empty) | stale dismiss <pair_id>. "
+                "correctness: update <memory_id> '<corrected>' | stale dismiss <pair_id>. "
                 "necessity: stale confirm (expire now) | stale ttl <pair_id> [--days 7] | "
                 "delete <memory_id> (own fresh born-unnecessary entry) | stale dismiss [--pin]. "
-                "timestamp: update <memory_id> '<corrected>' | stale dismiss <pair_id>. "
+                "displacement (handle last): stale confirm <pair_id> | stale dismiss <pair_id> [--pin] | "
+                "stale merge <pair_id> '<consolidated text>' | update <old_id> '<corrected text>'. "
                 "ttl_expiry: stale confirm (accept) | stale ttl <pair_id> (renew, re-enters pool)."
             ),
         },

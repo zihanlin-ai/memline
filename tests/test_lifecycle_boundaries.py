@@ -229,8 +229,8 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
             (staleness.KIND_DISPLACEMENT, "SUPERSEDED", 0.59, "cached"),
             (KIND_NECESSITY, "EXPIRING", 0.80, "open"),
             (KIND_NECESSITY, "EXPIRING", 0.79, "cached"),
-            (staleness.KIND_TIMESTAMP, "TIMESTAMP_SUSPECT", 0.80, "open"),
-            (staleness.KIND_TIMESTAMP, "TIMESTAMP_SUSPECT", 0.79, "cached"),
+            (staleness.KIND_CORRECTNESS, "TIMESTAMP_SUSPECT", 0.80, "open"),
+            (staleness.KIND_CORRECTNESS, "TIMESTAMP_SUSPECT", 0.79, "cached"),
         ]
         for i, (kind, verdict, conf, expected) in enumerate(cases):
             row = self.store.record_judgment(
@@ -249,7 +249,7 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
         for verdict in ("ACTIVITY_LOG", "COMMIT_RECORD", "REPO_FACT", "BORN_UNNECESSARY"):
             self.assertIn("born-unnecessary", _flag_suggestion({"kind": "necessity", "verdict": verdict}))
         self.assertIn("renews", _flag_suggestion({"kind": "ttl_expiry", "verdict": "TTL_EXPIRED"}))
-        self.assertIn("update", _flag_suggestion({"kind": "timestamp", "verdict": "TIMESTAMP_SUSPECT"}))
+        self.assertIn("update", _flag_suggestion({"kind": "correctness", "verdict": "TIMESTAMP_SUSPECT"}))
 
 
 # ---------------------------------------------------------------------------
@@ -347,12 +347,12 @@ class SelfCheckBoundaryTests(ScratchPairStoreCase):
         )
         report = staleness.run_stale_check(self._client(), "m1", llm=llm)
         self.assertFalse(report["necessity_open"])
-        self.assertFalse(report["timestamp_open"])
+        self.assertFalse(report["correctness_open"])
         self.assertEqual(self.store.open_count(), 0)
         # But both verdicts are version-cached: no repeat LLM spend.
         again = staleness.run_stale_check(self._client(), "m1", llm=llm)
         self.assertEqual(again["necessity"], "cached")
-        self.assertEqual(again["timestamp"], "cached")
+        self.assertEqual(again["correctness"], "cached")
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +430,7 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
         from mem0_local import cli
 
         ts = self.store.record_judgment(
-            kind=staleness.KIND_TIMESTAMP, new_id="m", old_id="m", old_text="t",
+            kind=staleness.KIND_CORRECTNESS, new_id="m", old_id="m", old_text="t",
             verdict="TIMESTAMP_SUSPECT", confidence=0.9, reason="",
         )
         disp = self.store.record_judgment(

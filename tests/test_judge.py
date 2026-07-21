@@ -99,11 +99,11 @@ class ParseSingleJudgmentTests(unittest.TestCase):
         self.assertEqual(out["verdict"], "DURABLE")
 
     def test_truncated_output_salvages_verdict(self) -> None:
-        from mem0_local.judge import TIMESTAMP_VERDICTS, parse_single_judgment
+        from mem0_local.judge import CORRECTNESS_VERDICTS, parse_single_judgment
 
         out = parse_single_judgment(
             '{"verdict":"TIMESTAMP_SUSPECT","confidence":0.8,"reason":"cut of',
-            TIMESTAMP_VERDICTS,
+            CORRECTNESS_VERDICTS,
             default_verdict="CONSISTENT",
         )
         self.assertEqual(out["verdict"], "TIMESTAMP_SUSPECT")

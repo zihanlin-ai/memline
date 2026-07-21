@@ -395,16 +395,24 @@ disposition surface (`review` / `stale confirm|dismiss|ttl|merge`):
 |---|---|---|
 | `displacement` | does the new entry displace an old one? | SUPERSEDED / DUPLICATE / KEPT (floor 0.6) |
 | `necessity` | does the entry deserve long-term memory at all? | DURABLE / BORN_UNNECESSARY / EXPIRING (floor 0.8) |
-| `timestamp` | does the claimed date/actor contradict CLI metadata? | CONSISTENT / TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT (floor 0.8) |
+| `correctness` | does the claimed date/actor contradict CLI metadata? | CONSISTENT / TIMESTAMP_SUSPECT / ATTRIBUTION_SUSPECT (floor 0.8) |
 | `ttl_expiry` | a TTL deadline fired — accept or renew? | TTL_EXPIRED (always opens; any session may dispose) |
 | `safety` | does the entry embed a plaintext credential value? | CLEAN / SECRET_SUSPECT (floor 0.6 — missing a leak costs more than a spurious review moment) |
 
+Kinds are independent and can co-exist on one entry (an add is judged by every
+self-check; displacement runs against other entries). No priority at the
+JUDGMENT layer — priority lives only in REVIEW disposal order:
+**safety → correctness → necessity → displacement** (see `handoff-review.md`),
+so a redact/fix (`update`, keeps the entry) always precedes an invalidate that
+would otherwise strand the plaintext/wrong fact behind `--include-superseded`.
+`review` emits `self_flags` already sorted by this order.
+
 Key mechanics on top of §2-§6:
 
-- Necessity/timestamp checks are SELF-pairs (`new_id == old_id`),
+- Necessity/correctness checks are SELF-pairs (`new_id == old_id`),
   version-scoped by the entry text like every judgment; `update` expires
   open flags judged against the old text. Pinned entries skip everything;
-  ledger imports skip the timestamp check. Judge prompts are eval-gated by
+  ledger imports skip the correctness check. Judge prompts are eval-gated by
   `tools/necessity_judge_eval.py` (v5: flag precision 100%, zero trap
   false-flags on lessons/corrections/audit-conclusions/pointer families).
 - TTL: `ttl <id> [--days 7] [--clear]` schedules reversible pool exit.

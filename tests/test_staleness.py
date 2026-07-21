@@ -269,7 +269,7 @@ class RunStaleCheckTests(unittest.TestCase):
         self.assertEqual(again["judged"], 0)
         self.assertEqual(again["cached"], 2)
         self.assertEqual(again["necessity"], "cached")
-        self.assertEqual(again["timestamp"], "cached")
+        self.assertEqual(again["correctness"], "cached")
         self.assertEqual(again["safety"], "cached")
         # 4 calls on the first run (necessity, timestamp, safety, displacement);
         # everything version-cached on the rerun.
@@ -438,13 +438,13 @@ class SelfCheckTests(unittest.TestCase):
         result = staleness.run_stale_check(self._client(), "m1", session_id="s1", llm=llm)
         self.assertEqual(result["necessity"], "EXPIRING")
         self.assertTrue(result["necessity_open"])
-        self.assertEqual(result["timestamp"], "CONSISTENT")
+        self.assertEqual(result["correctness"], "CONSISTENT")
         rows = staleness.pair_store().open_pairs(kind="necessity")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["new_id"], "m1")
         self.assertEqual(rows[0]["old_id"], "m1")
         # CONSISTENT timestamp verdict is cached, not opened.
-        self.assertEqual(staleness.pair_store().open_pairs(kind="timestamp"), [])
+        self.assertEqual(staleness.pair_store().open_pairs(kind="correctness"), [])
 
     def test_timestamp_suspect_opens_flag(self) -> None:
         llm = RoutingFakeLlm(
@@ -452,8 +452,8 @@ class SelfCheckTests(unittest.TestCase):
             {"verdict": "TIMESTAMP_SUSPECT", "confidence": 0.8, "reason": "date off"},
         )
         result = staleness.run_stale_check(self._client(), "m1", llm=llm)
-        self.assertTrue(result["timestamp_open"])
-        rows = staleness.pair_store().open_pairs(kind="timestamp")
+        self.assertTrue(result["correctness_open"])
+        rows = staleness.pair_store().open_pairs(kind="correctness")
         self.assertEqual(rows[0]["verdict"], "TIMESTAMP_SUSPECT")
 
     def test_self_checks_version_cached(self) -> None:
@@ -464,7 +464,7 @@ class SelfCheckTests(unittest.TestCase):
         staleness.run_stale_check(self._client(), "m1", llm=llm)
         again = staleness.run_stale_check(self._client(), "m1", llm=llm)
         self.assertEqual(again["necessity"], "cached")
-        self.assertEqual(again["timestamp"], "cached")
+        self.assertEqual(again["correctness"], "cached")
         self.assertEqual(again["safety"], "cached")
         self.assertEqual(llm.necessity_calls, 1)
         self.assertEqual(llm.timestamp_calls, 1)
@@ -500,7 +500,7 @@ class SelfCheckTests(unittest.TestCase):
         result = staleness.run_stale_check(
             self._client({"origin": "ledger_import"}), "m1", llm=llm
         )
-        self.assertNotIn("timestamp", result)  # ledger skips timestamp
+        self.assertNotIn("correctness", result)  # ledger skips timestamp
         self.assertEqual(result["safety"], "SECRET_SUSPECT")  # but not safety
         self.assertEqual(llm.safety_calls, 1)
 
@@ -520,7 +520,7 @@ class SelfCheckTests(unittest.TestCase):
         result = staleness.run_stale_check(
             self._client({"origin": "ledger_import"}), "m1", llm=llm
         )
-        self.assertNotIn("timestamp", result)
+        self.assertNotIn("correctness", result)
         self.assertEqual(llm.timestamp_calls, 0)
 
 

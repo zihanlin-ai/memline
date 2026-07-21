@@ -367,9 +367,11 @@ def judge_necessity(llm: Any, entry: dict[str, Any]) -> dict[str, Any]:
 # Timestamp / attribution mismatch judge (lifecycle design R2)
 # ---------------------------------------------------------------------------
 
-TIMESTAMP_VERDICTS = {"CONSISTENT", "TIMESTAMP_SUSPECT", "ATTRIBUTION_SUSPECT"}
+# Correctness judge — timestamp/attribution mismatches. The `correctness`
+# suspicion kind; verdict values are kept stable for stored-row compatibility.
+CORRECTNESS_VERDICTS = {"CONSISTENT", "TIMESTAMP_SUSPECT", "ATTRIBUTION_SUSPECT"}
 
-TIMESTAMP_PROMPT = """\
+CORRECTNESS_PROMPT = """\
 You check one engineering memory entry for obvious timestamp or actor
 mismatches. Agents on long sessions lose track of time (an experiment
 crosses midnight and the text still says yesterday's date) or misattribute
@@ -452,7 +454,7 @@ def judge_safety(llm: Any, entry: dict[str, Any]) -> dict[str, Any]:
     return parse_single_judgment(response, SAFETY_VERDICTS, default_verdict="CLEAN")
 
 
-def judge_timestamp(
+def judge_correctness(
     llm: Any,
     entry: dict[str, Any],
     *,
@@ -470,11 +472,11 @@ def judge_timestamp(
     )
     response = llm.generate_response(
         messages=[
-            {"role": "system", "content": TIMESTAMP_PROMPT},
+            {"role": "system", "content": CORRECTNESS_PROMPT},
             {"role": "user", "content": user},
         ],
         response_format={"type": "json_object"},
     )
     return parse_single_judgment(
-        response, TIMESTAMP_VERDICTS, default_verdict="CONSISTENT"
+        response, CORRECTNESS_VERDICTS, default_verdict="CONSISTENT"
     )

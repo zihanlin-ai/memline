@@ -43,7 +43,7 @@ TTL_EXPIRED_AT = "ttl_expired_at"
 # ttl_expiry = a TTL deadline fired and awaits review (accept or renew).
 KIND_DISPLACEMENT = "displacement"
 KIND_NECESSITY = "necessity"
-KIND_TIMESTAMP = "timestamp"
+KIND_CORRECTNESS = "correctness"
 KIND_TTL_EXPIRY = "ttl_expiry"
 KIND_SAFETY = "safety"
 
@@ -580,17 +580,17 @@ def _run_self_checks(
         report["safety"] = verdict["verdict"]
         report["safety_open"] = row["disposition"] == "open" and row["inserted"]
 
-    # Timestamp/attribution checks only make sense for live agent writes;
-    # ledger imports carry historical dates by design.
+    # Correctness (timestamp/attribution) checks only make sense for live agent
+    # writes; ledger imports carry historical dates by design.
     if payload.get("origin") == "ledger_import":
         return report
-    if store.has_judgment(new_id, new_id, new_text, kind=KIND_TIMESTAMP):
-        report["timestamp"] = "cached"
+    if store.has_judgment(new_id, new_id, new_text, kind=KIND_CORRECTNESS):
+        report["correctness"] = "cached"
         return report
 
-    from mem0_local.judge import judge_timestamp
+    from mem0_local.judge import judge_correctness
 
-    verdict = judge_timestamp(
+    verdict = judge_correctness(
         llm,
         entry,
         ingested_at=str(payload.get("ingested_at") or payload.get("created_at") or ""),
@@ -598,7 +598,7 @@ def _run_self_checks(
         writer=str(payload.get("source") or payload.get("writer_agent_id") or "") or None,
     )
     row = store.record_judgment(
-        kind=KIND_TIMESTAMP,
+        kind=KIND_CORRECTNESS,
         new_id=new_id,
         old_id=new_id,
         old_text=new_text,
@@ -608,8 +608,8 @@ def _run_self_checks(
         judge_model=judge_model,
         new_session_id=session_id,
     )
-    report["timestamp"] = verdict["verdict"]
-    report["timestamp_open"] = row["disposition"] == "open" and row["inserted"]
+    report["correctness"] = verdict["verdict"]
+    report["correctness_open"] = row["disposition"] == "open" and row["inserted"]
     return report
 
 
@@ -637,19 +637,19 @@ def pair_store(path: Path | None = None) -> "PairStore":
 _OPENING_VERDICTS: dict[str, Callable[[str], bool]] = {
     KIND_DISPLACEMENT: lambda v: v in {"SUPERSEDED", "DUPLICATE"},
     KIND_NECESSITY: lambda v: v != "DURABLE",
-    KIND_TIMESTAMP: lambda v: v != "CONSISTENT",
+    KIND_CORRECTNESS: lambda v: v != "CONSISTENT",
     KIND_TTL_EXPIRY: lambda v: True,
     KIND_SAFETY: lambda v: v != "CLEAN",
 }
 
 # Per-kind floors: a flag below its kind's confidence floor is cached, never
-# opened. Necessity/timestamp use the strict floor (a borderline self-flag
+# opened. Necessity/correctness use the strict floor (a borderline self-flag
 # costs reviewer trust); safety uses the base floor — missing a leaked
 # credential costs more than a spurious review moment.
 _KIND_FLOORS: dict[str, float] = {
     KIND_DISPLACEMENT: 0.6,
     KIND_NECESSITY: 0.8,
-    KIND_TIMESTAMP: 0.8,
+    KIND_CORRECTNESS: 0.8,
     KIND_SAFETY: 0.6,
     KIND_TTL_EXPIRY: 0.0,
 }
