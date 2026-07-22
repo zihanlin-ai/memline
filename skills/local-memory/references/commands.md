@@ -76,6 +76,12 @@ Plain-text adds store the exact wording verbatim by default (raw mode, since
 `--infer` is passed explicitly; extraction adds queue asynchronously and
 return an `event_id` (see `event list/status/retry/ack`).
 
+Raw writes have a hard length cap (default 600 chars, `[memory].max_raw_text_chars`
+in config.toml). An over-cap `add` errors before touching the store: split the
+content into multiple single-fact adds, or pass `--infer` for extraction.
+`update` may keep or shrink an over-cap legacy entry (redaction is never
+blocked) but cannot grow it past the cap.
+
 ```bash
 mem0-local add "exact ledger entry" --metadata source=agent-memory-ledger
 mem0-local add --infer "dense multi-fact paragraph worth splitting into atomic memories"

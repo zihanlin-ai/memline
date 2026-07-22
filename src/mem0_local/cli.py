@@ -34,6 +34,7 @@ from mem0_local.config import (
     LOCAL_TZ,
     MANUAL_SESSION,
     MANUAL_SOURCE,
+    MAX_RAW_TEXT_CHARS,
     MEMORY_SCHEMA_VERSION,
     QDRANT_DIR,
     VECTOR_STORE_HOST,
@@ -610,6 +611,28 @@ def read_content(text: str | None, messages: str | None, file: Path | None) -> A
             return piped
 
     raise typer.BadParameter("No content provided. Pass text, --messages, --file, or stdin.")
+
+
+def check_raw_length(content: Any, *, previous: Optional[str] = None) -> None:
+    """Hard cap for verbatim (raw) writes: one atomic fact per entry.
+
+    An update may keep or shrink an over-cap legacy entry (redaction and
+    correction must never be blocked) but cannot grow it past the cap.
+    """
+    if not isinstance(content, str):
+        return
+    n = len(content)
+    if n <= MAX_RAW_TEXT_CHARS:
+        return
+    if previous is not None and n <= len(previous):
+        return
+    raise click.ClickException(
+        f"text is {n} chars, over the raw-write hard cap of {MAX_RAW_TEXT_CHARS}. "
+        "Split it into multiple single-fact `add` calls (one atomic, self-contained "
+        "fact per entry — retrieval works per fact), or pass --infer to let LLM "
+        "extraction break long content up. "
+        "Cap is configurable via [memory].max_raw_text_chars."
+    )
 
 
 def parse_messages_or_text(raw: str) -> Any:
@@ -1342,6 +1365,8 @@ def add(
             "--supersedes requires the raw add path (extraction adds are async and have no id yet)."
         )
     content = read_content(text, messages, file)
+    if not infer:
+        check_raw_length(content)
     meta = parse_json_or_key_values(metadata, option_name="--metadata")
     auto_context = detect_writer_context()
     if auto_context.get("source"):
@@ -1595,6 +1620,7 @@ def update(
     existing = execute("get", {"memory_id": memory_id})
     if not isinstance(existing, dict):
         raise click.ClickException(f"memory not found: {memory_id}")
+    check_raw_length(text, previous=str(existing.get("memory") or existing.get("data") or ""))
     meta = updated_memory_metadata(
         existing, parse_json_or_key_values(metadata, option_name="--metadata")
     )

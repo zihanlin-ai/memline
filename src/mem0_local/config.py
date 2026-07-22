@@ -85,6 +85,11 @@ LOCK_FILE = path_value("paths", "lock_file", STORE_DIR / "cli.lock")
 COLLECTION = str(value("memory", "collection", "workspace_agent_memory"))
 DEFAULT_USER_ID = str(value("memory", "user_id", "workspace"))
 MEMORY_SCHEMA_VERSION = int(value("memory", "schema_version", 2))
+# Hard cap on raw (verbatim) add/update text length, in characters. Raw entries
+# must be atomic single facts; longer content has to be split into multiple
+# adds or routed through --infer extraction. Default sits at ~p95 of the
+# existing store (p50≈320, p95≈630): anything longer is a multi-fact dump.
+MAX_RAW_TEXT_CHARS = int(value("memory", "max_raw_text_chars", 600))
 
 EMBEDDING_PROVIDER = str(value("embedder", "provider", "fastembed"))
 EMBEDDING_MODEL = str(value("embedder", "model", "jinaai/jina-embeddings-v2-base-zh"))
