@@ -219,7 +219,7 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
         )
         self.assertTrue(self.store.dispose(row["pair_id"], "ttl"))
         self.assertFalse(self.store.dispose(row["pair_id"], "confirmed"))
-        # reopen is the sanctioned rollback, and only from a disposed state.
+        # ttl is one of the sanctioned mutation-follow-up rollback states.
         self.assertTrue(self.store.reopen(row["pair_id"]))
         self.assertFalse(self.store.reopen(row["pair_id"]))
 
@@ -316,9 +316,38 @@ class SelfCheckBoundaryTests(ScratchPairStoreCase):
         client = self._client()
         staleness.run_stale_check(client, "m1", llm=llm)
         self.assertEqual(len(self.store.open_pairs(kind=KIND_NECESSITY)), 1)
+        for new_id in ("n1", "n2", "n3"):
+            row = self.store.record_judgment(
+                new_id=new_id,
+                old_id="m1",
+                old_text="grid progress: 42%",
+                verdict="SUPERSEDED",
+                confidence=0.9,
+                reason="false positive",
+            )
+            self.store.dispose(row["pair_id"], "dismissed", disposed_by="reviewer")
+        staleness.set_displacement_protection(
+            client,
+            "m1",
+            days=30,
+            reason="repeated false positives",
+            actor_id="codex",
+            session_id="s1",
+        )
+        self.assertTrue(
+            staleness.is_displacement_protected(client.vector_store.payloads["m1"])
+        )
 
-        dispatch_op(client, "update", {"memory_id": "m1", "text": "final result: loss 0.43", "metadata": {}})
+        update_result = dispatch_op(
+            client,
+            "update",
+            {"memory_id": "m1", "text": "final result: loss 0.43", "metadata": {}},
+        )
         self.assertEqual(self.store.open_pairs(kind=KIND_NECESSITY), [])
+        self.assertTrue(update_result["displacement_protection_cleared"])
+        self.assertFalse(
+            staleness.is_displacement_protected(client.vector_store.payloads["m1"])
+        )
 
         llm2 = RoutingFakeLlm(
             {"verdict": "DURABLE", "confidence": 0.9, "reason": "result"},

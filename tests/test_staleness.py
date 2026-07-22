@@ -84,6 +84,19 @@ class StalenessOpsTests(unittest.TestCase):
         payloads.update(extra or {})
         return FakeClient(payloads)
 
+    def _dismiss_three(self, old_id: str = "old", old_text: str = "probe is 1.0 TPS") -> None:
+        store = staleness.pair_store()
+        for new_id in ("false-positive-1", "false-positive-2", "false-positive-3"):
+            row = store.record_judgment(
+                new_id=new_id,
+                old_id=old_id,
+                old_text=old_text,
+                verdict="SUPERSEDED",
+                confidence=0.9,
+                reason="false positive",
+            )
+            store.dispose(row["pair_id"], "dismissed", disposed_by="reviewer")
+
     def test_invalidate_sets_fields_and_history(self) -> None:
         client = self._client()
         result = invalidate(client, "old", ["new"], reason="re-ran", actor_id="claude")
@@ -130,6 +143,89 @@ class StalenessOpsTests(unittest.TestCase):
         self.assertEqual(client.db.rows[-1]["event"], "REVIVE")
         with self.assertRaises(StalenessError):
             revive(client, "old")
+
+    def test_displacement_protection_is_bounded_and_reversible(self) -> None:
+        client = self._client()
+        self._dismiss_three()
+        result = staleness.set_displacement_protection(
+            client,
+            "old",
+            reason="three repeated false positives",
+            actor_id="codex",
+            session_id="s1",
+        )
+        payload = client.vector_store.payloads["old"]
+        self.assertTrue(staleness.is_displacement_protected(payload))
+        self.assertEqual(result["kind"], "displacement")
+        self.assertEqual(result["dismissed_evidence_count"], 3)
+        self.assertEqual(payload["displacement_protection_reason"], "three repeated false positives")
+        self.assertEqual(client.db.rows[-1]["event"], "PROTECT_DISPLACEMENT")
+
+        cleared = staleness.clear_displacement_protection(
+            client, "old", actor_id="codex"
+        )
+        self.assertTrue(cleared["changed"])
+        self.assertFalse(staleness.is_displacement_protected(client.vector_store.payloads["old"]))
+        self.assertEqual(client.db.rows[-1]["event"], "UNPROTECT_DISPLACEMENT")
+        self.assertFalse(
+            staleness.clear_displacement_protection(client, "old")["changed"]
+        )
+
+    def test_displacement_protection_rejects_invalid_scope(self) -> None:
+        client = self._client()
+        for days in (0, 91):
+            with self.assertRaises(StalenessError):
+                staleness.set_displacement_protection(
+                    client, "old", days=days, reason="invalid"
+                )
+        with self.assertRaises(StalenessError):
+            staleness.set_displacement_protection(
+                client, "old", days=1, reason="   "
+            )
+        with self.assertRaises(StalenessError):
+            staleness.set_displacement_protection(
+                client, "old", days=1, reason="x" * 501
+            )
+        invalidate(client, "old", ["new"])
+        with self.assertRaises(StalenessError):
+            staleness.set_displacement_protection(
+                client, "old", days=1, reason="already invalidated"
+            )
+
+    def test_displacement_protection_requires_identity_and_core_evidence(self) -> None:
+        client = self._client()
+        with self.assertRaisesRegex(StalenessError, "actor_id and session_id"):
+            staleness.set_displacement_protection(
+                client, "old", days=1, reason="false positives"
+            )
+        with self.assertRaisesRegex(StalenessError, "latest 3 independent"):
+            staleness.set_displacement_protection(
+                client,
+                "old",
+                days=1,
+                reason="false positives",
+                actor_id="codex",
+                session_id="s1",
+            )
+
+    def test_invalidate_clears_displacement_protection(self) -> None:
+        client = self._client()
+        self._dismiss_three()
+        staleness.set_displacement_protection(
+            client,
+            "old",
+            days=30,
+            reason="repeated false positives",
+            actor_id="codex",
+            session_id="s1",
+        )
+        invalidate(client, "old", ["new"])
+        payload = client.vector_store.payloads["old"]
+        self.assertFalse(staleness.is_displacement_protected(payload))
+        revive(client, "old")
+        self.assertFalse(
+            staleness.is_displacement_protected(client.vector_store.payloads["old"])
+        )
 
     def test_invalidate_closes_open_suspicions_on_target(self) -> None:
         client = self._client()
@@ -231,7 +327,9 @@ class RunStaleCheckTests(unittest.TestCase):
             {"id": "new1", "memory": "probe is 2.0 TPS", "created_at": "2026-07-17"},
             {"id": "old1", "memory": "probe is 1.0 TPS", "created_at": "2026-06-26"},
             {"id": "gone", "memory": "x", "metadata": {"superseded_by": ["y"]}},
-            {"id": "pinned", "memory": "method note", "metadata": {"stale_check_pin": True}},
+            {"id": "protected", "memory": "method note", "metadata": {
+                "displacement_protected_until": "2999-01-01T00:00:00+00:00"
+            }},
             {"id": "old2", "memory": "unrelated fact", "created_at": "2026-05-01"},
         ]
         client = FakeClient(
@@ -254,8 +352,8 @@ class RunStaleCheckTests(unittest.TestCase):
         self.assertEqual(store.open_count(), 1)
         open_pair = store.open_pairs(session_id="s1", kind="displacement")[0]
         self.assertEqual(open_pair["old_id"], "old1")
-        # Self, invalidated, and pinned entries were never sent to the
-        # displacement judge; necessity + timestamp + safety self-checks add 3.
+        # Self, invalidated, and displacement-protected entries were never
+        # sent to the displacement judge; all three self-checks still run.
         self.assertEqual(llm.calls, 4)
 
     def test_rerun_hits_pair_cache(self) -> None:
@@ -361,6 +459,93 @@ class PairStoreTests(unittest.TestCase):
         self.assertFalse(self.store.dispose(row["pair_id"], "confirmed"))
         with self.assertRaises(StalenessError):
             self.store.dispose(row["pair_id"], "bogus")
+
+    def test_dismissed_pair_is_permanent_for_exact_text_version(self) -> None:
+        row = self.store.record_judgment(
+            new_id="n",
+            old_id="o",
+            old_text="v1",
+            verdict="SUPERSEDED",
+            confidence=0.9,
+            reason="false positive",
+        )
+        self.assertTrue(
+            self.store.dispose(row["pair_id"], "dismissed", disposed_by="user")
+        )
+        self.assertFalse(self.store.reopen(row["pair_id"]))
+
+        duplicate = self.store.record_judgment(
+            new_id="n",
+            old_id="o",
+            old_text="v1",
+            verdict="SUPERSEDED",
+            confidence=0.99,
+            reason="same evidence fired again",
+        )
+        self.assertFalse(duplicate["inserted"])
+        self.assertEqual(self.store.get(row["pair_id"])["disposition"], "dismissed")
+
+        # A genuinely independent future source is a different pair and may
+        # still open, which avoids granting accidental permanent immunity.
+        independent = self.store.record_judgment(
+            new_id="n2",
+            old_id="o",
+            old_text="v1",
+            verdict="SUPERSEDED",
+            confidence=0.9,
+            reason="new evidence",
+        )
+        self.assertTrue(independent["inserted"])
+        self.assertEqual(independent["disposition"], "open")
+
+    def test_protection_evidence_is_consecutive_independent_and_version_scoped(self) -> None:
+        for new_id in ("n1", "n2", "n3"):
+            row = self.store.record_judgment(
+                new_id=new_id,
+                old_id="o",
+                old_text="v1",
+                verdict="SUPERSEDED",
+                confidence=0.9,
+                reason="false positive",
+            )
+            self.store.dispose(row["pair_id"], "dismissed", disposed_by="user")
+        evidence = self.store.consecutive_dismissed_displacement_evidence("o", "v1")
+        self.assertTrue(evidence["eligible"])
+        self.assertEqual(evidence["consecutive_count"], 3)
+        self.assertFalse(
+            self.store.consecutive_dismissed_displacement_evidence("o", "v2")["eligible"]
+        )
+
+        self.store.record_judgment(
+            kind=staleness.KIND_NECESSITY,
+            new_id="o",
+            old_id="o",
+            old_text="v1",
+            verdict="EXPIRING",
+            confidence=0.9,
+            reason="not displacement",
+        )
+        self.assertTrue(
+            self.store.consecutive_dismissed_displacement_evidence("o", "v1")["eligible"]
+        )
+
+        # A newer unresolved/confirmed displacement suspicion interrupts the
+        # run even though three older dismissals still exist in history.
+        interrupt = self.store.record_judgment(
+            new_id="n4",
+            old_id="o",
+            old_text="v1",
+            verdict="DUPLICATE",
+            confidence=0.9,
+            reason="needs review",
+        )
+        interrupted = self.store.consecutive_dismissed_displacement_evidence("o", "v1")
+        self.assertFalse(interrupted["eligible"])
+        self.assertEqual(interrupted["consecutive_count"], 0)
+        self.store.dispose(interrupt["pair_id"], "dismissed", disposed_by="user")
+        self.assertTrue(
+            self.store.consecutive_dismissed_displacement_evidence("o", "v1")["eligible"]
+        )
 
     def test_session_scoped_open_pairs(self) -> None:
         self.store.record_judgment(
@@ -504,13 +689,24 @@ class SelfCheckTests(unittest.TestCase):
         self.assertEqual(result["safety"], "SECRET_SUSPECT")  # but not safety
         self.assertEqual(llm.safety_calls, 1)
 
-    def test_pinned_entry_skips_everything(self) -> None:
-        llm = RoutingFakeLlm({}, {})
-        result = staleness.run_stale_check(
-            self._client({"stale_check_pin": True}), "m1", llm=llm
+    def test_displacement_protection_never_skips_self_checks(self) -> None:
+        llm = RoutingFakeLlm(
+            {"verdict": "DURABLE", "confidence": 0.9, "reason": "keep"},
+            {"verdict": "CONSISTENT", "confidence": 0.9, "reason": "ok"},
         )
-        self.assertEqual(result["skipped"], "memory is pinned")
-        self.assertEqual(llm.necessity_calls, 0)
+        result = staleness.run_stale_check(
+            self._client(
+                {"displacement_protected_until": "2999-01-01T00:00:00+00:00"}
+            ),
+            "m1",
+            llm=llm,
+        )
+        self.assertEqual(result["necessity"], "DURABLE")
+        self.assertEqual(result["correctness"], "CONSISTENT")
+        self.assertEqual(result["safety"], "CLEAN")
+        self.assertEqual(llm.necessity_calls, 1)
+        self.assertEqual(llm.timestamp_calls, 1)
+        self.assertEqual(llm.safety_calls, 1)
 
     def test_ledger_import_skips_timestamp_check(self) -> None:
         llm = RoutingFakeLlm(

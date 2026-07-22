@@ -74,6 +74,8 @@ event_app = typer.Typer(help="Inspect background add-processing events (async qu
 app.add_typer(event_app, name="event")
 stale_app = typer.Typer(help="Inspect and dispose staleness suspicions (advisory judge output).")
 app.add_typer(stale_app, name="stale")
+protected_app = typer.Typer(help="Inspect temporary displacement protections.")
+stale_app.add_typer(protected_app, name="protected")
 
 agent_mode = False
 
@@ -946,13 +948,13 @@ def _flag_suggestion(pair: dict[str, Any]) -> str:
         return (
             "settled/closed -> `stale confirm <pair_id>` (expires now) | "
             "still alive -> `stale ttl <pair_id> [--days 7]` | "
-            "false positive -> `stale dismiss <pair_id> [--pin]`"
+            "false positive -> `stale dismiss <pair_id>`"
         )
     return (
         "verify born-unnecessary -> `stale confirm <pair_id>` (expires now), or "
         "`delete <memory_id>` for your own fresh entry | keep the non-derivable "
         "part -> `update <memory_id> '<rewritten>'` | false positive -> "
-        "`stale dismiss <pair_id> [--pin]`"
+        "`stale dismiss <pair_id>`"
     )
 
 
@@ -976,18 +978,27 @@ def _require_disposition_authority(pair: dict[str, Any], force: bool, action: st
     review may dispose them (accepting an already-effective expiry or
     renewing is safe in both directions).
     """
-    if force or _interactive_tty():
+    if force:
         return
     if (pair.get("kind") or "displacement") == "ttl_expiry":
         return
     own_session = detect_writer_context().get("session_id")
-    if not own_session or pair.get("new_session_id") != own_session:
-        raise click.ClickException(
-            f"{action} denied: non-interactive sessions may only dispose "
-            "suspicions raised by their own writes (design: disposition "
-            "authority). Ask the user to dispose this pair from an interactive "
-            "session, or pass --force when the user has approved it out-of-band."
-        )
+    if own_session and pair.get("new_session_id") == own_session:
+        return
+    if _interactive_tty():
+        pair_id = pair.get("pair_id") or pair.get("id") or "<unknown>"
+        if click.confirm(
+            f"Pair {pair_id} belongs to another session. Confirm {action}?",
+            default=False,
+        ):
+            return
+        raise click.ClickException(f"{action} cancelled: cross-session confirmation declined")
+    raise click.ClickException(
+        f"{action} denied: non-interactive sessions may only dispose "
+        "suspicions raised by their own writes (design: disposition "
+        "authority). Ask the user to confirm from an interactive session, "
+        "or pass --force when the user has approved it out-of-band."
+    )
 
 
 def _dispose_with_rollback(
@@ -1100,24 +1111,112 @@ def stale_ttl(
 @stale_app.command("dismiss")
 def stale_dismiss(
     pair_id: str = typer.Argument(..., help="Open suspicion pair id."),
-    pin: bool = typer.Option(False, "--pin", help="Also pin the target memory: never judge it again."),
+    force: bool = typer.Option(False, "--force", help="The user approved this cross-session disposition out-of-band."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
-    """Dismiss a suspicion (pair-level, permanent). --pin exempts the memory entirely."""
+    """Dismiss a suspicion (pair-level, permanent)."""
     store, pair = _load_open_pair(pair_id)
+    _require_disposition_authority(pair, force, "dismiss")
     actor = detect_writer_context().get("source") or MANUAL_SOURCE
     store.dispose(pair_id, "dismissed", disposed_by=actor)
     result: dict[str, Any] = {"pair_id": pair_id, "disposition": "dismissed"}
-    if pin:
-        with audited(
-            "stale_pin",
-            input_payload={"memory_id": pair["old_id"], "pair_id": pair_id},
-        ) as span:
-            execute("stale_pin", {"memory_id": pair["old_id"]})
-            span.result = {"pinned": True}
-        result["pinned"] = pair["old_id"]
     output(result, command="stale-dismiss", fmt=chosen_format(output_format, json_flag))
+
+
+@stale_app.command("protect")
+def stale_protect(
+    memory_id: str = typer.Argument(..., help="Memory id to protect from displacement judging."),
+    kind: str = typer.Option("displacement", "--kind", help="Only displacement is supported."),
+    days: float = typer.Option(30.0, "--days", help="Protection duration in days (default 30, maximum 90)."),
+    reason: str = typer.Option(..., "--reason", help="Required human-readable reason."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Temporarily suppress displacement judging for one memory.
+
+    Necessity, correctness, and safety checks are never suppressed. The latest
+    three independent displacement suspicions for the current text
+    version must all have been dismissed. The core setter enforces this rule.
+    """
+    from mem0_local.staleness import (
+        MAX_DISPLACEMENT_PROTECTION_DAYS,
+        MAX_DISPLACEMENT_PROTECTION_REASON_CHARS,
+    )
+
+    if kind != "displacement":
+        raise typer.BadParameter("--kind only supports 'displacement'.")
+    reason = reason.strip()
+    if not reason:
+        raise typer.BadParameter("--reason must not be empty.")
+    if len(reason) > MAX_DISPLACEMENT_PROTECTION_REASON_CHARS:
+        raise typer.BadParameter(
+            "--reason must be <= "
+            f"{MAX_DISPLACEMENT_PROTECTION_REASON_CHARS} characters."
+        )
+    if days <= 0 or days > MAX_DISPLACEMENT_PROTECTION_DAYS:
+        raise typer.BadParameter(
+            f"--days must be > 0 and <= {MAX_DISPLACEMENT_PROTECTION_DAYS}."
+        )
+    context = detect_writer_context()
+    op_args = {
+        "memory_id": memory_id,
+        "days": days,
+        "reason": reason,
+        "actor_id": context.get("source") or MANUAL_SOURCE,
+        "session_id": context.get("session_id") or MANUAL_SESSION,
+    }
+    with audited("displacement_protect", input_payload=op_args) as span:
+        span.result = execute("set_displacement_protection", op_args)
+    output(
+        span.result,
+        command="stale-protect",
+        fmt=chosen_format(output_format, json_flag),
+    )
+
+
+@stale_app.command("unprotect")
+def stale_unprotect(
+    memory_id: str = typer.Argument(..., help="Memory id whose displacement protection should be removed."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Remove displacement protection; already-dismissed pairs stay closed."""
+    context = detect_writer_context()
+    op_args = {
+        "memory_id": memory_id,
+        "actor_id": context.get("source") or MANUAL_SOURCE,
+        "cause": "manual",
+    }
+    with audited("displacement_unprotect", input_payload=op_args) as span:
+        span.result = execute("clear_displacement_protection", op_args)
+    output(
+        span.result,
+        command="stale-unprotect",
+        fmt=chosen_format(output_format, json_flag),
+    )
+
+
+@protected_app.command("list")
+def stale_protected_list(
+    include_expired: bool = typer.Option(False, "--include-expired", help="Also show elapsed protection records."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """List displacement-protected memories."""
+    rows = execute(
+        "list_displacement_protections",
+        {
+            "user_id": DEFAULT_USER_ID,
+            "scan_limit": 10000,
+            "include_expired": include_expired,
+        },
+    )
+    output(
+        rows,
+        command="stale-protected-list",
+        fmt=chosen_format(output_format, json_flag),
+    )
 
 
 @stale_app.command("merge")
@@ -1185,7 +1284,7 @@ def review(
     """Handoff review: this session's writes plus the suspicions they raised.
 
     Dispose each listed pair with `stale confirm <pair_id>` /
-    `stale dismiss <pair_id> [--pin]`, or correct the old memory with
+    `stale dismiss <pair_id>`, or correct the old memory with
     `update`. Undisposed pairs persist and surface via the CLI banner.
     """
     from mem0_local.staleness import pair_store
@@ -1266,8 +1365,8 @@ def review(
                 "(redact in place, then verify search '<secret>' --include-superseded is empty) | stale dismiss <pair_id>. "
                 "correctness: update <memory_id> '<corrected>' | stale dismiss <pair_id>. "
                 "necessity: stale confirm (expire now) | stale ttl <pair_id> [--days 7] | "
-                "delete <memory_id> (own fresh born-unnecessary entry) | stale dismiss [--pin]. "
-                "displacement (handle last): stale confirm <pair_id> | stale dismiss <pair_id> [--pin] | "
+                "delete <memory_id> (own fresh born-unnecessary entry) | stale dismiss. "
+                "displacement (handle last): stale confirm <pair_id> | stale dismiss <pair_id> | "
                 "stale merge <pair_id> '<consolidated text>' | update <old_id> '<corrected text>'. "
                 "ttl_expiry: stale confirm (accept) | stale ttl <pair_id> (renew, re-enters pool)."
             ),

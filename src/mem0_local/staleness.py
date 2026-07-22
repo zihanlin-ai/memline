@@ -4,8 +4,8 @@ Implements the invalidation data model from
 ``.agents/skills/local-memory/references/staleness-design.md``:
 
 - Memory state lives in payload fields: ``superseded_by`` (list of memory
-  ids; absent/empty = active), ``superseded_at``, ``superseded_reason``,
-  ``stale_check_pin``. Invalidation never touches the memory text or its
+  ids; absent/empty = active), ``superseded_at``, and ``superseded_reason``.
+  Invalidation never touches the memory text or its
   dense/BM25 vectors (payload-only ``set_payload``), and is reversible.
 - Suspicion pairs are append-only evidence rows in a local SQLite table,
   keyed ``(new_id, old_id, old_text_hash)`` so judgments expire
@@ -33,9 +33,13 @@ from mem0_local.sqlite_util import SqliteStore
 SUPERSEDED_BY = "superseded_by"
 SUPERSEDED_AT = "superseded_at"
 SUPERSEDED_REASON = "superseded_reason"
-STALE_PIN = "stale_check_pin"
 TTL_EXPIRES_AT = "ttl_expires_at"
 TTL_EXPIRED_AT = "ttl_expired_at"
+DISPLACEMENT_PROTECTED_UNTIL = "displacement_protected_until"
+DISPLACEMENT_PROTECTION_REASON = "displacement_protection_reason"
+DISPLACEMENT_PROTECTED_AT = "displacement_protected_at"
+DISPLACEMENT_PROTECTED_BY_AGENT = "displacement_protected_by_agent_id"
+DISPLACEMENT_PROTECTED_BY_SESSION = "displacement_protected_by_session_id"
 
 # Suspicion-pair kinds: displacement = new entry displaces an old one;
 # necessity = the entry itself may not deserve long-term memory (R1);
@@ -55,6 +59,10 @@ MAX_CHAIN_DEPTH = 100
 SUSPICION_CONFIDENCE_FLOOR = 0.6
 SELF_CHECK_CONFIDENCE_FLOOR = 0.8
 DEFAULT_TTL_DAYS = 7
+DEFAULT_DISPLACEMENT_PROTECTION_DAYS = 30
+MAX_DISPLACEMENT_PROTECTION_DAYS = 90
+MAX_DISPLACEMENT_PROTECTION_REASON_CHARS = 500
+REQUIRED_CONSECUTIVE_DISPLACEMENT_FALSE_POSITIVES = 3
 
 STALE_DB = STORE_DIR / "stale.db"
 
@@ -117,6 +125,29 @@ def result_item_expired(item: dict[str, Any], now: str | None = None) -> bool:
     return is_ttl_expired(item.get("metadata") or {}, now) or is_ttl_expired(item, now)
 
 
+def is_displacement_protected(
+    payload_or_meta: dict[str, Any] | None, now: str | None = None
+) -> bool:
+    """Whether displacement judging is temporarily suppressed for a memory.
+
+    Protection is deliberately narrow: callers use it only when selecting an
+    existing memory as a displacement candidate. It never suppresses the
+    memory's own necessity, correctness, or safety checks.
+    """
+    if not payload_or_meta:
+        return False
+    until = payload_or_meta.get(DISPLACEMENT_PROTECTED_UNTIL)
+    return bool(until and str(until) > (now or _now_iso()))
+
+
+def result_item_displacement_protected(
+    item: dict[str, Any], now: str | None = None
+) -> bool:
+    return is_displacement_protected(
+        item.get("metadata") or {}, now
+    ) or is_displacement_protected(item, now)
+
+
 def _point_payload(client: Any, memory_id: str) -> dict[str, Any] | None:
     try:
         point = client.vector_store.get(memory_id)
@@ -135,6 +166,129 @@ def _point_payload(client: Any, memory_id: str) -> dict[str, Any] | None:
 
 class StalenessError(ValueError):
     """Raised for invalid supersession operations (missing ids, cycles...)."""
+
+
+def set_displacement_protection(
+    client: Any,
+    memory_id: str,
+    *,
+    days: float = DEFAULT_DISPLACEMENT_PROTECTION_DAYS,
+    reason: str,
+    actor_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Temporarily suppress displacement judging for one existing memory."""
+    payload = _point_payload(client, memory_id)
+    if payload is None:
+        raise StalenessError(f"memory not found: {memory_id}")
+    if is_invalidated(payload):
+        raise StalenessError("cannot protect an invalidated memory")
+    if is_ttl_expired(payload):
+        raise StalenessError("cannot protect an expired memory")
+    reason = reason.strip()
+    if not reason:
+        raise StalenessError("protection reason must not be empty")
+    if len(reason) > MAX_DISPLACEMENT_PROTECTION_REASON_CHARS:
+        raise StalenessError(
+            "protection reason must be <= "
+            f"{MAX_DISPLACEMENT_PROTECTION_REASON_CHARS} characters"
+        )
+    if days <= 0 or days > MAX_DISPLACEMENT_PROTECTION_DAYS:
+        raise StalenessError(
+            f"protection days must be > 0 and <= {MAX_DISPLACEMENT_PROTECTION_DAYS}"
+        )
+    actor_id = (actor_id or "").strip()
+    session_id = (session_id or "").strip()
+    if not actor_id or not session_id:
+        raise StalenessError(
+            "protection requires non-empty actor_id and session_id"
+        )
+
+    text = str(payload.get("data") or "")
+    evidence = pair_store().consecutive_dismissed_displacement_evidence(
+        memory_id,
+        text,
+        required=REQUIRED_CONSECUTIVE_DISPLACEMENT_FALSE_POSITIVES,
+    )
+    if not evidence["eligible"]:
+        raise StalenessError(
+            "protection requires the latest 3 independent displacement "
+            "suspicions for this exact text version to all be dismissed "
+            f"(consecutive dismissed: {evidence['consecutive_count']})"
+        )
+
+    now = _now_iso()
+    until = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+    patch = {
+        DISPLACEMENT_PROTECTED_UNTIL: until,
+        DISPLACEMENT_PROTECTION_REASON: reason,
+        DISPLACEMENT_PROTECTED_AT: now,
+        DISPLACEMENT_PROTECTED_BY_AGENT: actor_id,
+        DISPLACEMENT_PROTECTED_BY_SESSION: session_id,
+    }
+    client.vector_store.update(vector_id=memory_id, vector=None, payload=patch)
+    try:
+        client.db.add_history(
+            memory_id,
+            text,
+            text,
+            "PROTECT_DISPLACEMENT",
+            updated_at=now,
+            actor_id=actor_id,
+        )
+    except Exception:  # noqa: BLE001 - audit manifest is authoritative.
+        pass
+    return {
+        "id": memory_id,
+        "kind": KIND_DISPLACEMENT,
+        "protected_until": until,
+        "reason": reason,
+        "protected_by_agent_id": actor_id,
+        "protected_by_session_id": session_id,
+        "dismissed_evidence_count": evidence["consecutive_count"],
+        "dismissed_evidence_pair_ids": evidence["pair_ids"],
+    }
+
+
+def clear_displacement_protection(
+    client: Any,
+    memory_id: str,
+    *,
+    actor_id: str | None = None,
+    cause: str = "manual",
+) -> dict[str, Any]:
+    """Clear displacement protection; idempotent and payload-only."""
+    payload = _point_payload(client, memory_id)
+    if payload is None:
+        raise StalenessError(f"memory not found: {memory_id}")
+    fields = (
+        DISPLACEMENT_PROTECTED_UNTIL,
+        DISPLACEMENT_PROTECTION_REASON,
+        DISPLACEMENT_PROTECTED_AT,
+        DISPLACEMENT_PROTECTED_BY_AGENT,
+        DISPLACEMENT_PROTECTED_BY_SESSION,
+    )
+    changed = any(payload.get(field) is not None for field in fields)
+    if changed:
+        client.vector_store.update(
+            vector_id=memory_id,
+            vector=None,
+            payload={field: None for field in fields},
+        )
+        now = _now_iso()
+        text = str(payload.get("data") or "")
+        try:
+            client.db.add_history(
+                memory_id,
+                text,
+                text,
+                "UNPROTECT_DISPLACEMENT",
+                updated_at=now,
+                actor_id=actor_id,
+            )
+        except Exception:  # noqa: BLE001 - audit manifest is authoritative.
+            pass
+    return {"id": memory_id, "kind": KIND_DISPLACEMENT, "changed": changed, "cause": cause}
 
 
 def _assert_no_cycle(client: Any, target_id: str, by_ids: list[str]) -> None:
@@ -210,6 +364,14 @@ def invalidate(
         SUPERSEDED_REASON: reason,
         "invalidated_by_agent_id": actor_id,
         "invalidated_session_id": session_id,
+        # Pool exit ends a narrow review suppression. Otherwise a later
+        # revive could unexpectedly resurrect protection granted for an old
+        # lifecycle state.
+        DISPLACEMENT_PROTECTED_UNTIL: None,
+        DISPLACEMENT_PROTECTION_REASON: None,
+        DISPLACEMENT_PROTECTED_AT: None,
+        DISPLACEMENT_PROTECTED_BY_AGENT: None,
+        DISPLACEMENT_PROTECTED_BY_SESSION: None,
     }
     client.vector_store.update(vector_id=memory_id, vector=None, payload=patch)
 
@@ -427,8 +589,6 @@ def run_stale_check(
         return {"new_id": new_id, "skipped": "memory no longer exists"}
     if is_invalidated(payload):
         return {"new_id": new_id, "skipped": "memory already invalidated"}
-    if payload.get(STALE_PIN):
-        return {"new_id": new_id, "skipped": "memory is pinned"}
     new_text = str(payload.get("data") or "")
     if not new_text:
         return {"new_id": new_id, "skipped": "empty text"}
@@ -451,6 +611,7 @@ def run_stale_check(
     )
     items = raw.get("results") if isinstance(raw, dict) else []
     candidates: list[dict[str, Any]] = []
+    now = _now_iso()
     for item in items or []:
         cand_id = str(item.get("id") or "")
         meta = item.get("metadata") or {}
@@ -458,8 +619,7 @@ def run_stale_check(
             not cand_id
             or cand_id == new_id
             or result_item_superseded(item)
-            or meta.get(STALE_PIN)
-            or item.get(STALE_PIN)
+            or result_item_displacement_protected(item, now)
         ):
             continue
         candidates.append(
@@ -863,13 +1023,17 @@ class PairStore(SqliteStore):
         return cursor.rowcount > 0
 
     def reopen(self, pair_id: str) -> bool:
-        """Return a disposed pair to ``open`` (rollback when the follow-up
-        store mutation of a confirm/merge failed after disposal)."""
+        """Rollback a disposition whose follow-up store mutation failed.
+
+        Only confirm/merge/ttl have a mutation after disposal. Dismissals and
+        lifecycle closures are final for this exact text-versioned pair and
+        must never be reopened.
+        """
         with self._lock:
             cursor = self._conn.execute(
                 """
                 UPDATE pairs SET disposition='open', disposed_by=NULL, disposed_at=NULL
-                WHERE pair_id=? AND disposition!='open'
+                WHERE pair_id=? AND disposition IN ('confirmed', 'merged', 'ttl')
                 """,
                 (pair_id,),
             )
@@ -928,6 +1092,51 @@ class PairStore(SqliteStore):
             )
             self._conn.commit()
         return cursor.rowcount
+
+    def consecutive_dismissed_displacement_evidence(
+        self,
+        old_id: str,
+        old_text: str,
+        *,
+        required: int = REQUIRED_CONSECUTIVE_DISPLACEMENT_FALSE_POSITIVES,
+    ) -> dict[str, Any]:
+        """Check the latest opening displacement suspicions for protection.
+
+        Evidence is text-versioned and ordered newest-first. Only a leading
+        run of dismissed suspicions counts; any other disposition interrupts
+        the run. Independent means each row has a distinct ``new_id``.
+        """
+        if required <= 0:
+            raise StalenessError("required evidence count must be positive")
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT pair_id, new_id, disposition, judged_at FROM pairs "
+                "WHERE kind=? AND old_id=? AND old_text_hash=? "
+                "AND verdict IN ('SUPERSEDED', 'DUPLICATE') "
+                "AND confidence>=? "
+                "ORDER BY judged_at DESC, rowid DESC LIMIT ?",
+                (
+                    KIND_DISPLACEMENT,
+                    old_id,
+                    text_hash(old_text),
+                    SUSPICION_CONFIDENCE_FLOOR,
+                    required,
+                ),
+            ).fetchall()
+        pair_ids: list[str] = []
+        new_ids: set[str] = set()
+        for row in rows:
+            if row["disposition"] != "dismissed" or row["new_id"] in new_ids:
+                break
+            pair_ids.append(str(row["pair_id"]))
+            new_ids.add(str(row["new_id"]))
+        count = len(pair_ids)
+        return {
+            "eligible": count >= required,
+            "required": required,
+            "consecutive_count": count,
+            "pair_ids": pair_ids,
+        }
 
     def get(self, pair_id: str) -> dict[str, Any] | None:
         with self._lock:

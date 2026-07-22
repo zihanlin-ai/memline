@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import inspect
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import click
 
@@ -96,6 +98,112 @@ class CliDaemonTests(unittest.TestCase):
         self.assertEqual(kwargs["result"]["results"][0]["id"], "memory-1")
         output.assert_called_once()
 
+    def test_stale_protect_routes_only_policy_inputs_to_core_setter(self):
+        self.assertNotIn("force", inspect.signature(cli.stale_protect).parameters)
+        span = SimpleNamespace(result=None)
+        result = {
+            "id": "memory-1",
+            "kind": "displacement",
+            "protected_until": "2026-08-21T00:00:00+00:00",
+            "reason": "user approved",
+            "dismissed_evidence_count": 3,
+        }
+        with (
+            patch.object(cli, "audited") as audited,
+            patch.object(cli, "execute", return_value=result) as execute,
+            patch.object(cli, "output") as output,
+        ):
+            audited.return_value.__enter__.return_value = span
+            cli.stale_protect(
+                memory_id="memory-1",
+                kind="displacement",
+                days=30,
+                reason="user approved",
+                json_flag=True,
+                output_format="json",
+            )
+
+        op_args = execute.call_args.args[1]
+        self.assertEqual(execute.call_args.args[0], "set_displacement_protection")
+        self.assertNotIn("force", op_args)
+        self.assertNotIn("dismissed_evidence_count", op_args)
+        self.assertTrue(op_args["actor_id"])
+        self.assertTrue(op_args["session_id"])
+        self.assertEqual(span.result, result)
+        output.assert_called_once()
+
+    def test_stale_dismiss_obeys_disposition_authority(self):
+        store = MagicMock()
+        pair = {
+            "id": "pair-1",
+            "kind": "displacement",
+            "disposition": "open",
+            "new_session_id": "other-session",
+        }
+        with (
+            patch.object(cli, "_load_open_pair", return_value=(store, pair)),
+            patch.object(cli, "_interactive_tty", return_value=False),
+            patch.object(
+                cli,
+                "detect_writer_context",
+                return_value={"session_id": "current-session", "source": "codex"},
+            ),
+        ):
+            with self.assertRaises(click.ClickException) as raised:
+                cli.stale_dismiss(
+                    pair_id="pair-1",
+                    force=False,
+                    json_flag=True,
+                    output_format="json",
+                )
+        self.assertIn("dismiss denied", str(raised.exception))
+        store.dispose.assert_not_called()
+
+        with (
+            patch.object(cli, "_load_open_pair", return_value=(store, pair)),
+            patch.object(cli, "_interactive_tty", return_value=False),
+            patch.object(
+                cli,
+                "detect_writer_context",
+                return_value={"session_id": "current-session", "source": "codex"},
+            ),
+            patch.object(cli, "output"),
+        ):
+            cli.stale_dismiss(
+                pair_id="pair-1",
+                force=True,
+                json_flag=True,
+                output_format="json",
+            )
+        store.dispose.assert_called_once_with(
+            "pair-1", "dismissed", disposed_by="codex"
+        )
+
+    def test_cross_session_disposition_requires_explicit_tty_confirmation(self):
+        pair = {
+            "pair_id": "pair-1",
+            "kind": "displacement",
+            "new_session_id": "other-session",
+        }
+        with (
+            patch.object(cli, "detect_writer_context", return_value={"session_id": "mine"}),
+            patch.object(cli, "_interactive_tty", return_value=True),
+            patch.object(cli.click, "confirm", return_value=True) as confirm,
+        ):
+            cli._require_disposition_authority(pair, False, "dismiss")
+        confirm.assert_called_once_with(
+            "Pair pair-1 belongs to another session. Confirm dismiss?",
+            default=False,
+        )
+
+        with (
+            patch.object(cli, "detect_writer_context", return_value={"session_id": "mine"}),
+            patch.object(cli, "_interactive_tty", return_value=True),
+            patch.object(cli.click, "confirm", return_value=False),
+        ):
+            with self.assertRaises(click.ClickException) as raised:
+                cli._require_disposition_authority(pair, False, "dismiss")
+        self.assertIn("confirmation declined", str(raised.exception))
 
 if __name__ == "__main__":
     unittest.main()

@@ -78,7 +78,21 @@ def _add(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _update(client: Any, args: dict[str, Any]) -> Any:
+    point = client.vector_store.get(args["memory_id"])
+    previous_payload = getattr(point, "payload", None) or {}
+    text_changed = str(previous_payload.get("data") or "") != args["text"]
     result = client.update(args["memory_id"], args["text"], metadata=args["metadata"])
+    if text_changed:
+        from mem0_local.staleness import clear_displacement_protection
+
+        cleared = clear_displacement_protection(
+            client,
+            args["memory_id"],
+            actor_id=args["metadata"].get("last_updated_by_agent_id"),
+            cause="text_updated",
+        )
+        if isinstance(result, dict):
+            result["displacement_protection_cleared"] = cleared["changed"]
     # Open suspicions judged against the pre-update text no longer apply.
     try:
         from mem0_local.staleness import pair_store
@@ -130,6 +144,72 @@ def _set_ttl(client: Any, args: dict[str, Any]) -> Any:
     )
 
 
+def _set_displacement_protection(client: Any, args: dict[str, Any]) -> Any:
+    from mem0_local.staleness import (
+        DEFAULT_DISPLACEMENT_PROTECTION_DAYS,
+        set_displacement_protection,
+    )
+
+    return set_displacement_protection(
+        client,
+        args["memory_id"],
+        days=args.get("days", DEFAULT_DISPLACEMENT_PROTECTION_DAYS),
+        reason=args["reason"],
+        actor_id=args.get("actor_id"),
+        session_id=args.get("session_id"),
+    )
+
+
+def _clear_displacement_protection(client: Any, args: dict[str, Any]) -> Any:
+    from mem0_local.staleness import clear_displacement_protection
+
+    return clear_displacement_protection(
+        client,
+        args["memory_id"],
+        actor_id=args.get("actor_id"),
+        cause=args.get("cause", "manual"),
+    )
+
+
+def _list_displacement_protections(client: Any, args: dict[str, Any]) -> Any:
+    from mem0_local.staleness import (
+        DISPLACEMENT_PROTECTED_AT,
+        DISPLACEMENT_PROTECTED_BY_AGENT,
+        DISPLACEMENT_PROTECTED_BY_SESSION,
+        DISPLACEMENT_PROTECTED_UNTIL,
+        DISPLACEMENT_PROTECTION_REASON,
+        is_displacement_protected,
+    )
+
+    raw = client.get_all(filters={"user_id": args["user_id"]}, top_k=args["scan_limit"])
+    rows = []
+    for item in normalize_items(raw):
+        meta = item.get("metadata") or {}
+        until = meta.get(DISPLACEMENT_PROTECTED_UNTIL) or item.get(
+            DISPLACEMENT_PROTECTED_UNTIL
+        )
+        if not until:
+            continue
+        active = is_displacement_protected(meta) or is_displacement_protected(item)
+        if not active and not args.get("include_expired", False):
+            continue
+        rows.append(
+            {
+                "id": item.get("id"),
+                "memory": item.get("memory"),
+                "kind": "displacement",
+                "active": active,
+                "protected_until": until,
+                "reason": meta.get(DISPLACEMENT_PROTECTION_REASON),
+                "protected_at": meta.get(DISPLACEMENT_PROTECTED_AT),
+                "protected_by_agent_id": meta.get(DISPLACEMENT_PROTECTED_BY_AGENT),
+                "protected_by_session_id": meta.get(DISPLACEMENT_PROTECTED_BY_SESSION),
+            }
+        )
+    rows.sort(key=lambda row: str(row["protected_until"]), reverse=True)
+    return rows
+
+
 def _history(client: Any, args: dict[str, Any]) -> Any:
     return client.history(args["memory_id"])
 
@@ -156,13 +236,6 @@ def _revive(client: Any, args: dict[str, Any]) -> Any:
         actor_id=args.get("actor_id"),
         session_id=args.get("session_id"),
     )
-
-
-def _stale_pin(client: Any, args: dict[str, Any]) -> Any:
-    client.vector_store.update(
-        vector_id=args["memory_id"], vector=None, payload={"stale_check_pin": True}
-    )
-    return {"id": args["memory_id"], "pinned": True}
 
 
 def _resolve_head(client: Any, args: dict[str, Any]) -> Any:
@@ -215,10 +288,12 @@ OPS: dict[str, OpSpec] = {
     ),
     "update": OpSpec(_update),
     "delete": OpSpec(_delete, timeout=30.0, exclusive=lambda a: bool(a.get("all"))),
+    "set_displacement_protection": OpSpec(_set_displacement_protection, timeout=30.0),
+    "clear_displacement_protection": OpSpec(_clear_displacement_protection, timeout=30.0),
+    "list_displacement_protections": OpSpec(_list_displacement_protections, timeout=30.0),
     "history": OpSpec(_history, timeout=30.0),
     "invalidate": OpSpec(_invalidate, timeout=30.0),
     "revive": OpSpec(_revive, timeout=30.0),
-    "stale_pin": OpSpec(_stale_pin, timeout=30.0),
     "set_ttl": OpSpec(_set_ttl, timeout=30.0),
     "resolve_head": OpSpec(_resolve_head, timeout=30.0),
     "entity_list": OpSpec(_entity_list, timeout=30.0),

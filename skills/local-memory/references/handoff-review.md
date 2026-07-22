@@ -127,7 +127,7 @@ if the flag is mistaken. Never expire these.
 mem0-local delete <memory_id> --force        # born-unnecessary AND written by this session: remove outright
 mem0-local stale confirm <pair_id>           # born-unnecessary but keep the audit trail: reversible expiry, out of pool now
 mem0-local stale ttl <pair_id> [--days 7]    # EXPIRING but the event is still live: keep for now, expire at deadline
-mem0-local stale dismiss <pair_id> [--pin]   # false flag (see protection list below)
+mem0-local stale dismiss <pair_id>           # false flag
 mem0-local update <memory_id> "<rewritten>"  # half-redundant: strip the derivable part, keep the real payload
 ```
 
@@ -136,21 +136,38 @@ mem0-local update <memory_id> "<rewritten>"  # half-redundant: strip the derivab
 mem0-local stale confirm <pair_id>                       # old entry really is superseded -> invalidate (reversible)
 mem0-local stale merge <pair_id> "<consolidated text>"   # new entry ADDS detail: newer absorbs both, older retires
 mem0-local update <old_id> "<corrected text>"            # the old entry just needs fixing
-mem0-local stale dismiss <pair_id> [--pin]               # false suspicion; --pin = never judge this memory again
+mem0-local stale dismiss <pair_id>                       # false suspicion
 ```
+
+If the latest three opening displacement suspicions against the same unchanged
+memory were all dismissed and came from distinct `new_id` values, a reviewer
+may suppress only future displacement judging temporarily:
+
+```bash
+mem0-local stale protect <memory_id> --days 30 --reason "repeated false positive: <shared pattern>"
+mem0-local stale protected list
+mem0-local stale unprotect <memory_id>
+```
+
+Protection lasts at most 90 days, records setter and a 1-500 character reason,
+clears on text update or invalidation, and never suppresses safety, correctness,
+or necessity checks. Any newer non-dismissed disposition interrupts eligibility;
+the core setter has no force bypass.
 
 **TTL expiries** (`ttl_expired`, dispose whenever): the entry already left the
 pool at its deadline. `stale confirm <pair_id>` accepts that; `stale ttl
 <pair_id>` renews it and re-enters the pool. Any session may dispose these, no
 --force needed.
 
-## Protection list — never flag-confirm these
+## Protection list — scrutinize before confirming
 
 Corrections/retractions ("earlier conclusion X was wrong"), hard-won lessons
 (footguns, mandatory safeguards), costly audit/debugging conclusions,
 credential/key/artifact location pointers, canonical repo/endpoint URLs, and
 standing constraints (resource whitelists, user-set rules). The judge is
-prompted to spare them; if one still shows up flagged, `stale dismiss --pin`.
+prompted to spare them; if one still shows up incorrectly, `stale dismiss`.
+Repeated false positives may use the bounded displacement protection above;
+there is no permanent or all-kind immunity.
 
 ## Semantics and safety rails
 
@@ -161,8 +178,9 @@ prompted to spare them; if one still shows up flagged, `stale dismiss --pin`.
   refuses supersession-chain participants (auto-downgrades to reversible
   expiry, reported as `downgraded_to_expiry`).
 - Authority: non-interactive sessions may only dispose suspicions raised by
-  their own writes; cross-session backlog belongs to the user, or requires
-  `--force` after their explicit approval. (`ttl_expired` items are exempt.)
+  their own writes; cross-session backlog gets a default-No confirmation prompt
+  in an interactive session, or requires `--force` after explicit user approval.
+  (`ttl_expired` items are exempt.)
 - A stderr banner counting open suspicions may appear on any command — it is
   pressure gauge, not a to-do during task execution.
 - Manual supersession outside review: `invalidate <id> --by <new_id>`,

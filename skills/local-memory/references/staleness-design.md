@@ -67,8 +67,11 @@ New payload fields on memories:
 | `superseded_by` | list of memory ids (usually length 1) | set on invalidation; absent/empty = active |
 | `superseded_at` | ISO ts | when invalidated |
 | `superseded_reason` | string | short human/agent-readable reason |
-| `stale_check_pin` | bool | memory-level immunity: never judge this entry |
-
+| `displacement_protected_until` | ISO ts | active only while future; suppresses displacement-candidate judging only |
+| `displacement_protection_reason` | string | required reviewer rationale |
+| `displacement_protected_at` | ISO ts | when protection was set |
+| `displacement_protected_by_agent_id` | string | audited setter identity |
+| `displacement_protected_by_session_id` | string | audited setter session |
 ### 2.3 Supersession topology: DAG stored as adjacency lists, not a graph DB
 
 The supersession relation is logically a DAG; the typical shape is a short
@@ -130,7 +133,9 @@ disposed_by, disposed_at
 
 - Daemon consumes `stale_check` events. For each new entry: candidate set =
   top-k (default 10) similar **active** entries (reuse the embedding computed
-  at add time), minus pinned entries, minus already-cached pairs.
+  at add time), minus entries with unexpired displacement protection, minus
+  already-cached pairs. The new entry's necessity/correctness/safety self-checks
+  always run; protection is never an early return.
 - One batched LLM call per new entry (new vs up-to-k candidates).
 - **Decided 2026-07-17:** the judge reuses the existing `[llm]` preset
   (`@preset/work`). The async queue absorbs its latency (~160 calls/day is
@@ -157,13 +162,24 @@ disposed_by, disposed_at
    - `update <id> "..."` → correct the old entry instead (clears its open
      suspicions; pair cache resets via text hash)
    - `dismiss` → pair-level permanent closure
-   - `dismiss --pin` → also set `stale_check_pin` on the target (for durable
-     method notes that attract repeated false suspicion)
+
+The core setter permits protection only when the latest three opening
+displacement suspicions against the same old text version were all dismissed
+and came from distinct `new_id` values. Any newer open, confirmed, merged,
+obsoleted, expired, or otherwise non-dismissed disposition interrupts the run;
+older accumulated dismissals do not qualify. There is no force or interactive
+bypass. The resulting displacement protection defaults to 30 days (maximum
+90 days) and requires a 1-500 character reason plus non-empty agent/session
+identity. `stale protected list` enumerates it, `stale unprotect` clears it,
+and any text update or invalidation clears it automatically. It never
+suppresses necessity, correctness, or safety.
 
 **Disposition authority (decided 2026-07-17):** a non-interactive session may
 only dispose pairs whose *new* side was written by that same session (its own
 writes triggered the suspicion). Cross-session backlog pairs are reserved for
-interactive sessions with the user present. Enforced by `review --session`
+interactive sessions with the user present; the CLI prompts for an explicit
+default-No confirmation before a cross-session disposition. Non-interactive
+cross-session disposal requires explicit `--force`. Enforced by `review --session`
 scoping; `stale list` shows backlog pairs read-only to unattended agents.
 Authority may widen later once judge-quality data exists.
 
@@ -217,8 +233,10 @@ In-session agents learn nothing new: `add`/`search` calls are unchanged;
 search results passively gain the suspected-stale annotation and stop
 returning invalidated entries. Optional extras: `add --supersedes`,
 `--include-superseded`, `get --resolve-head`. The one genuinely new required
-command is `review --session` at handoff (with `confirm` / `dismiss [--pin]`
-/ `update` dispositions) plus `stale list` as the banner follow-up.
+command is `review --session` at handoff (with `confirm` / `dismiss` /
+`update` dispositions) plus `stale list` as the banner follow-up. Optional
+bounded noise control is `stale protect` / `stale protected list` /
+`stale unprotect`; no permanent protection exists.
 Repair verbs (`invalidate`, `revive`) are rare and mostly human-driven. The
 background judge is invisible to all callers. None of this is exposed in
 SKILL.md until implemented and approved (see Status header).
@@ -328,10 +346,14 @@ back to the status quo).
 1. **Multiple suspicions on one target** — separate evidence records
    accumulate; the target's flag is just "has open suspicions". Review groups
    by target; independent-suspicion count is a priority signal.
-2. **Exact pair re-fired** — absorbed by the pair cache; never re-judged.
+2. **Exact pair re-fired** — absorbed by the pair cache; never re-judged. A
+   dismissed pair is final for that exact text version: the rollback helper
+   refuses to reopen dismissals and is limited to failed confirm/merge/ttl
+   follow-up mutations.
 3. **Dismissed, later re-suspected by a different new entry** — a new pair is
    legitimately opened (new evidence). Prior dismissal only closes its own
-   pair. Repeated false positives on one entry → `dismiss --pin`.
+   text-versioned pair. Three independent dismissed false positives permit a
+   bounded displacement-only protection; new text starts from zero evidence.
 4. **Supersession chains (A←B←C)** — invalidating B sets `B.superseded_by=C`;
    A's pointer to B is historical truth and is never rewritten. Resolve the
    head by following pointers. Judges only see **active** candidates, so no

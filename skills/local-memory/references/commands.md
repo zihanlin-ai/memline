@@ -268,7 +268,10 @@ mem0-local get <memory_id> --resolve-head                      # follow the supe
 mem0-local review [--session <id>] [--wait]                    # handoff: writes + raised suspicions
 mem0-local stale list [--session <id>]
 mem0-local stale confirm <pair_id>
-mem0-local stale dismiss <pair_id> [--pin]
+mem0-local stale dismiss <pair_id>
+mem0-local stale protect <memory_id> --kind displacement --days 30 --reason "..."
+mem0-local stale protected list [--include-expired]
+mem0-local stale unprotect <memory_id>
 mem0-local stale merge <pair_id> "<consolidated text>"
 mem0-local stale ttl <pair_id> [--days 7]                     # snapshot still alive: expire later
 ```
@@ -293,11 +296,21 @@ Rules that matter in practice:
   valid on the raw (non-infer) add path.
 - Suspicion pairs are keyed `(new_id, old_id, hash(old_text))`: updating a
   memory's text automatically expires prior judgments about it; dismissals are
-  pair-level and permanent, `--pin` is memory-level and stops all future
-  judging of that entry.
+  pair-level and permanent for that exact text-versioned pair. A different new
+  entry may still raise a new suspicion against the same memory.
+- `stale protect` is a bounded displacement-only noise-control valve, not a
+  retention or correctness override. Default duration is 30 days, maximum 90;
+  a 1-500 character reason and setter identity/session are stored. Safety,
+  correctness, and necessity always run. A text update or invalidation clears
+  protection. The core setter requires the latest three opening displacement
+  suspicions for the current text version to all be dismissed with distinct
+  `new_id` values. Any newer non-dismissed disposition interrupts the run;
+  there is no force bypass.
 - `stale confirm` from a non-interactive session is allowed only for pairs
   raised by that session's own writes; cross-session backlog needs an
-  interactive session.
+  interactive session. The same authority gate applies to `stale dismiss`;
+  cross-session disposition prompts for confirmation (default No) in an
+  interactive session, or requires explicit `--force` non-interactively.
 - `stale confirm` on a necessity flag expires the entry immediately
   (reversible via `ttl <memory_id> --clear`) — a self-suspicion has no
   superseder to invalidate by. Correctness flags are corrected via `update`

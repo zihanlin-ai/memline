@@ -36,6 +36,20 @@ class DispatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ops.dispatch(FakeClient(), "nope", {})
 
+    def test_protection_handler_owns_the_thirty_day_default(self):
+        with patch("mem0_local.staleness.set_displacement_protection") as setter:
+            ops._set_displacement_protection(
+                FakeClient(),
+                {
+                    "memory_id": "m1",
+                    "reason": "three consecutive false positives",
+                    "actor_id": "codex",
+                    "session_id": "s1",
+                    "force": True,
+                },
+            )
+        self.assertEqual(setter.call_args.kwargs["days"], 30)
+        self.assertNotIn("force", setter.call_args.kwargs)
 
 class RegistryMetadataTests(unittest.TestCase):
     def test_timeouts_match_documented_defaults(self):
@@ -58,6 +72,15 @@ class RegistryMetadataTests(unittest.TestCase):
     def test_set_ttl_registered(self):
         self.assertIn("set_ttl", ops.OPS)
         self.assertEqual(ops.op_timeout("set_ttl", {}), 30.0)
+
+    def test_displacement_protection_ops_registered(self):
+        for name in (
+            "set_displacement_protection",
+            "clear_displacement_protection",
+            "list_displacement_protections",
+        ):
+            self.assertIn(name, ops.OPS)
+            self.assertEqual(ops.op_timeout(name, {}), 30.0)
 
     def test_llm_slot_and_exclusive_flags(self):
         self.assertTrue(ops.is_llm_bound("add", {"infer": True}))
