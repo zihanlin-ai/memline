@@ -5,6 +5,10 @@ Read this file ONLY when the user asks for an end-of-session review — e.g.
 session is being retired. During normal task execution none of this applies:
 background judges mark things silently, and every mark waits for this moment.
 
+The required order is **filter this session's writes → proactively maintain
+them → run review → dispose remaining flags → run review again until clean**.
+Do not use the first `review` call as a substitute for the preflight pass.
+
 ## The cardinal rule
 
 **Every disposal decision is YOURS, made after personally reading the entry.**
@@ -13,10 +17,59 @@ are advisory triage — they order your attention, they never decide. Never
 wire a judge verdict straight to a disposal command without reading the
 memory text yourself. (Design invariant #6, user-mandated 2026-07-21.)
 
-## Step 1 — collect
+## Step 1 — resolve and filter the current session
+
+Resolve the current session ID from the same hard context signal used by
+`mem0-local` (`MEM0_LOCAL_SESSION_ID`, `MEM0_SESSION_ID`, `AGENT_SESSION_ID`,
+`CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CLAUDE_SESSION_ID`,
+`CLAUDE_CODE_SESSION_ID`, or `CLAUDECODE_SESSION_ID`). If no hard session ID is
+available, stop and obtain the explicit current session ID; **never broaden the
+preflight to every memory written by an `agent_id`**.
+
+List only this session's writes before calling `review`:
 
 ```bash
-mem0-local review --wait     # --wait lets pending background judgments land (<=120s)
+mem0-local list --filter run_id=<current-session-id> --page-size 500
+```
+
+Read every returned memory in full and continue with `--page 2`, `--page 3`,
+and so on until a page is empty. The filter is the ownership boundary for the
+preflight; semantic search may supply evidence, but must not replace the
+complete session-scoped enumeration.
+
+## Step 2 — proactively maintain the filtered writes
+
+Personally check every filtered memory before asking the background review for
+advice. Do not wait for a judge flag when the problem is already evident:
+
+1. **Safety:** redact plaintext credentials or secret material in place; keep
+   only a pointer to the credential location, then verify the literal is absent
+   even with `--include-superseded`.
+2. **Correctness:** compare the memory against the session's actual evidence and
+   final outcome. Fix wrong dates, actors, counts, causal certainty, paths, or
+   non-English narrative with `update`; do not preserve a known factual error
+   merely because it is historical.
+3. **Currentness:** retire an earlier progress snapshot when a later result from
+   this session replaces it. Prefer one accurate final-state memory and explicit
+   supersession/invalidation over multiple competing "current" answers. Preserve
+   genuinely historical facts as history rather than rewriting their event.
+4. **Necessity and lifetime:** remove fresh, derivable activity narration only
+   when it has no durable payload; use reversible invalidation or TTL for
+   event-scoped state. Keep and protect hard-won findings, corrections,
+   safeguards, canonical locations, and standing user constraints.
+
+Use `get <id> --resolve-head` and targeted `search ... --include-superseded` when
+lineage or competing answers need evidence. Every decision remains the current
+agent's decision; the preflight is not an automatic deletion pass.
+
+Write or update the final handoff memory **before** the first `review` call so it
+is included in the judged write set. If preflight maintenance creates another
+memory, include it in the same inspection before continuing.
+
+## Step 3 — collect remaining review work
+
+```bash
+mem0-local review --wait     # auto-detects the same current session
 ```
 
 The output has four work lists:
@@ -31,7 +84,11 @@ The output has four work lists:
 Each flagged item carries a `suggested` field listing the applicable
 commands — use it as a menu, not as a decision.
 
-## Step 2 — dispose, per kind
+The `writes` list should match the session-scoped preflight set after its
+maintenance. If it does not, stop and resolve the session/filter mismatch before
+disposing anything.
+
+## Step 4 — dispose, per kind
 
 One entry can carry several flags at once (the judges are independent, not
 mutually exclusive — e.g. an entry can be both `safety` and `necessity`).
@@ -111,11 +168,21 @@ prompted to spare them; if one still shows up flagged, `stale dismiss --pin`.
 - Manual supersession outside review: `invalidate <id> --by <new_id>`,
   chain inspection with `get <id> --resolve-head`.
 
-## Step 3 — close out
+## Step 5 — repeat until the current session is clean
 
 Leftover pairs persist and keep showing in the banner; that is acceptable
-for cross-session items you lack authority over. End by adding the session's
-handoff memory (`mem0-local add`) as usual.
+for cross-session items you lack authority over. After all permitted
+dispositions, run `mem0-local review --wait` again. A clean handoff requires:
+
+- `pending_stale_checks` is zero;
+- no actionable safety, correctness, necessity, or displacement item raised by
+  the current session remains;
+- every intentionally unresolved cross-session item is explicitly recognized as
+  outside the current agent's authority.
+
+If any `add` or `update` occurs after that pass — including a handoff-summary
+write — run the review again. Do not create an unreviewed final memory after
+declaring the session clean.
 
 For the underlying data model (suspicion kinds, verdict vocabulary,
 confidence floors, TTL loop, delete guard), read
