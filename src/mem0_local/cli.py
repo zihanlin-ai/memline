@@ -276,7 +276,7 @@ def auto_agent_output() -> bool:
     explicit = os.environ.get("MEM0_LOCAL_AUTO_JSON")
     if explicit is not None:
         return explicit.lower() not in {"0", "false", "no", "off"}
-    return detect_writer_context().get("source") in {"codex", "claude"}
+    return detect_writer_context().get("source") in {"codex", "claude", "opencode"}
 
 
 def now_utc_iso() -> str:
@@ -368,7 +368,17 @@ def ancestor_exe_names(limit: int = 10) -> list[str]:
 
 # Ordered agent identity table: (source, hard identity env vars, argv0 markers).
 # Detection uses these signals only -- never the memory content being written.
+# Order matters when agents are nested (e.g. `opencode` started from a claude
+# shell inherits CLAUDECODE): the innermost agent must win, so sources whose
+# identity vars are injected per shell invocation come first.
 _AGENT_IDENTITY: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        # OPENCODE_SESSION_ID / OPENCODE_CALL_ID are injected per shell call by
+        # the mem0-local opencode plugin (.opencode/plugin/mem0-local.js).
+        "opencode",
+        ("OPENCODE_SESSION_ID", "OPENCODE_CALL_ID"),
+        ("opencode",),
+    ),
     (
         "codex",
         ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_MANAGED_PACKAGE_ROOT"),
@@ -425,6 +435,7 @@ def detect_writer_context() -> dict[str, str]:
         "MEM0_LOCAL_SESSION_ID",
         "MEM0_SESSION_ID",
         "AGENT_SESSION_ID",
+        "OPENCODE_SESSION_ID",
         "CODEX_THREAD_ID",
         "CODEX_SESSION_ID",
         "CLAUDE_SESSION_ID",

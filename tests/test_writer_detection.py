@@ -16,6 +16,8 @@ _AGENT_ENV_KEYS = [
     "MEM0_LOCAL_SESSION_ID",
     "MEM0_SESSION_ID",
     "AGENT_SESSION_ID",
+    "OPENCODE_SESSION_ID",
+    "OPENCODE_CALL_ID",
     "CODEX_THREAD_ID",
     "CODEX_SESSION_ID",
     "CODEX_MANAGED_PACKAGE_ROOT",
@@ -55,6 +57,34 @@ class WriterDetectionTests(unittest.TestCase):
     def test_claude_via_ai_agent_tag(self):
         with _clean_env(AI_AGENT="claude-code_2-1-205_agent"):
             self.assertEqual(cli.detect_agent_source(), "claude")
+
+    def test_opencode_identity_env(self):
+        with _clean_env(OPENCODE_SESSION_ID="ses_abc", OPENCODE_CALL_ID="call_1"):
+            ctx = cli.detect_writer_context()
+            self.assertEqual(ctx.get("source"), "opencode")
+            self.assertEqual(ctx.get("session_id"), "ses_abc")
+
+    def test_opencode_ancestor_fallback_without_plugin(self):
+        # No plugin -> no OPENCODE_* env; the shell tool still runs under the
+        # opencode binary, so attribution works with session_id absent.
+        with _clean_env(), patch.object(
+            cli, "ancestor_exe_names", return_value=["bash", "opencode.exe"]
+        ):
+            ctx = cli.detect_writer_context()
+            self.assertEqual(ctx.get("source"), "opencode")
+            self.assertNotIn("session_id", ctx)
+
+    def test_nested_opencode_beats_outer_claude(self):
+        # `opencode` launched from a claude shell inherits claude's identity
+        # vars; the per-invocation opencode signal must win for both fields.
+        with _clean_env(
+            CLAUDE_CODE_SESSION_ID="claude-sess",
+            CLAUDECODE="1",
+            OPENCODE_SESSION_ID="ses_abc",
+        ):
+            ctx = cli.detect_writer_context()
+            self.assertEqual(ctx.get("source"), "opencode")
+            self.assertEqual(ctx.get("session_id"), "ses_abc")
 
     def test_explicit_source_override_wins(self):
         with _clean_env(MEM0_LOCAL_SOURCE="claude", CODEX_THREAD_ID="thread-9"):

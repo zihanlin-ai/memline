@@ -69,6 +69,22 @@ Routine agents should call `add` with only the memory text. The CLI auto-detects
 
 Use `list --filter ...` for structured audits by metadata fields such as `agent_id`, `run_id`, `source`, `session_id`, `created_at`, or `ingested_at`. Keep `search` for semantic retrieval.
 
+### Writer attribution
+
+`agent_id` is the harness that wrote the memory (`claude`, `codex`, `opencode`,
+or `manual`), never the underlying model, so history stays comparable across
+model switches. `run_id`/`session_id` is that harness's session id. Detection
+reads hard signals only -- identity env vars, then the `AI_AGENT` tag, then
+ancestor executable names -- and never the memory text itself.
+
+Claude Code and Codex export their session id to child processes on their own.
+opencode does not, so `.opencode/plugin/mem0-local.js` injects
+`OPENCODE_SESSION_ID` (and `OPENCODE_CALL_ID`) into every shell command through
+opencode's `shell.env` plugin hook. Without the plugin, opencode writes are
+still attributed via ancestor-process detection, but carry no session id.
+Plugins load at opencode startup: restart a long-lived `opencode serve` after
+installing or editing it.
+
 ## Optional Daemon
 
 The CLI can use an optional local daemon to avoid paying the Mem0/FastEmbed/ONNX
