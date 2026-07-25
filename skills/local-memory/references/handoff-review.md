@@ -204,5 +204,4 @@ declaring the session clean.
 
 For the underlying data model (suspicion kinds, verdict vocabulary,
 confidence floors, TTL loop, delete guard), read
-[staleness-design.md](staleness-design.md) and the lifecycle design doc at
-`/workspace/reference/mem-lifecycle-design-2026-07-20.md`.
+[staleness-design.md](staleness-design.md).

@@ -14,9 +14,7 @@ Judge eval gate: 24 labeled real pairs, accuracy 87.5%, SUPERSEDED precision
 This file is the behavioral spec; update it if the design changes.
 
 LIFECYCLE EXTENSION (2026-07-20/21): the displacement machinery below was
-extended into a full memory-lifecycle system — see §9 for the delta and
-`/workspace/reference/mem-lifecycle-design-2026-07-20.md` for the
-authoritative requirements/decision record.
+extended into a full memory-lifecycle system — see §9 for the delta.
 
 ## 1. Problem & Requirements
 
