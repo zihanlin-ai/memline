@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mem0_local import audit
+from mem0_local import audit, session_stats
+from mem0_local.session_stats import SessionStatsStore
 
 
 class LiveAuditTests(unittest.TestCase):
@@ -22,9 +23,11 @@ class LiveAuditTests(unittest.TestCase):
                 "duration_ms": 12,
             }
 
+            stats_store = SessionStatsStore(root / "store" / "session-stats.db")
             with (
                 patch.object(audit, "MANIFEST_DIR", manifest_dir),
                 patch.object(audit, "MANIFEST_LOCK", lock_path),
+                patch.object(session_stats, "session_stats_store", lambda path=None: stats_store),
             ):
                 written = audit.append_live_audit(
                     operation="add",

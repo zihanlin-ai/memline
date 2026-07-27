@@ -77,6 +77,7 @@ MEM0_DIR = path_value("paths", "mem0_dir", STORE_DIR / "mem0")
 MEM0_HOME = path_value("paths", "home_dir", STORE_DIR / "home")
 FASTEMBED_CACHE = path_value("paths", "fastembed_cache", STORE_DIR / "model-cache" / "fastembed")
 HISTORY_DB = path_value("paths", "history_db", STORE_DIR / "history.db")
+SESSION_STATS_DB = path_value("paths", "session_stats_db", STORE_DIR / "session-stats.db")
 MANIFEST_DIR = path_value("paths", "manifest_dir", MEMORY_ROOT / "manifests")
 MANIFEST_LOCK = path_value("paths", "manifest_lock", STORE_DIR / "manifest.lock")
 ENV_FILE = path_value("llm", "env_file", STORE_DIR / ".env")
@@ -90,6 +91,10 @@ MEMORY_SCHEMA_VERSION = int(value("memory", "schema_version", 2))
 # adds or routed through --infer extraction. Default sits at ~p95 of the
 # existing store (p50≈320, p95≈630): anything longer is a multi-fact dump.
 MAX_RAW_TEXT_CHARS = int(value("memory", "max_raw_text_chars", 600))
+# Once a session has accumulated this many live adds, every CLI invocation
+# from it prints an advisory handoff banner (consider a handoff review and
+# telling the user). 0 disables the banner.
+SESSION_ADD_ALERT_THRESHOLD = int(value("memory", "session_add_alert_threshold", 200))
 
 EMBEDDING_PROVIDER = str(value("embedder", "provider", "fastembed"))
 EMBEDDING_MODEL = str(value("embedder", "model", "jinaai/jina-embeddings-v2-base-zh"))

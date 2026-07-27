@@ -90,7 +90,34 @@ def append_live_audit(
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(item, ensure_ascii=False, sort_keys=True, default=_json_default) + "\n")
 
+    _record_session_add(operation, metadata or {}, result, finished_at)
+
     return {"path": str(path), "audit_id": item["audit_id"], "payload_sha256": item["payload_sha256"]}
+
+
+def _record_session_add(
+    operation: str, metadata: dict[str, Any], result: Any, finished_at: str
+) -> None:
+    """Count successful live adds per writer session (handoff-pressure banner).
+
+    Ledger imports replay historical sessions and are excluded; error outcomes
+    did not accumulate a write and are excluded too.
+    """
+    if operation != "add":
+        return
+    if isinstance(result, dict) and result.get("error") is not None:
+        return
+    if metadata.get("origin") == "ledger_import":
+        return
+    session_id = metadata.get("session_id")
+    if not session_id:
+        return
+    try:
+        from mem0_local.session_stats import session_stats_store
+
+        session_stats_store().record_add(str(session_id), finished_at)
+    except Exception as exc:  # noqa: BLE001 - the counter must never break a write.
+        print(f"session add counter failed: {exc}", file=sys.stderr)
 
 
 @dataclass

@@ -668,34 +668,61 @@ def stdin_is_piped() -> bool:
         return False
 
 
+# Hygiene-state banners (failed queue events, open staleness suspicions) only
+# surface on the commands where that state is actionable; routine add/search
+# stays quiet — the maintenance rules tell agents to ignore hygiene state
+# mid-task anyway. The session-handoff banner is exempt: interrupting routine
+# calls is its purpose.
+HYGIENE_BANNER_COMMANDS = {"review", "stale", "event", "status"}
+
+
 @app.callback()
 def main(
+    ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
 ) -> None:
     global agent_mode
     agent_mode = json_output
-    try:
-        from mem0_local.queue import read_alerts
+    if ctx.invoked_subcommand in HYGIENE_BANNER_COMMANDS:
+        try:
+            from mem0_local.queue import read_alerts
 
-        alerts = read_alerts()
-        if alerts and alerts.get("failed_unacked"):
-            err_console.print(
-                f"[yellow]mem0-local: {alerts['failed_unacked']} queued event(s) FAILED. "
-                "Inspect with `mem0-local event list --status failed`, then "
-                "`mem0-local event retry <event_id>` or `mem0-local event ack --all`.[/yellow]"
-            )
-    except Exception:  # noqa: BLE001 - the banner must never break a command.
-        pass
-    try:
-        from mem0_local.staleness import pair_store
+            alerts = read_alerts()
+            if alerts and alerts.get("failed_unacked"):
+                err_console.print(
+                    f"[yellow]mem0-local: {alerts['failed_unacked']} queued event(s) FAILED. "
+                    "Inspect with `mem0-local event list --status failed`, then "
+                    "`mem0-local event retry <event_id>` or `mem0-local event ack --all`.[/yellow]"
+                )
+        except Exception:  # noqa: BLE001 - the banner must never break a command.
+            pass
+        try:
+            from mem0_local.staleness import pair_store
 
-        open_pairs = pair_store().open_count()
-        if open_pairs:
-            err_console.print(
-                f"[yellow]mem0-local: {open_pairs} open staleness suspicion(s) await review. "
-                "List with `mem0-local stale list`; dispose with "
-                "`mem0-local stale confirm|dismiss <pair_id>` or `mem0-local review`.[/yellow]"
-            )
+            open_pairs = pair_store().open_count()
+            if open_pairs:
+                err_console.print(
+                    f"[yellow]mem0-local: {open_pairs} open staleness suspicion(s) await review. "
+                    "List with `mem0-local stale list`; dispose with "
+                    "`mem0-local stale confirm|dismiss <pair_id>` or `mem0-local review`.[/yellow]"
+                )
+        except Exception:  # noqa: BLE001 - the banner must never break a command.
+            pass
+    try:
+        from mem0_local.config import SESSION_ADD_ALERT_THRESHOLD
+        from mem0_local.session_stats import session_stats_store
+
+        if SESSION_ADD_ALERT_THRESHOLD > 0:
+            session_id = detect_writer_context().get("session_id")
+            if session_id:
+                session_adds = session_stats_store().add_count(session_id)
+                if session_adds > SESSION_ADD_ALERT_THRESHOLD:
+                    err_console.print(
+                        f"[yellow]mem0-local: this session has accumulated {session_adds} memory "
+                        f"add(s) (threshold {SESSION_ADD_ALERT_THRESHOLD}). Consider wrapping up: "
+                        "tell the user this session is due for a handoff, and run the "
+                        "end-of-session handoff review (`mem0-local review`) when they agree.[/yellow]"
+                    )
     except Exception:  # noqa: BLE001 - the banner must never break a command.
         pass
 
