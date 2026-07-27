@@ -181,8 +181,9 @@ there is no permanent or all-kind immunity.
   their own writes; cross-session backlog gets a default-No confirmation prompt
   in an interactive session, or requires `--force` after explicit user approval.
   (`ttl_expired` items are exempt.)
-- A stderr banner counting open suspicions may appear on any command — it is
-  pressure gauge, not a to-do during task execution.
+- A stderr banner counting open suspicions appears on hygiene commands
+  (`review`/`stale`/`event`/`status`) — it is pressure gauge, not a to-do
+  during task execution.
 - Manual supersession outside review: `invalidate <id> --by <new_id>`,
   chain inspection with `get <id> --resolve-head`.
 

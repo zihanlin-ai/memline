@@ -184,8 +184,9 @@ Authority may widen later once judge-quality data exists.
 ### 3.4 Safety net
 
 Open suspicions from crashed/unreviewed sessions persist. Reuse the stderr
-warning-banner mechanism: any later CLI invocation shows "N open staleness
-suspicions — run `mem0-local stale list`". Session-start rule (MEMORY.md)
+warning-banner mechanism: later hygiene-command invocations (`review`/`stale`/
+`event`/`status`) show "N open staleness suspicions — run `mem0-local stale
+list`"; routine add/search stays quiet. Session-start rule (MEMORY.md)
 gains one line: glance at `stale list` alongside the last-1-day listing.
 
 ## 4. Retrieval Changes
