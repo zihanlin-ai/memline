@@ -44,6 +44,39 @@ installed instead of the vendored build.
 
 Put provider secrets in the configured env file, for example `.agent-memory/store/.env`. Do not commit that file.
 
+### LLM endpoints
+
+`[llm]` describes the primary judge/reranker endpoint; each `[llm.fallback]`
+adds another, tried in order when the one before it fails. Every endpoint is
+OpenAI-compatible and resolves its own credential — `api_key_env` for an
+environment variable, or `api_key_json` + `api_key_json_path` to read a key
+out of another tool's auth store at call time (nothing is copied into this
+repo). `extra_body` is merged into every request to that endpoint, which is
+where provider pinning and routing hints belong:
+
+```toml
+[llm]
+model = "kimi-for-coding"
+base_url = "http://relay.internal:3000/v1"
+api_key_json = "~/.local/share/opencode/auth.json"
+api_key_json_path = "huawei.key"
+
+[llm.fallback]
+model = "deepseek/deepseek-v4-flash"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[llm.fallback.extra_body.provider]
+only = ["deepseek"]
+```
+
+A fallback must declare its own credential; inheriting the primary's would
+make it fail for the same reason the primary did.
+
+An endpoint falls through on transport failure *and* on an empty answer, so a
+reasoning model that spends its whole token budget thinking is re-run on the
+next endpoint rather than surfacing as a judge failure.
+
 ## Tests
 
 The daemon and CLI safety behavior is covered by standard-library `unittest`

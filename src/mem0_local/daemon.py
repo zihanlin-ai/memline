@@ -31,10 +31,6 @@ from mem0_local.ops import (
 )
 from mem0_local.queue import EventQueue
 from mem0_local.config import (
-    LLM_APP_NAME,
-    LLM_BASE_URL,
-    LLM_MODEL,
-    LLM_SITE_URL,
     STORE_DIR,
     VECTOR_STORE_HOST,
     VECTOR_STORE_MODE,
@@ -326,37 +322,25 @@ _judge_llm_lock = threading.Lock()
 
 
 def _get_judge_llm() -> Any:
-    """Dedicated judge LLM: same model as [llm] but with headroom for a full
-    K-candidate judgment batch (the shared client.llm's max_tokens=2000
+    """Dedicated judge LLM: same endpoints as [llm] but with headroom for a
+    full K-candidate judgment batch (the shared client.llm's max_tokens=2000
     truncated 10-candidate outputs into invalid JSON)."""
     global _judge_llm
     with _judge_llm_lock:
         if _judge_llm is None:
-            from mem0.utils.factory import LlmFactory
+            from mem0_local.llm import build_llm
 
-            _judge_llm = LlmFactory.create(
-                "openai",
-                {
-                    "model": LLM_MODEL,
-                    "openrouter_base_url": LLM_BASE_URL,
-                    "site_url": LLM_SITE_URL,
-                    "app_name": LLM_APP_NAME,
-                    "temperature": 0.0,
-                    "max_tokens": 4096,
-                    "top_p": 0.1,
-                    "is_reasoning_model": False,
-                },
-            )
+            _judge_llm = build_llm(4096)
         return _judge_llm
 
 
 def _process_stale_check(client: Any, queue: EventQueue, item: dict[str, Any]) -> None:
     """Advisory judging of one new entry vs its neighbors: evidence rows only,
     never a store mutation, hence no manifest row."""
-    from mem0_local.config import LLM_MODEL
     from mem0_local.staleness import run_stale_check
 
     args = item["args"]
+    judge_llm = _get_judge_llm()
     _store_gate.acquire_shared()
     try:
         with _llm_slots:
@@ -364,8 +348,10 @@ def _process_stale_check(client: Any, queue: EventQueue, item: dict[str, Any]) -
                 client,
                 args["new_id"],
                 session_id=args.get("session_id"),
-                llm=_get_judge_llm(),
-                judge_model=LLM_MODEL,
+                llm=judge_llm,
+                # Left unset: each pair is stamped with whichever endpoint
+                # actually answered its call, not the configured preference.
+                judge_model=judge_llm.model,
             )
         error = None
     except Exception as exc:  # noqa: BLE001 - failures become event state.

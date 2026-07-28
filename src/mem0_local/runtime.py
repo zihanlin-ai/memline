@@ -20,7 +20,6 @@ from mem0_local.config import (
     ENV_FILE,
     FASTEMBED_CACHE,
     HISTORY_DB,
-    LLM_API_KEY_ENV,
     LLM_APP_NAME,
     LLM_BASE_URL,
     LLM_MODEL,
@@ -30,6 +29,7 @@ from mem0_local.config import (
     MEM0_HOME,
     QDRANT_DIR,
     STORE_DIR,
+    llm_endpoint_specs,
     vector_store_config,
 )
 
@@ -71,22 +71,45 @@ def acquire_cli_lock() -> None:
 
 
 def require_llm_api_key() -> None:
-    if not os.environ.get(LLM_API_KEY_ENV):
+    """Fail fast when the primary endpoint has no credential.
+
+    Only the primary is required: a missing fallback credential should not
+    block work that the primary can do, and it surfaces loudly enough as the
+    second error when the primary is the one that is down.
+    """
+    from mem0_local.llm import Endpoint
+
+    primary = Endpoint(**llm_endpoint_specs()[0])
+    try:
+        primary.api_key()
+    except RuntimeError as exc:
         raise RuntimeError(
-            f"{LLM_API_KEY_ENV} is not set. Export it or put it in the configured env file."
-        )
+            f"{exc} Export it or put it in the configured env file ({ENV_FILE})."
+        ) from exc
+
+
+# mem0 validates llm.provider against a closed list and builds the client
+# itself, so the config it sees names the primary endpoint only; the real
+# primary/fallback pair is installed over client.llm right after construction
+# (see install_llm). Both max_tokens live here so the two stay in step.
+CLIENT_LLM_MAX_TOKENS = 2000
+# The reranker asks for a bare relevance score, but a thinking primary spends
+# tokens before it answers (kimi-for-coding used 76 of 100 on a short pair),
+# and a truncated score comes back as empty content. 256 keeps the headroom
+# without meaningfully changing the cost of an opt-in --rerank search.
+RERANKER_MAX_TOKENS = 256
 
 
 def build_config() -> dict[str, Any]:
-    openrouter_llm = {
+    placeholder_llm = {
         "provider": "openai",
         "config": {
             "model": LLM_MODEL,
-            "openrouter_base_url": LLM_BASE_URL,
+            "openai_base_url": LLM_BASE_URL,
             "site_url": LLM_SITE_URL,
             "app_name": LLM_APP_NAME,
             "temperature": 0.0,
-            "max_tokens": 2000,
+            "max_tokens": CLIENT_LLM_MAX_TOKENS,
             "top_p": 0.1,
             "is_reasoning_model": False,
         },
@@ -101,18 +124,35 @@ def build_config() -> dict[str, Any]:
                 "embedding_dims": EMBEDDING_DIMS,
             },
         },
-        "llm": openrouter_llm,
+        "llm": placeholder_llm,
         "reranker": {
             "provider": "llm_reranker",
             "config": {
                 "top_k": 8,
                 "temperature": 0.0,
-                "max_tokens": 100,
-                "llm": openrouter_llm,
+                "max_tokens": RERANKER_MAX_TOKENS,
+                "llm": placeholder_llm,
             },
         },
         "history_db_path": str(HISTORY_DB),
     }
+
+
+def install_llm(client: Any) -> Any:
+    """Replace mem0's own clients with the configured primary/fallback pair.
+
+    mem0 builds one OpenAILLM per consumer from the config dict, and that
+    constructor cannot express "try the relay, then OpenRouter". Swapping the
+    objects afterwards is the whole integration: every judge reaches the LLM
+    through ``client.llm`` or the reranker's, so both are covered here.
+    """
+    from mem0_local.llm import build_llm
+
+    client.llm = build_llm(CLIENT_LLM_MAX_TOKENS)
+    reranker = getattr(client, "reranker", None)
+    if getattr(reranker, "llm", None) is not None:
+        reranker.llm = build_llm(RERANKER_MAX_TOKENS)
+    return client
 
 
 def check_vendored_mem0() -> None:
@@ -141,7 +181,7 @@ def new_memory_client() -> Any:
     check_vendored_mem0()
     from mem0 import Memory
 
-    return Memory.from_config(build_config())
+    return install_llm(Memory.from_config(build_config()))
 
 
 def get_client() -> Any:

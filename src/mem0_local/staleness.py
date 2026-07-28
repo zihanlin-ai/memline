@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mem0_local.config import STORE_DIR
+from mem0_local.llm import active_model
 from mem0_local.sqlite_util import SqliteStore
 
 SUPERSEDED_BY = "superseded_by"
@@ -662,7 +663,7 @@ def run_stale_check(
             verdict=verdict["verdict"],
             confidence=verdict["confidence"],
             reason=verdict["reason"],
-            judge_model=judge_model,
+            judge_model=active_model(llm, judge_model),
             new_session_id=session_id,
         )
         if row["disposition"] == "open" and row["inserted"]:
@@ -712,7 +713,7 @@ def _run_self_checks(
             verdict=verdict["verdict"],
             confidence=verdict["confidence"],
             reason=verdict["reason"],
-            judge_model=judge_model,
+            judge_model=active_model(llm, judge_model),
             new_session_id=session_id,
         )
         report["necessity"] = verdict["verdict"]
@@ -734,7 +735,7 @@ def _run_self_checks(
             verdict=verdict["verdict"],
             confidence=verdict["confidence"],
             reason=verdict["reason"],
-            judge_model=judge_model,
+            judge_model=active_model(llm, judge_model),
             new_session_id=session_id,
         )
         report["safety"] = verdict["verdict"]
@@ -765,7 +766,7 @@ def _run_self_checks(
         verdict=verdict["verdict"],
         confidence=verdict["confidence"],
         reason=verdict["reason"],
-        judge_model=judge_model,
+        judge_model=active_model(llm, judge_model),
         new_session_id=session_id,
     )
     report["correctness"] = verdict["verdict"]

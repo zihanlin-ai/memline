@@ -107,6 +107,65 @@ LLM_SITE_URL = str(value("llm", "site_url", "http://localhost"))
 LLM_APP_NAME = str(value("llm", "app_name", "mem0-local"))
 LLM_API_KEY_ENV = str(value("llm", "api_key_env", "OPENROUTER_API_KEY"))
 
+# Fields of one endpoint spec, mirroring mem0_local.llm.Endpoint. Anything
+# else under [llm] (paths, provider name, the legacy keys above) is config
+# for other layers and must not reach the Endpoint constructor.
+_ENDPOINT_FIELDS = (
+    "model",
+    "base_url",
+    "api_key_env",
+    "api_key_json",
+    "api_key_json_path",
+    "site_url",
+    "app_name",
+    "extra_body",
+)
+
+
+def _endpoint_spec(raw: dict[str, Any], name: str, *, inherit: dict[str, Any]) -> dict[str, Any]:
+    spec: dict[str, Any] = {"name": name}
+    for key in _ENDPOINT_FIELDS:
+        if key in raw:
+            spec[key] = raw[key]
+        elif key in inherit:
+            spec[key] = inherit[key]
+    # A fallback that silently reuses the primary's credential is not a
+    # fallback; require it to name its own, and never inherit one.
+    if name != "primary" and "api_key_env" not in raw and "api_key_json" not in raw:
+        raise ValueError(f"[llm.{name}] must declare api_key_env or api_key_json")
+    return spec
+
+
+def llm_endpoint_specs() -> list[dict[str, Any]]:
+    """Judge endpoints in preference order: [llm] first, then [llm.fallback].
+
+    ``[llm.fallback]`` may be a single table or an array of tables; presenting
+    both as one ordered list keeps the retry loop indifferent to how many
+    fallbacks exist.
+    """
+    llm = section("llm")
+    primary = _endpoint_spec(llm, "primary", inherit={})
+    primary.setdefault("model", LLM_MODEL)
+    primary.setdefault("base_url", LLM_BASE_URL)
+    # The legacy api_key_env default only applies when the primary names no
+    # credential at all. Defaulting it unconditionally would hand an endpoint
+    # that reads its key from a file the *other* endpoint's env credential,
+    # because api_key_env is consulted first.
+    if "api_key_env" not in primary and "api_key_json" not in primary:
+        primary["api_key_env"] = LLM_API_KEY_ENV
+
+    raw_fallbacks = llm.get("fallback") or []
+    if isinstance(raw_fallbacks, dict):
+        raw_fallbacks = [raw_fallbacks]
+    # site_url/app_name are attribution headers, not credentials: inheriting
+    # them keeps every endpoint reporting the same caller identity.
+    inherit = {k: primary[k] for k in ("site_url", "app_name") if k in primary}
+    specs = [primary]
+    for index, raw in enumerate(raw_fallbacks):
+        name = "fallback" if len(raw_fallbacks) == 1 else f"fallback{index + 1}"
+        specs.append(_endpoint_spec(raw, name, inherit=inherit))
+    return specs
+
 MANUAL_SOURCE = str(value("metadata", "manual_source", "manual"))
 MANUAL_SESSION = str(value("metadata", "manual_session", "manual-session"))
 
