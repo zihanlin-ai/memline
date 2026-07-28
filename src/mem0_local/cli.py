@@ -957,14 +957,6 @@ def ttl(
     output(result, command="ttl", fmt=chosen_format(output_format, json_flag))
 
 
-# Legacy 5-way necessity verdicts map onto the two disposition families
-# (pre-v5 marks recorded by the 2026-07 backlog scan).
-_EXPIRING_VERDICTS = {"EXPIRING", "PROGRESS_TICK", "EVENT_SCOPED"}
-_BORN_UNNECESSARY_VERDICTS = {
-    "BORN_UNNECESSARY", "ACTIVITY_LOG", "COMMIT_RECORD", "REPO_FACT",
-}
-
-
 # Per-verdict reviewer playbook. Keyed by the judge's own verdict, not just the
 # suspicion kind, so review states what THIS finding means and which disposition
 # actually resolves it. `dismiss_only_if` exists because dismissal is permanent
@@ -1048,15 +1040,6 @@ def _flag_suggestion(pair: dict[str, Any]) -> dict[str, Any]:
     """
     kind = pair.get("kind") or "displacement"
     verdict = str(pair.get("verdict") or "")
-    if kind == "ttl_expiry":
-        verdict = "TTL_EXPIRED"
-    elif kind == "necessity":
-        # Pre-v5 backlog marks are finer-grained than the two disposition
-        # families; normalize so legacy rows keep getting routed guidance.
-        if verdict in _EXPIRING_VERDICTS:
-            verdict = "EXPIRING"
-        elif verdict in _BORN_UNNECESSARY_VERDICTS:
-            verdict = "BORN_UNNECESSARY"
     play = _VERDICT_PLAYBOOK.get(verdict)
     if play is None:
         play = {

@@ -250,21 +250,31 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
             )
             self.assertEqual(row["disposition"], expected, msg=f"{kind}@{conf}")
 
-    def test_legacy_backlog_verdicts_still_route_to_a_disposition_family(self) -> None:
-        """The 2026-07 backlog marks carry pre-v5 verdicts; the reviewer
-        guidance must keep routing them (EXPIRING family vs born-unnecessary)."""
+    def test_every_live_verdict_routes_to_its_disposition_family(self) -> None:
+        """Guidance is keyed on the judge's current vocabulary. The pre-v5
+        5-way necessity verdicts are NOT handled here: commit 8c48bda remapped
+        all 570 stored marks by SQL in the same change that introduced v5, and
+        parse_single_judgment coerces any out-of-vocabulary verdict to DURABLE,
+        so no row can carry one from either direction."""
         from mem0_local.cli import _flag_suggestion
 
-        for verdict in ("PROGRESS_TICK", "EVENT_SCOPED", "EXPIRING"):
-            play = _flag_suggestion({"kind": "necessity", "verdict": verdict})
-            self.assertEqual(play["verdict"], "EXPIRING")
-            self.assertIn("stale ttl", play["fix"])
-        for verdict in ("ACTIVITY_LOG", "COMMIT_RECORD", "REPO_FACT", "BORN_UNNECESSARY"):
-            play = _flag_suggestion({"kind": "necessity", "verdict": verdict})
-            self.assertEqual(play["verdict"], "BORN_UNNECESSARY")
-            self.assertIn("stale confirm", play["fix"])
+        play = _flag_suggestion({"kind": "necessity", "verdict": "EXPIRING"})
+        self.assertEqual(play["verdict"], "EXPIRING")
+        self.assertIn("stale ttl", play["fix"])
+        play = _flag_suggestion({"kind": "necessity", "verdict": "BORN_UNNECESSARY"})
+        self.assertIn("stale confirm", play["fix"])
         self.assertIn("renews", _flag_suggestion({"kind": "ttl_expiry", "verdict": "TTL_EXPIRED"})["partial"])
         self.assertIn("update", _flag_suggestion({"kind": "correctness", "verdict": "TIMESTAMP_SUSPECT"})["fix"])
+
+    def test_an_unknown_verdict_still_gets_usable_guidance(self) -> None:
+        """The fallback is the only thing standing behind a future verdict
+        added to a judge before this table learns about it."""
+        from mem0_local.cli import _flag_suggestion
+
+        play = _flag_suggestion({"kind": "necessity", "verdict": "SOMETHING_NEW"})
+        self.assertIn("SOMETHING_NEW", play["means"])
+        self.assertTrue(play["fix"])
+        self.assertTrue(play["dismiss_only_if"])
 
     def test_every_flag_carries_its_verdict_playbook(self) -> None:
         """Review must state what a finding means and the one condition under
