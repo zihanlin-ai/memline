@@ -152,14 +152,10 @@ Historical ledger imports and metadata backfills use the same manifest
 directory with separate file names such as `ledger-YYYY-MM.jsonl` and
 `metadata-backfill-*.jsonl`.
 
-## Codex Skill
+## Agent Integration
 
-This repository also bundles a Codex skill for agent discovery and operational
-usage guidance:
-
-```text
-skills/local-memory/
-```
-
-Install or copy that skill into a workspace skill directory when agents should
-use `mem0-local` for local memory search, write, audit, and troubleshooting.
+Agent-facing operating guidance is deployment-owned and intentionally not
+bundled in this repository. A workspace can keep its memory skill under its
+own agent configuration (for example, `.agents/skills/local-memory/`) so local
+policies, handoff rules, and higher-level retrieval layers can evolve without
+coupling them to the reusable `mem0-local` CLI package.
