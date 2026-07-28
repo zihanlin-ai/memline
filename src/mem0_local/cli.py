@@ -1316,10 +1316,18 @@ def stale_merge(
 def review(
     session: Optional[str] = typer.Option(None, "--session", help="Session id; defaults to the detected current session."),
     wait: bool = typer.Option(False, "--wait", help="Wait (up to 120s) for pending background judgments first."),
+    check: bool = typer.Option(False, "--check", help="Exit 2 instead of 0 when the verdict is 'blocked'."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Handoff review: this session's writes plus the suspicions they raised.
+
+    Reports an acceptance `verdict`. It is "pass" only when everything THIS
+    session wrote has been handled: its writes' own safety/correctness/
+    necessity flags, the retirements its writes raised, and any queued write
+    of its own that failed to land. Other sessions' backlog is deliberately
+    out of scope -- a session disposes only its own writes (design:
+    disposition authority) -- so a growing global backlog never blocks a pass.
 
     Dispose each listed pair with `stale confirm <pair_id>` /
     `stale dismiss <pair_id>`, or correct the old memory with
@@ -1384,9 +1392,63 @@ def review(
     # TTL expiries are lifecycle events, not this session's writes: any
     # session running review may dispose them (accept or renew).
     ttl_expired = [flag_view(p) for p in pair_store().open_pairs(kind="ttl_expiry")]
+
+    # --- acceptance verdict -------------------------------------------------
+    # Hard-coded so a session never has to infer "am I done?" from four lists.
+    # Scope is strictly this session's own writes; ttl_expiry and every pair
+    # raised by another session stay out, because disposing those is not this
+    # session's job and would make the verdict unreachable in a shared store.
+    def failed_own_adds() -> list[str]:
+        queue = _event_queue_direct()
+        out: list[str] = []
+        for row in queue.list(status="failed", limit=500):
+            args = queue.get_args(row["event_id"]) or {}
+            if args.get("session_id") == session:
+                out.append(row["event_id"])
+        return out
+
+    blocking: list[dict[str, Any]] = []
+    if pending:
+        blocking.append({
+            "kind": "pending_stale_checks",
+            "count": pending,
+            "why": "this session's writes are still being judged; a verdict now would be premature",
+            "how": "mem0-local review --wait",
+        })
+    for flag_kind in ("safety", "correctness", "necessity"):
+        flagged = [f["memory_id"] for f in self_flags if f["kind"] == flag_kind]
+        if flagged:
+            blocking.append({
+                "kind": f"self_flag:{flag_kind}",
+                "count": len(flagged),
+                "memory_ids": flagged,
+                "why": f"this session's own writes carry unresolved {flag_kind} flags",
+                "how": "see how_to_dispose",
+            })
+    if displacement:
+        blocking.append({
+            "kind": "displacement_raised_by_me",
+            "count": len(displacement),
+            "pair_ids": [p["pair_id"] for p in displacement],
+            "why": "retirements that this session's writes raised are still undisposed",
+            "how": "stale confirm|dismiss|merge <pair_id>, or update <old_id>",
+        })
+    failed_adds = failed_own_adds()
+    if failed_adds:
+        blocking.append({
+            "kind": "failed_adds",
+            "count": len(failed_adds),
+            "event_ids": failed_adds,
+            "why": "this session queued writes that never landed in the store",
+            "how": "event retry <event_id> | event ack <event_id>",
+        })
+    verdict = "pass" if not blocking else "blocked"
+
     output(
         {
             "session": session,
+            "verdict": verdict,
+            "blocking": blocking,
             "writes_count": len(write_items),
             "writes": [
                 {"id": w.get("id"), "memory": str(w.get("memory") or "")[:160]}
@@ -1412,6 +1474,9 @@ def review(
         command="review",
         fmt=chosen_format(output_format, json_flag),
     )
+    # Opt-in so existing callers that ignore the exit code keep working.
+    if check and blocking:
+        raise typer.Exit(code=2)
 
 
 @app.command()
