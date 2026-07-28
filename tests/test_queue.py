@@ -23,6 +23,38 @@ class EventQueueTests(unittest.TestCase):
         )
         self.queue._conn.commit()
 
+    def test_live_writes_are_served_before_a_backfill_backlog(self) -> None:
+        """A whole-store judge backfill runs for hours. On a strict-FIFO queue
+        every live write queued behind it would wait that long to be judged,
+        stalling other sessions' handoff reviews."""
+        backlog = [self.queue.enqueue("stale_check", {"n": i}, priority=10)
+                   for i in range(5)]
+        live = self.queue.enqueue("stale_check", {"n": "live"})
+
+        self.assertEqual(self.queue.claim_next()["id"], live)
+        # Backlog then drains in its own order, oldest first.
+        self.assertEqual(self.queue.claim_next()["id"], backlog[0])
+
+    def test_priority_column_is_added_to_a_preexisting_queue(self) -> None:
+        """Stores created before the column exists must keep working; their
+        rows default to the live-write class."""
+        path = Path(self._tmp.name) / "legacy.db"
+        legacy = EventQueue(path)
+        legacy._conn.execute("ALTER TABLE events DROP COLUMN priority")
+        legacy._conn.execute(
+            "INSERT INTO events (id, op, args_json, status, created_at, updated_at) "
+            "VALUES ('old', 'add', '{}', 'queued', '2026-01-01', '2026-01-01')"
+        )
+        legacy._conn.commit()
+        legacy.close() if hasattr(legacy, "close") else None
+
+        migrated = EventQueue(path)
+        row = migrated._conn.execute(
+            "SELECT priority FROM events WHERE id = 'old'"
+        ).fetchone()
+        self.assertEqual(row[0], 0)
+        self.assertEqual(migrated.claim_next()["id"], "old")
+
     def test_enqueue_claim_complete_roundtrip(self) -> None:
         event_id = self.queue.enqueue("add", {"content": "fact", "infer": True})
         item = self.queue.claim_next()

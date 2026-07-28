@@ -45,22 +45,40 @@ class EventQueue(SqliteStore):
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     result_json TEXT,
-                    error TEXT
+                    error TEXT,
+                    priority INTEGER NOT NULL DEFAULT 0
                 )"""
             )
+            # Older stores predate the priority column; adding it is the whole
+            # migration (existing rows default to 0, the live-write class).
+            columns = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(events)")
+            }
+            if "priority" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE events ADD COLUMN priority INTEGER NOT NULL DEFAULT 0"
+                )
             self._conn.commit()
         self.notify = threading.Condition()
 
     # -- intake -----------------------------------------------------------
 
-    def enqueue(self, op: str, args: dict[str, Any]) -> str:
+    def enqueue(self, op: str, args: dict[str, Any], *, priority: int = 0) -> str:
+        """Queue an event. Higher `priority` value = served later.
+
+        Bulk maintenance (a judge backfill over thousands of stored entries)
+        must never delay a live write's judging: at a few events per minute a
+        strict-FIFO backlog would stall every other session's handoff review
+        for as long as the sweep runs. Live writes stay at 0; sweeps use a
+        positive value and drain only while nothing newer is waiting.
+        """
         event_id = uuid.uuid4().hex
         now = _now()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO events (id, op, args_json, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'queued', ?, ?)",
-                (event_id, op, json.dumps(args, default=str), now, now),
+                "INSERT INTO events (id, op, args_json, status, created_at, updated_at, priority) "
+                "VALUES (?, ?, ?, 'queued', ?, ?, ?)",
+                (event_id, op, json.dumps(args, default=str), now, now, priority),
             )
             self._conn.commit()
         with self.notify:
@@ -73,7 +91,7 @@ class EventQueue(SqliteStore):
         with self._lock:
             row = self._conn.execute(
                 "SELECT id, op, args_json, attempts FROM events "
-                "WHERE status = 'queued' ORDER BY created_at LIMIT 1"
+                "WHERE status = 'queued' ORDER BY priority, created_at LIMIT 1"
             ).fetchone()
             if row is None:
                 return None

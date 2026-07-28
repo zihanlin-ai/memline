@@ -1888,6 +1888,12 @@ def list_memories(
 # Han (CJK) ranges, for the --cjk-only backfill prefilter. Deterministic and
 # free: an entry with no Han character cannot be language-suspect, so the
 # prefilter turns a whole-store language backfill into a handful of LLM calls.
+#
+# Backfill events yield to every live write: a whole-store sweep runs for hours,
+# and on a strict-FIFO queue it would stall other sessions' handoff reviews for
+# its full duration.
+BACKFILL_PRIORITY = 10
+
 _HAN_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 
 
@@ -1961,6 +1967,9 @@ def backfill_judge(
                     queue.enqueue(
                         "stale_check",
                         {"new_id": mid, "session_id": session, "self_only": True},
+                        # Background sweep: never ahead of a live write's
+                        # judging, however long the backlog takes to drain.
+                        priority=BACKFILL_PRIORITY,
                     )
                 )
             enqueued += 1
