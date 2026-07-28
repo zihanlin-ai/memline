@@ -36,6 +36,17 @@ from mem0_local.staleness import (
 )
 
 
+class _EmptyQueue:
+    """Stands in for the event queue when a test only cares about the verdict:
+    no pending stale checks, no failed adds."""
+
+    def list(self, status: str | None = None, limit: int = 500) -> list:
+        return []
+
+    def get_args(self, event_id: str) -> dict:
+        return {}
+
+
 class LifecycleFakeClient(FakeClient):
     """FakeClient + the surface the lifecycle ops touch (get_all/update/delete)."""
 
@@ -452,6 +463,46 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
                 pair_id=row["pair_id"], force=False, json_flag=True, output_format="json"
             )
         self.assertEqual(self.store.get(row["pair_id"])["disposition"], "confirmed")
+
+    def test_verdict_blocks_while_a_ttl_expiry_is_unreviewed(self) -> None:
+        """Disposition authority for TTL expiries belongs to every session, so
+        they are nobody's property -- and therefore would be nobody's
+        obligation if the verdict ignored them. A session that can dispose
+        them must not be able to pass while leaving them piled up."""
+        from unittest.mock import patch
+        from mem0_local import cli
+
+        row = self.store.record_judgment(
+            kind=KIND_TTL_EXPIRY, new_id="m", old_id="m", old_text="t@@deadline",
+            verdict="TTL_EXPIRED", confidence=1.0, reason="expired",
+        )
+        captured: dict = {}
+
+        def run() -> None:
+            with (
+                patch.object(cli, "detect_writer_context", return_value={"session_id": "s", "source": "claude"}),
+                patch.object(cli, "execute", return_value=[]),
+                patch.object(cli, "_event_queue_direct", return_value=_EmptyQueue()),
+                patch.object(cli, "_fetch_memory", return_value={"memory": "t"}),
+                patch.object(cli, "output", side_effect=lambda payload, **kw: captured.update(payload)),
+            ):
+                cli.review(session=None, wait=False, check=False, json_flag=True, output_format="json")
+
+        run()
+        self.assertEqual(captured["verdict"], "blocked")
+        kinds = [b["kind"] for b in captured["blocking"]]
+        self.assertIn("ttl_expired", kinds)
+        self.assertEqual(
+            [b for b in captured["blocking"] if b["kind"] == "ttl_expired"][0]["pair_ids"],
+            [row["pair_id"]],
+        )
+
+        # Disposing it is the only thing standing between this session and a pass.
+        self.store.dispose(row["pair_id"], "confirmed", disposed_by="s")
+        captured.clear()
+        run()
+        self.assertEqual(captured["verdict"], "pass")
+        self.assertEqual(captured["blocking"], [])
 
     def test_kind_guards_reject_wrong_dispositions(self) -> None:
         from unittest.mock import patch

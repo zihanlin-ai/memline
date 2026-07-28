@@ -1323,11 +1323,14 @@ def review(
     """Handoff review: this session's writes plus the suspicions they raised.
 
     Reports an acceptance `verdict`. It is "pass" only when everything THIS
-    session wrote has been handled: its writes' own safety/correctness/
+    session wrote has been handled -- its writes' own safety/correctness/
     necessity flags, the retirements its writes raised, and any queued write
-    of its own that failed to land. Other sessions' backlog is deliberately
-    out of scope -- a session disposes only its own writes (design:
-    disposition authority) -- so a growing global backlog never blocks a pass.
+    of its own that failed to land -- and no TTL expiry is left unreviewed.
+    Displacement pairs raised by other sessions are deliberately out of scope:
+    a session disposes only its own writes (design: disposition authority), so
+    that backlog never blocks a pass. TTL expiries are the exception to that
+    exception -- disposition authority for them is granted to every session,
+    so they are nobody's property and would otherwise be nobody's obligation.
 
     Dispose each listed pair with `stale confirm <pair_id>` /
     `stale dismiss <pair_id>`, or correct the old memory with
@@ -1395,9 +1398,12 @@ def review(
 
     # --- acceptance verdict -------------------------------------------------
     # Hard-coded so a session never has to infer "am I done?" from four lists.
-    # Scope is strictly this session's own writes; ttl_expiry and every pair
-    # raised by another session stay out, because disposing those is not this
-    # session's job and would make the verdict unreachable in a shared store.
+    # Pairs raised by another session stay out: disposing those is not this
+    # session's job and waiting on them would make the verdict unreachable in a
+    # shared store. TTL expiries are in, because neither reason applies to them
+    # — every session may dispose them, so the backlog is drainable by whoever
+    # reaches handoff, and leaving it out lets a session pass while expired
+    # entries pile up unreviewed with nobody obliged to look.
     def failed_own_adds() -> list[str]:
         queue = _event_queue_direct()
         out: list[str] = []
@@ -1432,6 +1438,15 @@ def review(
             "pair_ids": [p["pair_id"] for p in displacement],
             "why": "retirements that this session's writes raised are still undisposed",
             "how": "stale confirm|dismiss|merge <pair_id>, or update <old_id>",
+        })
+    if ttl_expired:
+        blocking.append({
+            "kind": "ttl_expired",
+            "count": len(ttl_expired),
+            "pair_ids": [p["pair_id"] for p in ttl_expired],
+            "why": "entries whose TTL fired are unreviewed; any session may dispose them, "
+                   "so this one is obliged to",
+            "how": "stale confirm <pair_id> (accept the expiry) | stale ttl <pair_id> --days N (renew)",
         })
     failed_adds = failed_own_adds()
     if failed_adds:
