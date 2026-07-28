@@ -615,6 +615,31 @@ class SelfCheckTests(unittest.TestCase):
         payload.update(payload_extra or {})
         return FakeClient({"m1": payload}, search_items=[])
 
+    def test_self_only_runs_the_entry_checks_and_skips_displacement(self) -> None:
+        """`update` re-judges the rewritten text via self_only: the point is to
+        re-examine this entry (3 calls), not to re-scan the store."""
+        client = FakeClient(
+            {"m1": {
+                "data": "grid progress: done=38",
+                "user_id": "workspace",
+                "created_at": "2026-07-20T01:00:00+00:00",
+                "source": "claude",
+            }},
+            search_items=[{"id": "other", "memory": "grid progress: done=12",
+                           "created_at": "2026-07-19"}],
+        )
+        llm = RoutingFakeLlm(
+            {"verdict": "DURABLE", "confidence": 0.9, "reason": "keep"},
+            {"verdict": "CONSISTENT", "confidence": 0.9, "reason": "ok"},
+        )
+        result = staleness.run_stale_check(client, "m1", llm=llm, self_only=True)
+        self.assertEqual(result["necessity"], "DURABLE")
+        self.assertEqual(result["correctness"], "CONSISTENT")
+        self.assertEqual(result["safety"], "CLEAN")
+        self.assertEqual(result["displacement"], "skipped (self_only)")
+        self.assertEqual(result["judged"], 0)
+        self.assertEqual(staleness.pair_store().open_pairs(kind="displacement"), [])
+
     def test_necessity_flag_opens_self_pair_without_candidates(self) -> None:
         llm = RoutingFakeLlm(
             {"verdict": "EXPIRING", "confidence": 0.9, "reason": "tick"},
@@ -685,8 +710,8 @@ class SelfCheckTests(unittest.TestCase):
         result = staleness.run_stale_check(
             self._client({"origin": "ledger_import"}), "m1", llm=llm
         )
-        self.assertNotIn("correctness", result)  # ledger skips timestamp
-        self.assertEqual(result["safety"], "SECRET_SUSPECT")  # but not safety
+        self.assertEqual(result["correctness"], "CONSISTENT")  # date/actor exempt
+        self.assertEqual(result["safety"], "SECRET_SUSPECT")  # never exempt
         self.assertEqual(llm.safety_calls, 1)
 
     def test_displacement_protection_never_skips_self_checks(self) -> None:
@@ -708,7 +733,9 @@ class SelfCheckTests(unittest.TestCase):
         self.assertEqual(llm.timestamp_calls, 1)
         self.assertEqual(llm.safety_calls, 1)
 
-    def test_ledger_import_skips_timestamp_check(self) -> None:
+    def test_ledger_import_downgrades_timestamp_but_still_runs_the_judge(self) -> None:
+        """Imports carry historical dates by design, so a date/actor verdict is
+        noise -- but the judge still runs, because it also decides LANGUAGE."""
         llm = RoutingFakeLlm(
             {"verdict": "DURABLE", "confidence": 0.9, "reason": "keep"},
             {"verdict": "TIMESTAMP_SUSPECT", "confidence": 0.9, "reason": "n/a"},
@@ -716,8 +743,26 @@ class SelfCheckTests(unittest.TestCase):
         result = staleness.run_stale_check(
             self._client({"origin": "ledger_import"}), "m1", llm=llm
         )
-        self.assertNotIn("correctness", result)
-        self.assertEqual(llm.timestamp_calls, 0)
+        self.assertEqual(llm.timestamp_calls, 1)
+        self.assertEqual(result["correctness"], "CONSISTENT")
+        self.assertFalse(result["correctness_open"])
+        self.assertEqual(staleness.pair_store().open_pairs(kind="correctness"), [])
+
+    def test_ledger_import_is_not_exempt_from_language_check(self) -> None:
+        """The pre-2026-07-28 exemption skipped the whole correctness judge,
+        which silently exempted imported Chinese narration from LANGUAGE_SUSPECT
+        as well; imported prose embeds just as badly as live prose."""
+        llm = RoutingFakeLlm(
+            {"verdict": "DURABLE", "confidence": 0.9, "reason": "keep"},
+            {"verdict": "LANGUAGE_SUSPECT", "confidence": 0.95, "reason": "Chinese narration"},
+        )
+        result = staleness.run_stale_check(
+            self._client({"origin": "ledger_import"}), "m1", llm=llm
+        )
+        self.assertEqual(result["correctness"], "LANGUAGE_SUSPECT")
+        self.assertTrue(result["correctness_open"])
+        rows = staleness.pair_store().open_pairs(kind="correctness")
+        self.assertEqual(rows[0]["verdict"], "LANGUAGE_SUSPECT")
 
 
 class TtlTests(unittest.TestCase):

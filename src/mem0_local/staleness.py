@@ -52,6 +52,12 @@ KIND_CORRECTNESS = "correctness"
 KIND_TTL_EXPIRY = "ttl_expiry"
 KIND_SAFETY = "safety"
 
+# Correctness verdicts that do not apply to imported history: an import's dates
+# and actors come from the original ledger, not from the writing session.
+# LANGUAGE_SUSPECT is deliberately NOT here — imported Chinese narration embeds
+# just as badly as live Chinese narration.
+_IMPORT_EXEMPT_VERDICTS = frozenset({"TIMESTAMP_SUSPECT", "ATTRIBUTION_SUSPECT"})
+
 MAX_CHAIN_DEPTH = 100
 # Verdicts below the kind's confidence floor are cached (never re-judged)
 # but do not open a suspicion for review. Self-checks use a stricter floor:
@@ -577,6 +583,7 @@ def run_stale_check(
     top_k: int = STALE_CHECK_TOP_K,
     llm: Any = None,
     judge_model: str | None = None,
+    self_only: bool = False,
 ) -> dict[str, Any]:
     """Judge one new entry: necessity, timestamp sanity, then displacement
     against its top-k active neighbors (all advisory only).
@@ -584,6 +591,10 @@ def run_stale_check(
     Produces suspicion-pair evidence rows; never changes memory state. Safe
     to re-run: the pair cache skips already-judged (old_id, text-version)
     combinations for every kind.
+
+    ``self_only`` runs just the entry's own necessity/safety/correctness checks
+    and skips neighbor displacement. Used by ``update``, where the point is to
+    re-judge the rewritten text (three calls) rather than re-scan the store.
     """
     payload = _point_payload(client, new_id)
     if payload is None:
@@ -599,6 +610,11 @@ def run_stale_check(
         client, new_id, new_text, payload,
         llm=llm, judge_model=judge_model, session_id=session_id,
     )
+    if self_only:
+        return {
+            "new_id": new_id, "judged": 0, "opened": 0, "cached": 0,
+            "displacement": "skipped (self_only)", **self_report,
+        }
 
     filters = {"user_id": payload["user_id"]} if payload.get("user_id") else None
     raw = client.search(
@@ -741,10 +757,6 @@ def _run_self_checks(
         report["safety"] = verdict["verdict"]
         report["safety_open"] = row["disposition"] == "open" and row["inserted"]
 
-    # Correctness (timestamp/attribution) checks only make sense for live agent
-    # writes; ledger imports carry historical dates by design.
-    if payload.get("origin") == "ledger_import":
-        return report
     if store.has_judgment(new_id, new_id, new_text, kind=KIND_CORRECTNESS):
         report["correctness"] = "cached"
         return report
@@ -758,6 +770,20 @@ def _run_self_checks(
         created_at=str(payload.get("created_at") or "") or None,
         writer=str(payload.get("source") or payload.get("writer_agent_id") or "") or None,
     )
+    # Ledger imports carry historical dates and third-party actors by design,
+    # so their timestamp/attribution verdicts are noise. That exemption used to
+    # skip the whole correctness judge, which silently exempted them from
+    # LANGUAGE_SUSPECT too (added later, 2026-07-21) and let imported Chinese
+    # narration accumulate unflagged. Now the judge always runs and only the
+    # two date/actor verdicts are downgraded for imports.
+    if payload.get("origin") == "ledger_import" and verdict["verdict"] in _IMPORT_EXEMPT_VERDICTS:
+        verdict = {
+            "verdict": "CONSISTENT",
+            "confidence": verdict["confidence"],
+            "reason": "ledger_import exempt from {}: {}".format(
+                verdict["verdict"], verdict["reason"]
+            )[:500],
+        }
     row = store.record_judgment(
         kind=KIND_CORRECTNESS,
         new_id=new_id,

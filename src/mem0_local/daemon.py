@@ -348,6 +348,7 @@ def _process_stale_check(client: Any, queue: EventQueue, item: dict[str, Any]) -
                 client,
                 args["new_id"],
                 session_id=args.get("session_id"),
+                self_only=bool(args.get("self_only")),
                 llm=judge_llm,
                 # Left unset: each pair is stamped with whichever endpoint
                 # actually answered its call, not the configured preference.

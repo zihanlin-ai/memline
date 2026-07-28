@@ -893,6 +893,7 @@ def _enrich_pairs(pairs: list[dict[str, Any]], *, preview_chars: int = 160) -> l
             item[f"{side}_memory"] = (
                 str(row.get("memory") or "")[:preview_chars] if row else "<deleted>"
             )
+        item["suggested"] = _flag_suggestion(pair)
         enriched.append(item)
     return enriched
 
@@ -959,41 +960,117 @@ def ttl(
 # Legacy 5-way necessity verdicts map onto the two disposition families
 # (pre-v5 marks recorded by the 2026-07 backlog scan).
 _EXPIRING_VERDICTS = {"EXPIRING", "PROGRESS_TICK", "EVENT_SCOPED"}
+_BORN_UNNECESSARY_VERDICTS = {
+    "BORN_UNNECESSARY", "ACTIVITY_LOG", "COMMIT_RECORD", "REPO_FACT",
+}
 
 
-def _flag_suggestion(pair: dict[str, Any]) -> str:
-    """Reviewer guidance per suspicion kind/verdict (lifecycle design R4)."""
-    if pair.get("kind") == "correctness":
-        return (
-            "fix via `update <memory_id> '<corrected text>'` (expires this flag) | "
-            "false positive -> `stale dismiss <pair_id>`"
-        )
-    if pair.get("kind") == "safety":
-        return (
-            "PRIORITY — suspected plaintext credential: redact via "
-            "`update <memory_id> '<same text with the secret replaced by its "
-            "location pointer>'` (keeps id/links/history, expires this flag), "
-            "then verify `search '<secret>' --include-superseded` returns "
-            "nothing | false positive -> `stale dismiss <pair_id>`"
-        )
-    if pair.get("kind") == "ttl_expiry":
-        return (
-            "entry already left the pool at its deadline: accept -> "
-            "`stale confirm <pair_id>` | still needed -> `stale ttl <pair_id> "
-            "[--days 7]` (renews and re-enters the pool)"
-        )
-    if pair.get("verdict") in _EXPIRING_VERDICTS:
-        return (
-            "settled/closed -> `stale confirm <pair_id>` (expires now) | "
-            "still alive -> `stale ttl <pair_id> [--days 7]` | "
-            "false positive -> `stale dismiss <pair_id>`"
-        )
-    return (
-        "verify born-unnecessary -> `stale confirm <pair_id>` (expires now), or "
-        "`delete <memory_id>` for your own fresh entry | keep the non-derivable "
-        "part -> `update <memory_id> '<rewritten>'` | false positive -> "
-        "`stale dismiss <pair_id>`"
+# Per-verdict reviewer playbook. Keyed by the judge's own verdict, not just the
+# suspicion kind, so review states what THIS finding means and which disposition
+# actually resolves it. `dismiss_only_if` exists because dismissal is permanent
+# for the judged text version: a flag closed on the wrong grounds can never be
+# raised again. Added 2026-07-28 after an audit found a batch of LANGUAGE_SUSPECT
+# flags dismissed without the entries being rewritten.
+_VERDICT_PLAYBOOK: dict[str, dict[str, str]] = {
+    "LANGUAGE_SUSPECT": {
+        "means": "the entry's own narration is Chinese; the store embeds with an "
+                 "English-only model, so this text retrieves poorly",
+        "fix": "update <memory_id> '<same facts, narration rewritten in English>'",
+        "keep": "preserve verbatim: paths, commands, flags, hosts, model/artifact "
+                "names, numbers, memory-id references, Chinese proper nouns "
+                "(people, products, filenames), and quoted Chinese source material",
+        "dismiss_only_if": "the Chinese is CONFINED to quotes, identifiers, proper "
+                           "nouns or a one-word gloss and the author's own sentences "
+                           "are already English — not merely because the facts are correct",
+    },
+    "TIMESTAMP_SUSPECT": {
+        "means": "the narrated date contradicts the CLI's authoritative ingestion time",
+        "fix": "update <memory_id> '<same facts, date corrected>'",
+        "dismiss_only_if": "the entry narrates a historical event under its own past "
+                           "date, or carries an 'As of/REVISED <date>' status marker",
+    },
+    "ATTRIBUTION_SUSPECT": {
+        "means": "the entry credits an actor that contradicts the recorded writer identity",
+        "fix": "update <memory_id> '<same facts, actor corrected>'",
+        "dismiss_only_if": "the entry legitimately records the user's decision or "
+                           "another agent's action",
+    },
+    "SECRET_SUSPECT": {
+        "means": "PRIORITY — the entry looks like it embeds a live credential VALUE",
+        "fix": "update <memory_id> '<same text, secret replaced by a pointer to its "
+               "file or secret location>' (keeps id, links and history), then verify "
+               "`search '<secret literal>' --include-superseded` returns nothing",
+        "dismiss_only_if": "the string is not a credential value (e.g. a public "
+                           "identifier, a placeholder, or a path to where a secret lives)",
+    },
+    "BORN_UNNECESSARY": {
+        "means": "the entry may never have deserved long-term memory — activity "
+                 "narration, a commit restatement, or a repo-readable fact",
+        "fix": "stale confirm <pair_id> (expires it now, reversible via "
+               "`ttl <memory_id> --clear`), or `delete <memory_id>` for your own fresh entry",
+        "partial": "keep only the non-derivable part -> update <memory_id> '<rewritten>'",
+        "dismiss_only_if": "the entry records a durable decision, constraint or "
+                           "hard-won conclusion that is not recoverable from the repo",
+    },
+    "EXPIRING": {
+        "means": "the entry is time-scoped — a progress tick or event-scoped coordination",
+        "fix": "settled/closed -> stale confirm <pair_id> (expires now); still alive -> "
+               "stale ttl <pair_id> [--days 7]",
+        "dismiss_only_if": "the fact turned out to be durable rather than event-scoped",
+    },
+    "SUPERSEDED": {
+        "means": "a newer entry appears to replace this one's answer",
+        "fix": "stale confirm <pair_id> (retires the old entry, pointing at the new one)",
+        "partial": "the new entry ADDS detail rather than replacing -> "
+                   "stale merge <pair_id> '<consolidated text>'",
+        "dismiss_only_if": "both entries remain independently true (different scope, "
+                           "config or time window)",
+    },
+    "DUPLICATE": {
+        "means": "a newer entry states the same fact as this one",
+        "fix": "stale confirm <pair_id> (retires the redundant older entry)",
+        "dismiss_only_if": "the entries differ in a way that matters for retrieval",
+    },
+    "TTL_EXPIRED": {
+        "means": "this entry's TTL deadline fired and it has already left the search pool",
+        "fix": "accept the expiry -> stale confirm <pair_id>",
+        "partial": "still needed -> stale ttl <pair_id> [--days 7] (renews, re-enters the pool)",
+        "dismiss_only_if": "never — a fired TTL is a fact, not a judgment; confirm or renew it",
+    },
+}
+
+
+def _flag_suggestion(pair: dict[str, Any]) -> dict[str, Any]:
+    """Reviewer guidance for one suspicion, keyed by its verdict.
+
+    Returns the judged finding plus the disposition that resolves it, so a
+    reviewer never has to reconstruct the handling rule from the kind alone.
+    """
+    kind = pair.get("kind") or "displacement"
+    verdict = str(pair.get("verdict") or "")
+    if kind == "ttl_expiry":
+        verdict = "TTL_EXPIRED"
+    elif kind == "necessity":
+        # Pre-v5 backlog marks are finer-grained than the two disposition
+        # families; normalize so legacy rows keep getting routed guidance.
+        if verdict in _EXPIRING_VERDICTS:
+            verdict = "EXPIRING"
+        elif verdict in _BORN_UNNECESSARY_VERDICTS:
+            verdict = "BORN_UNNECESSARY"
+    play = _VERDICT_PLAYBOOK.get(verdict)
+    if play is None:
+        play = {
+            "means": f"{kind} suspicion ({verdict or 'unknown verdict'})",
+            "fix": "update <memory_id> '<corrected>' | stale confirm <pair_id>",
+            "dismiss_only_if": "the finding is a false positive",
+        }
+    out: dict[str, Any] = {"verdict": verdict, **play}
+    out["dismiss"] = "stale dismiss <pair_id>"
+    out["warning"] = (
+        "dismissal is PERMANENT for this exact text version — a dismissed flag "
+        "cannot be reopened unless the memory's text changes"
     )
+    return out
 
 
 def _load_open_pair(pair_id: str) -> tuple[Any, dict[str, Any]]:
@@ -1474,6 +1551,10 @@ def review(
             "self_flags": self_flags,
             "ttl_expired": ttl_expired,
             "how_to_dispose": (
+                "every listed pair carries a `suggested` block: what the verdict "
+                "means, the `fix` that resolves it, and `dismiss_only_if` — the "
+                "one condition under which dismissing is right. Read it per pair; "
+                "the summary below is only the ordering. "
                 "self_flags are ordered by disposition priority: safety -> "
                 "correctness -> necessity. "
                 "safety: update <memory_id> '<secret replaced by its location pointer>' "
@@ -1804,6 +1885,107 @@ def list_memories(
     )
 
 
+# Han (CJK) ranges, for the --cjk-only backfill prefilter. Deterministic and
+# free: an entry with no Han character cannot be language-suspect, so the
+# prefilter turns a whole-store language backfill into a handful of LLM calls.
+_HAN_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
+
+
+@app.command("backfill-judge")
+def backfill_judge(
+    kind: str = typer.Option("correctness", "--kind", help="Judgment kind to backfill: correctness, necessity, safety."),
+    cjk_only: bool = typer.Option(False, "--cjk-only", help="Only entries containing Han characters (language backfill; deterministic prefilter)."),
+    before: Optional[str] = typer.Option(None, "--before", help="Only entries created before this ISO date (e.g. the date the judge shipped)."),
+    limit: int = typer.Option(0, "--limit", help="Stop after enqueuing this many (0 = no limit)."),
+    user_id: str = typer.Option(DEFAULT_USER_ID, "--user-id", "-u", help="Scope to user."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be enqueued without enqueuing."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Judge stored entries that never got a judgment of the given kind.
+
+    Judgments are produced at write time, so entries written before a judge
+    shipped carry none, and nothing re-examines them. This enqueues a
+    self-checks-only `stale_check` per unjudged entry and lets the daemon work
+    through them; results surface in the normal review flow.
+
+    Cost is one LLM call per check per entry, so scope it. `--cjk-only` is the
+    cheap path for a LANGUAGE_SUSPECT backfill; `--dry-run` reports the count
+    first. Re-running is safe: already-judged text versions are skipped.
+    """
+    from mem0_local.queue import EventQueue
+    from mem0_local.staleness import pair_store
+
+    store = pair_store()
+    scanned = enqueued = 0
+    skipped_judged = skipped_filtered = 0
+    page, page_size = 0, 200
+    event_ids: list[str] = []
+    queue = EventQueue()
+    session = detect_writer_context().get("session_id")
+
+    while True:
+        # top_k is the cumulative fetch depth the window is sliced out of, not
+        # the window size: passing page_size here makes every page after the
+        # first slice past the end of the fetch and come back empty.
+        start = page * page_size
+        batch = execute(
+            "list",
+            {
+                "filters": {"user_id": user_id},
+                "top_k": start + page_size,
+                "start": start,
+                "end": start + page_size,
+            },
+        )
+        items = normalize_items(batch) or (batch if isinstance(batch, list) else [])
+        if not items:
+            break
+        for item in items:
+            scanned += 1
+            mid = str(item.get("id") or "")
+            text = str(item.get("memory") or item.get("data") or "")
+            if not mid or not text:
+                continue
+            if cjk_only and not _HAN_RE.search(text):
+                skipped_filtered += 1
+                continue
+            if before and str(item.get("created_at") or "") >= before:
+                skipped_filtered += 1
+                continue
+            if store.has_judgment(mid, mid, text, kind=kind):
+                skipped_judged += 1
+                continue
+            if not dry_run:
+                event_ids.append(
+                    queue.enqueue(
+                        "stale_check",
+                        {"new_id": mid, "session_id": session, "self_only": True},
+                    )
+                )
+            enqueued += 1
+            if limit and enqueued >= limit:
+                break
+        if limit and enqueued >= limit:
+            break
+        page += 1
+
+    output(
+        {
+            "kind": kind,
+            "dry_run": dry_run,
+            "scanned": scanned,
+            "enqueued": enqueued,
+            "skipped_already_judged": skipped_judged,
+            "skipped_by_filter": skipped_filtered,
+            "event_ids": event_ids[:20],
+            "note": "watch progress with `event list`; findings appear in `review`",
+        },
+        command="backfill-judge",
+        fmt=chosen_format(output_format, json_flag),
+    )
+
+
 @app.command()
 def get(
     memory_id: str = typer.Argument(..., help="Memory ID to retrieve."),
@@ -1853,6 +2035,28 @@ def update(
         scope=scope_dict(existing.get("user_id"), existing.get("agent_id"), None, existing.get("run_id")),
     ) as span:
         span.result = execute("update", {"memory_id": memory_id, "text": text, "metadata": meta})
+    # Re-judge the rewritten text. Suspicion pairs are keyed on the old text
+    # hash, so an update expires every flag standing against this memory;
+    # without this the corrected text is never checked and a half-finished fix
+    # (e.g. a correctness rewrite that left Chinese narration in place) escapes
+    # review permanently. Self-checks only — the point is to re-examine this
+    # entry, not to re-scan its neighbors. Enqueue failure must never break the
+    # update, which has already been committed and audited above.
+    try:
+        from mem0_local.queue import EventQueue
+
+        stale_event = EventQueue().enqueue(
+            "stale_check",
+            {
+                "new_id": str(memory_id),
+                "session_id": detect_writer_context().get("session_id"),
+                "self_only": True,
+            },
+        )
+        if isinstance(span.result, dict):
+            span.result["stale_check_event"] = stale_event
+    except Exception:  # noqa: BLE001
+        pass
     output(span.result, command="update", fmt=chosen_format(output_format, json_flag))
 
 

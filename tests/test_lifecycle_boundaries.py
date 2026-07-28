@@ -256,11 +256,41 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
         from mem0_local.cli import _flag_suggestion
 
         for verdict in ("PROGRESS_TICK", "EVENT_SCOPED", "EXPIRING"):
-            self.assertIn("stale ttl", _flag_suggestion({"kind": "necessity", "verdict": verdict}))
+            play = _flag_suggestion({"kind": "necessity", "verdict": verdict})
+            self.assertEqual(play["verdict"], "EXPIRING")
+            self.assertIn("stale ttl", play["fix"])
         for verdict in ("ACTIVITY_LOG", "COMMIT_RECORD", "REPO_FACT", "BORN_UNNECESSARY"):
-            self.assertIn("born-unnecessary", _flag_suggestion({"kind": "necessity", "verdict": verdict}))
-        self.assertIn("renews", _flag_suggestion({"kind": "ttl_expiry", "verdict": "TTL_EXPIRED"}))
-        self.assertIn("update", _flag_suggestion({"kind": "correctness", "verdict": "TIMESTAMP_SUSPECT"}))
+            play = _flag_suggestion({"kind": "necessity", "verdict": verdict})
+            self.assertEqual(play["verdict"], "BORN_UNNECESSARY")
+            self.assertIn("stale confirm", play["fix"])
+        self.assertIn("renews", _flag_suggestion({"kind": "ttl_expiry", "verdict": "TTL_EXPIRED"})["partial"])
+        self.assertIn("update", _flag_suggestion({"kind": "correctness", "verdict": "TIMESTAMP_SUSPECT"})["fix"])
+
+    def test_every_flag_carries_its_verdict_playbook(self) -> None:
+        """Review must state what a finding means and the one condition under
+        which dismissing it is right -- dismissal is permanent per text version,
+        so 'acknowledge and move on' has to be visibly the wrong door."""
+        from mem0_local.cli import _flag_suggestion
+
+        for kind, verdict in (
+            ("correctness", "LANGUAGE_SUSPECT"),
+            ("correctness", "ATTRIBUTION_SUSPECT"),
+            ("safety", "SECRET_SUSPECT"),
+            ("necessity", "BORN_UNNECESSARY"),
+            ("displacement", "SUPERSEDED"),
+            ("displacement", "DUPLICATE"),
+            ("displacement", "SOME_FUTURE_VERDICT"),
+        ):
+            play = _flag_suggestion({"kind": kind, "verdict": verdict})
+            for field in ("means", "fix", "dismiss_only_if", "dismiss", "warning"):
+                self.assertTrue(play.get(field), f"{kind}/{verdict} missing {field}")
+            self.assertIn("PERMANENT", play["warning"])
+
+        lang = _flag_suggestion({"kind": "correctness", "verdict": "LANGUAGE_SUSPECT"})
+        self.assertIn("English", lang["fix"])
+        # The audit failure mode: entries dismissed because their facts were
+        # right, not because their narration was already English.
+        self.assertIn("not merely because the facts are correct", lang["dismiss_only_if"])
 
 
 # ---------------------------------------------------------------------------
