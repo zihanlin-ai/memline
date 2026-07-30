@@ -183,7 +183,9 @@ payload hash. These manifests are intended to be git-managed human audit logs.
 
 Historical ledger imports and metadata backfills use the same manifest
 directory with separate file names such as `ledger-YYYY-MM.jsonl` and
-`metadata-backfill-*.jsonl`.
+`metadata-backfill-*.jsonl`. Ledger imports use one synthetic OpenCode
+writer/session scope while retaining their ledger provenance fields; audited
+identity migrations use `ledger-identity-migration-*.jsonl`.
 
 ## Agent Integration
 

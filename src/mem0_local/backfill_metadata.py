@@ -13,6 +13,8 @@ from qdrant_client import QdrantClient
 
 from mem0_local.config import (
     COLLECTION,
+    LEDGER_IMPORT_AGENT_ID,
+    LEDGER_IMPORT_SESSION_ID,
     MEMORY_ROOT,
     MEMORY_SCHEMA_VERSION,
     QDRANT_DIR,
@@ -50,7 +52,9 @@ def classify_origin(payload: dict[str, Any]) -> str:
     return "legacy_live_agent"
 
 
-def default_agent_id(payload: dict[str, Any]) -> str:
+def default_agent_id(payload: dict[str, Any], origin: str) -> str:
+    if origin == "ledger_import":
+        return LEDGER_IMPORT_AGENT_ID
     return (
         str(payload.get("agent_id") or "").strip()
         or str(payload.get("source") or "").strip()
@@ -63,19 +67,13 @@ def default_session_id(payload: dict[str, Any], origin: str, agent_id: str) -> s
     if existing:
         return existing
     if origin == "ledger_import":
-        import_batch = str(payload.get("import_batch") or "").strip()
-        if import_batch:
-            return import_batch
-        ledger_month = str(payload.get("ledger_month") or "").strip()
-        if ledger_month:
-            return f"ledger-{ledger_month}"
-        return "legacy-ledger-import"
+        return LEDGER_IMPORT_SESSION_ID
     return f"legacy-{agent_id}"
 
 
 def desired_patch(payload: dict[str, Any], *, backfilled_at: str) -> dict[str, Any]:
     origin = str(payload.get("origin") or "").strip() or classify_origin(payload)
-    agent_id = default_agent_id(payload)
+    agent_id = default_agent_id(payload, origin)
     session_id = default_session_id(payload, origin, agent_id)
 
     desired = {

@@ -168,6 +168,12 @@ def llm_endpoint_specs() -> list[dict[str, Any]]:
 
 MANUAL_SOURCE = str(value("metadata", "manual_source", "manual"))
 MANUAL_SESSION = str(value("metadata", "manual_session", "manual-session"))
+# Imported ledgers share one synthetic OpenCode writer/session identity. Their
+# month/date/file remain separate provenance fields rather than scope IDs.
+LEDGER_IMPORT_AGENT_ID = str(value("metadata", "ledger_import_agent_id", "opencode"))
+LEDGER_IMPORT_SESSION_ID = str(
+    value("metadata", "ledger_import_session_id", "ses_b8d2ac181351976b11df6be5bb")
+)
 
 # Optional qdrant server mode: set [vector_store] host/port to use a running
 # qdrant server instead of the embedded local-path store.

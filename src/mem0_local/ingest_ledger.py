@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from mem0_local.config import (
+    LEDGER_IMPORT_AGENT_ID,
+    LEDGER_IMPORT_SESSION_ID,
     LOCAL_TZ,
     MEMORY_ROOT,
     MEMORY_SCHEMA_VERSION,
@@ -285,8 +287,8 @@ def main() -> None:
     parser.add_argument("paths", nargs="+", help="Markdown files or glob patterns")
     parser.add_argument("--month", default="", help="Optional YYYY-MM metadata/import batch label")
     parser.add_argument("--user-id", default="workspace")
-    parser.add_argument("--agent-id", default="ledger-importer")
-    parser.add_argument("--run-id", default="")
+    parser.add_argument("--agent-id", default=LEDGER_IMPORT_AGENT_ID)
+    parser.add_argument("--run-id", default=LEDGER_IMPORT_SESSION_ID)
     parser.add_argument("--mode", choices=["line", "entry"], default="line")
     parser.add_argument(
         "--manifest-dir",
@@ -339,7 +341,7 @@ def main() -> None:
     require_llm_api_key()
     client = get_client()
     imported_at = datetime.now(timezone.utc).isoformat()
-    run_id = args.run_id or f"ledger-{month}"
+    run_id = args.run_id
     for index, (sequence, chunk) in enumerate(pending, 1):
         metadata = chunk.metadata
         timestamp, timestamp_source = ledger_timestamp(chunk, index)
