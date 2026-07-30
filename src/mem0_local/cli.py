@@ -1889,6 +1889,22 @@ def get(
     output(result, command="get", fmt=chosen_format(output_format, json_flag))
 
 
+@app.command("wiki-check")
+def wiki_check(
+    wiki_root: Optional[Path] = typer.Argument(
+        None, help="Wiki root directory (contains content/). Default: <workspace>/.agent-memory/wiki."
+    ),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Check wiki provenance and internal links against current memory/source state (read-only)."""
+    from mem0_local.wiki_check import run_check
+
+    root = wiki_root or (ROOT / ".agent-memory" / "wiki")
+    report = run_check(root, execute)
+    output(report, command="wiki-check", fmt=chosen_format(output_format, json_flag))
+
+
 @app.command()
 def update(
     memory_id: str = typer.Argument(..., help="Memory ID to update."),

@@ -16,6 +16,7 @@ dependencies = [
   "click",
   "fastembed",
   "python-dotenv",
+  "pyyaml",
   "qdrant-client",
   "rich",
   "typer",
