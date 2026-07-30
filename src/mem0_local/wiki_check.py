@@ -89,8 +89,9 @@ def _check_memory_ref(
         flags.append({"kind": "memory_content_changed", "detail": "text hash mismatch"})
     try:
         head = execute("resolve_head", {"memory_id": memory_id})
-    except Exception:  # noqa: BLE001 - head resolution is best-effort
-        head = None
+    except Exception as exc:  # noqa: BLE001 - report, don't silently pass
+        flags.append({"kind": "memory_status_unverified", "detail": str(exc)})
+        return flags
     head_ids = _head_ids(head)
     if head_ids and memory_id not in head_ids:
         flags.append(
@@ -100,6 +101,8 @@ def _check_memory_ref(
 
 
 def _head_ids(head: Any) -> set[str]:
+    """Collect candidate head memory ids from any reasonable payload shape,
+    including ``{"heads": ["<id>", ...]}`` where list items are bare strings."""
     ids: set[str] = set()
     if isinstance(head, dict):
         for key in ("id", "memory_id"):
@@ -110,7 +113,10 @@ def _head_ids(head: Any) -> set[str]:
                 ids |= _head_ids(value)
     elif isinstance(head, list):
         for item in head:
-            ids |= _head_ids(item)
+            if isinstance(item, str):
+                ids.add(item)
+            else:
+                ids |= _head_ids(item)
     return ids
 
 
@@ -158,15 +164,17 @@ def run_check(wiki_root: Path, execute: ExecuteFn) -> dict[str, Any]:
         markdown = page.read_text(encoding="utf-8")
         front = parse_frontmatter(markdown)
         sources = front.get("sources")
-        if page.name != "README.md" and not isinstance(sources, list):
+        if page.name != "README.md" and not (isinstance(sources, list) and sources):
             flags.append({"page": rel, "kind": "missing_provenance", "detail": ""})
-            sources = []
+            sources = sources if isinstance(sources, list) else []
         for entry in sources or []:
             if not isinstance(entry, dict) or not isinstance(entry.get("ref"), str):
                 flags.append({"page": rel, "kind": "malformed_source_entry", "detail": str(entry)})
                 continue
             ref = entry["ref"]
             recorded_hash = entry.get("content_hash")
+            if not recorded_hash:
+                flags.append({"page": rel, "ref": ref, "kind": "missing_content_hash", "detail": ""})
             if ref.startswith("mem:"):
                 found = _check_memory_ref(execute, ref[len("mem:"):], recorded_hash)
             elif ref.startswith("sources/"):
