@@ -1889,6 +1889,87 @@ def get(
     output(result, command="get", fmt=chosen_format(output_format, json_flag))
 
 
+@app.command("wiki-batch")
+def wiki_batch(
+    out: Optional[Path] = typer.Option(None, "--out", help="Write the batch plan here."),
+    max_memories: int = typer.Option(275, "--max-memories", help="Ceiling for one batch."),
+    pack_threshold: int = typer.Option(
+        60, "--pack-threshold", help="At or above this size a session travels alone."
+    ),
+    user_id: str = typer.Option(DEFAULT_USER_ID, "--user-id", "-u", help="Filter by user."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Plan how the store is cut into batches for wiki topic profiling."""
+    from mem0_local.wiki_batch import plan_batches, plan_summary
+
+    memories: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        filters = filters_from_scope(user_id, None, None, None, {})
+        got = execute("list", {"filters": filters or None, "top_k": page * 500,
+                               "start": (page - 1) * 500, "end": page * 500})
+        items = got if isinstance(got, list) else (got.get("results") or got.get("memories") or [])
+        memories.extend(items)
+        if len(items) < 500:
+            break
+        page += 1
+    batches = plan_batches(memories, max_memories=max_memories, pack_threshold=pack_threshold)
+    if out:
+        out.write_text(json.dumps(batches, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary = {**plan_summary(batches), "plan_path": str(out) if out else None,
+               "memories_read": len(memories)}
+    output(summary if out else {"summary": summary, "batches": batches},
+           command="wiki-batch", fmt=chosen_format(output_format, json_flag))
+
+
+@app.command("wiki-profile")
+def wiki_profile(
+    plan: Path = typer.Argument(..., help="Batch plan from wiki-batch."),
+    prompt: Path = typer.Option(..., "--prompt", help="Prompt template file (owned by the wiki skill)."),
+    out_dir: Path = typer.Option(..., "--out-dir", help="Directory for raw profiles, one file per batch."),
+    kinds: str = typer.Option("session,pack,session-part", "--kinds",
+                              help="Batch kinds to profile. Ledger chunks are handled by local agents."),
+    concurrency: int = typer.Option(2, "--concurrency", help="Parallel calls; keep low, the relay queues."),
+    max_tokens: int = typer.Option(32000, "--max-tokens"),
+    source_dir: Optional[Path] = typer.Option(
+        None, "--source-dir", help="Profile these Markdown files instead of memory batches."
+    ),
+    user_id: str = typer.Option(DEFAULT_USER_ID, "--user-id", "-u"),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Profile batches (or source documents) into raw per-batch topic profiles."""
+    from mem0_local.wiki_profile import profile_batches, profile_sources
+
+    template = prompt.read_text(encoding="utf-8")
+    if source_dir:
+        summary = profile_sources(source_dir, template, out_dir, max_tokens=max_tokens,
+                                  concurrency=concurrency, log=lambda m: console.print(m))
+    else:
+        batches = json.loads(plan.read_text(encoding="utf-8"))
+        wanted = [mid for b in batches if b["kind"] in tuple(kinds.split(","))
+                  for mid in b["memory_ids"]]
+        texts: dict[str, Any] = {}
+        page = 1
+        while True:
+            filters = filters_from_scope(user_id, None, None, None, {})
+            got = execute("list", {"filters": filters or None, "top_k": page * 500,
+                                   "start": (page - 1) * 500, "end": page * 500})
+            items = got if isinstance(got, list) else (got.get("results") or got.get("memories") or [])
+            texts.update({m["id"]: m for m in items})
+            if len(items) < 500:
+                break
+            page += 1
+        missing = [mid for mid in wanted if mid not in texts]
+        if missing:
+            console.print(f"[yellow]{len(missing)} planned memories no longer in the store[/yellow]")
+        summary = profile_batches(batches, texts, template, out_dir,
+                                  kinds=tuple(kinds.split(",")), concurrency=concurrency,
+                                  max_tokens=max_tokens, log=lambda m: console.print(m))
+    output(summary, command="wiki-profile", fmt=chosen_format(output_format, json_flag))
+
+
 @app.command("bundle")
 def bundle_command(
     memory_ids: list[str] = typer.Argument(None, help="Memory IDs to bundle."),
