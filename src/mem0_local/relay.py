@@ -44,11 +44,16 @@ class CallResult:
     seconds: float
     usage: dict[str, Any] = field(default_factory=dict)
     finish_reason: str | None = None
+    # Why the endpoints before this one were not used. A fallback that
+    # succeeds is still a primary that failed, and the caller has to be able
+    # to see that: silence here reads as "the primary was fine".
+    earlier_failures: list[str] = field(default_factory=list)
 
     @property
     def provenance(self) -> dict[str, Any]:
         return {"endpoint": self.endpoint, "model": self.model, "attempt": self.attempt,
-                "seconds": round(self.seconds), "usage": self.usage}
+                "seconds": round(self.seconds), "usage": self.usage,
+                "earlier_failures": self.earlier_failures}
 
 
 def _stream_once(endpoint: Endpoint, prompt: str, max_tokens: int, timeout: float) -> tuple[str, dict, str | None]:
@@ -91,7 +96,7 @@ def call_json(
     profile: str | None = "wiki",
     endpoints: list[Endpoint] | None = None,
     max_tokens: int = 64000,
-    attempts_per_endpoint: int = 2,
+    attempts_per_endpoint: int = 4,
     timeout: float = 2400.0,
     backoff: float = 30.0,
 ) -> tuple[Any, CallResult]:
@@ -103,6 +108,10 @@ def call_json(
 
     ``profile`` names the config section to read endpoints from, so long
     structured work can run on a different model from mem0's own judges.
+
+    The primary is retried several times before the fallback is reached: this
+    path drops connections often enough that one flake would otherwise move
+    the work — and its cost — to a metered vendor for no reason.
     """
     # The credential file has to be loaded even when nothing else in this
     # process touched the store: a CLI that reads its data through the daemon
@@ -124,7 +133,8 @@ def call_json(
                 continue
             result = CallResult(text=text, endpoint=endpoint.name, model=endpoint.model,
                                 attempt=attempt, seconds=time.time() - started,
-                                usage=usage, finish_reason=finish)
+                                usage=usage, finish_reason=finish,
+                                earlier_failures=list(errors))
             if finish == "length":
                 errors.append(f"{endpoint.name} attempt {attempt}: truncated at {max_tokens} tokens")
                 continue
