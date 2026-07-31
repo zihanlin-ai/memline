@@ -78,3 +78,33 @@ class VerifyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AbbreviationTest(unittest.TestCase):
+    """A shortened id is a formatting slip; an invented one is not."""
+
+    def report(self, body):
+        return verify(draft(body), BUNDLE)
+
+    def test_an_unambiguous_short_id_is_repaired_not_condemned(self):
+        r = self.report("claim.^[mem:aaaa1111]")
+        self.assertEqual(r["abbreviated_citations"],
+                         {"mem:aaaa1111": "mem:aaaa1111-2222-3333-4444-555566667777"})
+        self.assertEqual([f["kind"] for f in r["findings"]], ["citation_abbreviated"])
+
+    def test_a_repaired_citation_counts_towards_coverage(self):
+        self.assertGreater(self.report("claim.^[mem:aaaa1111]")["coverage"], 0)
+
+    def test_a_repaired_citation_of_superseded_evidence_still_surfaces(self):
+        self.assertEqual(self.report("was believed.^[mem:bbbb1111]")["cited_superseded"],
+                         ["mem:bbbb1111-2222-3333-4444-555566667777"])
+
+    def test_an_id_that_matches_nothing_is_still_a_fabrication(self):
+        kinds = [f["kind"] for f in self.report("claim.^[mem:99999999]")["findings"]]
+        self.assertIn("citation_not_in_bundle", kinds)
+
+    def test_a_full_length_id_off_by_one_character_is_not_repaired(self):
+        # The dangerous case: it looks entirely legitimate and is not.
+        kinds = [f["kind"] for f in
+                 self.report("claim.^[mem:aaaa1111-2222-3333-4444-555566667778]")["findings"]]
+        self.assertEqual(kinds, ["citation_not_in_bundle"])

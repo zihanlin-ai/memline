@@ -66,7 +66,10 @@ quote a retracted number as if it stood.
 
 **Every load-bearing claim carries a citation** immediately after the sentence
 it supports: `^[mem:<id>]` for a memory, `^[sources/<file>#<heading>]` for a
-document section. Numbers, versions, causal links and conclusions are all
+document section. Copy the id **in full, exactly as it appears in the
+material** — all 36 characters of a uuid. Do not shorten it, do not retype it
+from memory, and never write an id you have not copied: a citation that looks
+plausible and resolves to nothing is worse than no citation at all. Numbers, versions, causal links and conclusions are all
 load-bearing. A sentence you cannot cite is a sentence to delete.
 
 **Sanitize.** Formal content carries no internal operational identifiers that
