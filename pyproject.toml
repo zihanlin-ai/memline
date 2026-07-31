@@ -36,6 +36,11 @@ mem0-local-backfill-metadata = "mem0_local.backfill_metadata:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Prompts are part of the program: the schema a caller parses is defined by
+# the prompt that asked for it, so they ship together.
+mem0_local = ["prompts/*.md"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
