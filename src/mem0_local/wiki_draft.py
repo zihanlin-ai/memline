@@ -6,6 +6,13 @@ module has to guarantee:
 * **The bundle is the whole world the writer sees.** Everything the article may
   claim has to be in it, and nothing that must not leave may be. So the bundle
   is assembled and sanitized here rather than by the caller.
+* **Nothing unreviewed leaves.** The sanitizer replaces what it can recognize
+  by shape; a personal name it cannot. Those land in ``review_flags``, and a
+  flag nobody has ruled on blocks the call — the first run of this pipeline
+  sent two real names and a set of addresses to a third party because the
+  flags were merely *reported*. A ruling is durable: values are either
+  redacted from then on or recorded as false positives, so review is paid once
+  rather than every run.
 * **Retired evidence is surfaced before the call, not after.** A topic accepted
   weeks ago can rest on a memory that has since been superseded or deleted; the
   draft must narrate the first as history and must not silently absorb the loss
@@ -28,6 +35,28 @@ from mem0_local.relay import call_json
 
 REQUIRED_FIELDS = ("title", "article_markdown", "claims", "open_questions",
                    "unused_evidence_refs")
+
+# Kinds that name a person or reach one. A shape the sanitizer cannot judge
+# and a human has not judged either must never be the thing that leaves.
+BLOCKING_FLAG_KINDS = ("cjk_personal_name", "email")
+
+
+class UnreviewedMaterialError(RuntimeError):
+    """Sensitive-looking values nobody has ruled on. Rule on them, then retry."""
+
+
+def load_review(path: Path | None) -> tuple[dict[str, str], set[str]]:
+    """``(redactions, cleared)`` from a review file.
+
+    ``redact`` maps a value to the placeholder category it becomes;
+    ``cleared`` lists values a human looked at and judged harmless. Both are
+    kept because "we decided this is fine" is as much a decision as "replace
+    this", and losing it means re-deciding every run.
+    """
+    if not path or not path.is_file():
+        return {}, set()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return dict(data.get("redact") or {}), set(data.get("cleared") or ())
 
 
 def render(template: str, topic: dict[str, Any], material: str) -> str:
@@ -64,6 +93,7 @@ def draft_topic(
     out_dir: Path,
     *,
     wiki_root: Path,
+    review_file: Path | None = None,
     max_tokens: int = 64000,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
@@ -71,7 +101,18 @@ def draft_topic(
     out_dir.mkdir(parents=True, exist_ok=True)
     slug = topic.get("topic_key") or topic["id"]
     refs = [e["ref"] for e in topic.get("evidence", [])]
-    bundle, mapping = build_bundle(refs, execute, wiki_root=wiki_root)
+    redactions, cleared = load_review(review_file)
+    bundle, mapping = build_bundle(refs, execute, wiki_root=wiki_root,
+                                   redactions=redactions, cleared=cleared)
+
+    blocking = sorted({f["value"] for f in bundle["sanitization"]["review_flags"]
+                       if f["kind"] in BLOCKING_FLAG_KINDS})
+    if blocking:
+        raise UnreviewedMaterialError(
+            f"{slug}: {len(blocking)} value(s) nobody has ruled on. Add each to "
+            f"`redact` or `cleared` in {review_file or '--review-file'} and retry: "
+            + ", ".join(repr(v) for v in blocking[:12])
+            + (" …" if len(blocking) > 12 else ""))
 
     superseded = [m["id"] for m in bundle["memories"] if m.get("superseded")]
     unresolved = bundle["unresolved"]

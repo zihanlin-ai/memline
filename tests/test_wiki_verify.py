@@ -108,3 +108,15 @@ class AbbreviationTest(unittest.TestCase):
         kinds = [f["kind"] for f in
                  self.report("claim.^[mem:aaaa1111-2222-3333-4444-555566667778]")["findings"]]
         self.assertEqual(kinds, ["citation_not_in_bundle"])
+
+
+class NumberNoiseTest(unittest.TestCase):
+    def test_digits_inside_a_citation_are_not_read_as_numbers(self):
+        body = "a claim.^[mem:aaaa1111-2222-3333-4444-555566667777]"
+        kinds = [f["kind"] for f in verify(draft(body), BUNDLE)["findings"]]
+        self.assertNotIn("number_not_in_material", kinds)
+
+    def test_a_real_number_beside_a_citation_is_still_checked(self):
+        body = "throughput hit 25900.^[mem:aaaa1111-2222-3333-4444-555566667777]"
+        kinds = [f["kind"] for f in verify(draft(body), BUNDLE)["findings"]]
+        self.assertIn("number_not_in_material", kinds)

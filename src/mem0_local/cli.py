@@ -2061,6 +2061,10 @@ def wiki_draft(
     out_dir: Path = typer.Option(..., "--out-dir", help="Where drafts and their bundles go."),
     wiki_root: Path = typer.Option(Path("."), "--wiki-root", help="Wiki root, for sources/."),
     only: Optional[str] = typer.Option(None, "--only", help="Draft just this topic_key or id."),
+    review_file: Optional[Path] = typer.Option(
+        None, "--review-file",
+        help="Rulings on sensitive-looking values: {\"redact\": {value: category}, \"cleared\": [...]}. "
+             "An unruled personal name or address blocks the call."),
     prompt: Optional[Path] = typer.Option(None, "--prompt", help="Override the packaged prompt."),
     max_tokens: int = typer.Option(64000, "--max-tokens"),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
@@ -2083,7 +2087,8 @@ def wiki_draft(
             continue
         try:
             done.append(draft_topic(topic, execute, template, out_dir, wiki_root=wiki_root,
-                                    max_tokens=max_tokens, log=lambda m: console.print(m)))
+                                    review_file=review_file, max_tokens=max_tokens,
+                                    log=lambda m: console.print(m)))
         except Exception as exc:  # noqa: BLE001 - one bad topic must not stop the queue
             console.print(f"[red]{topic.get('topic_key')}: {exc}[/red]")
             failed.append({"topic_key": topic.get("topic_key"), "error": str(exc)})

@@ -59,11 +59,18 @@ def sha256_text(text: str) -> str:
 
 
 class Sanitizer:
-    """Stable placeholder substitution shared across a whole bundle."""
+    """Stable placeholder substitution shared across a whole bundle.
 
-    def __init__(self) -> None:
+    ``extra`` holds values a human ruled must be replaced but no pattern can
+    find — personal names above all. They are applied before the shape rules,
+    because a name inside a path has to lose the name before the path rule
+    decides what is left.
+    """
+
+    def __init__(self, extra: dict[str, str] | None = None) -> None:
         self._assigned: dict[tuple[str, str], str] = {}
         self._counters: dict[str, int] = {}
+        self._extra = dict(extra or {})
 
     def _placeholder(self, category: str, value: str) -> str:
         key = (category, value)
@@ -73,6 +80,9 @@ class Sanitizer:
         return self._assigned[key]
 
     def scrub(self, text: str) -> str:
+        for value, category in self._extra.items():
+            if value in text:
+                text = text.replace(value, self._placeholder(category, value))
         for category, pattern in SANITIZE_RULES:
             text = re.sub(pattern, lambda m: self._placeholder(category, m.group(0)), text)
         return text
@@ -87,13 +97,22 @@ class Sanitizer:
         return dict(self._counters)
 
 
-def review_flags(texts: dict[str, str]) -> list[dict[str, str]]:
-    """Sensitive-looking shapes this module refuses to guess at."""
+def review_flags(texts: dict[str, str], reviewed: set[str] | None = None
+                 ) -> list[dict[str, str]]:
+    """Sensitive-looking shapes this module refuses to guess at.
+
+    ``reviewed`` holds values a human has already ruled on — either cleared as
+    a false positive or added to the redaction list. They stop being flagged,
+    so the list that remains is only what nobody has looked at yet and a
+    caller can meaningfully refuse to send on it.
+    """
+    reviewed = reviewed or set()
     flags: list[dict[str, str]] = []
     for memory_id, text in texts.items():
         for kind, pattern in REVIEW_PATTERNS:
             for match in dict.fromkeys(re.findall(pattern, text)):
-                flags.append({"memory_id": memory_id, "kind": kind, "value": match})
+                if match not in reviewed:
+                    flags.append({"memory_id": memory_id, "kind": kind, "value": match})
     return flags
 
 
@@ -198,6 +217,8 @@ def build_bundle(
     *,
     sanitize: bool = True,
     wiki_root: Path | None = None,
+    redactions: dict[str, str] | None = None,
+    cleared: set[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Return ``(bundle, placeholder_mapping)``. The mapping stays local.
 
@@ -217,9 +238,10 @@ def build_bundle(
     sources = [_resolve_source(wiki_root, ref) for ref in source_refs] if wiki_root else []
     sources_ok = [s for s in sources if "error" not in s]
 
+    reviewed = set(cleared or ()) | set(redactions or {})
     flags = review_flags({entry["id"]: entry["text"] for entry in ok}
-                         | {s["ref"]: s["text"] for s in sources_ok})
-    sanitizer = Sanitizer()
+                         | {s["ref"]: s["text"] for s in sources_ok}, reviewed)
+    sanitizer = Sanitizer(redactions)
     if sanitize:
         for entry in ok:
             entry["text"] = sanitizer.scrub(entry["text"])

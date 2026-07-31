@@ -92,9 +92,12 @@ def verify(draft_markdown: str, bundle: dict[str, Any], claims: dict[str, Any] |
         for value in dict.fromkeys(pattern.findall(draft_markdown)):
             findings.append({"kind": f"redaction_lost_{kind}", "detail": value})
 
+    # Citations are stripped before numbers are read: a uuid is full of digit
+    # runs, and checking them buries the real findings in hex fragments.
+    prose = CITATION.sub(" ", draft_markdown)
     # A number the article states that appears nowhere in its material is
     # either a typo or an invention; both need a human before publication.
-    unsupported = [n for n in dict.fromkeys(TRACEABLE_NUMBER.findall(draft_markdown))
+    unsupported = [n for n in dict.fromkeys(TRACEABLE_NUMBER.findall(prose))
                    if len(n.replace(",", "").replace(".", "")) >= 3
                    and n not in corpus and n.replace(",", "") not in corpus]
     for number in unsupported[:40]:
