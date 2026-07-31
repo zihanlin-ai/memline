@@ -1,9 +1,12 @@
 """Run one profiling pass over a batch plan and keep everything it produced.
 
-What a profile *says* is a wiki question, so the prompt lives with the wiki
-skill and arrives here as a template. What this module owns is the mechanical
-part, and specifically the parts that are easy to get wrong once and then never
-notice:
+The prompt and the profile schema are one contract — a caller that parses
+`threads[].evidence_ids` only gets them because the prompt asked for them — so
+both live in this package and change together. What varies per run, and what
+judgement to apply to the result, belongs to the wiki skill instead.
+
+The mechanical parts this module owns are the ones that are easy to get wrong
+once and then never notice:
 
 * **The material is sanitized before it leaves.** Profiling sends memory text to
   a model outside this machine; internal addresses and account ids must be
@@ -34,6 +37,18 @@ from mem0_local.bundle import Sanitizer, review_flags
 from mem0_local.relay import RefusedError, call_json
 
 DEFAULT_CONCURRENCY = 2
+
+PROMPT_DIR = Path(__file__).parent / "prompts"
+
+
+def default_prompt(name: str) -> str:
+    """A prompt shipped with this package.
+
+    Prompts live here rather than with the skill because they are part of the
+    program's contract: the profile schema the caller parses is defined by the
+    prompt that asked for it, and the two have to change together.
+    """
+    return (PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8")
 
 
 def render(template: str, batch: dict[str, Any], material: str) -> str:
@@ -85,6 +100,7 @@ def profile_batches(
     """Profile every batch of the given kinds. Resumable; returns a summary."""
     out_dir.mkdir(parents=True, exist_ok=True)
     sanitizer = Sanitizer()
+    failures: list[dict[str, Any]] = []
     todo = [b for b in plan if b["kind"] in kinds
             and not (out_dir / f"{b['batch_id']}.json").exists()]
     skipped = sum(1 for b in plan if b["kind"] in kinds) - len(todo)
@@ -100,6 +116,10 @@ def profile_batches(
             record = {"batch_id": batch["batch_id"], "status": "refused", "detail": str(exc)}
         except Exception as exc:  # noqa: BLE001 - a failed batch must not stop the pass
             log(f"{batch['batch_id']}: FAILED {exc}")
+            # Deliberately not written as the batch's artifact: a rerun must
+            # retry a failure, and an artifact is what tells it to skip.
+            failures.append({"batch_id": batch["batch_id"], "status": "failed",
+                             "detail": str(exc)})
             return {"batch_id": batch["batch_id"], "status": "failed", "detail": str(exc)}
         else:
             record = {"batch_id": batch["batch_id"], "status": "ok", "profile": data,
@@ -114,6 +134,9 @@ def profile_batches(
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         results = list(pool.map(run, todo))
 
+    if failures:
+        (out_dir / "_failures.json").write_text(
+            json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "_sanitization.json").write_text(json.dumps({
         "placeholder_counts": sanitizer.counts,
         "review_flags": review_flags({mid: (rec.get("memory") or "")

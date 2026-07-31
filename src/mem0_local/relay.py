@@ -87,6 +87,7 @@ def _looks_refused(exc: Exception) -> bool:
 def call_json(
     prompt: str,
     *,
+    profile: str | None = "wiki",
     endpoints: list[Endpoint] | None = None,
     max_tokens: int = 32000,
     attempts_per_endpoint: int = 2,
@@ -98,8 +99,11 @@ def call_json(
     Tries each endpoint in order. A transport failure, a truncation, or an
     unparseable answer costs one attempt; a refusal ends the whole call, since
     every endpoint of the same vendor will refuse the same content.
+
+    ``profile`` names the config section to read endpoints from, so long
+    structured work can run on a different model from mem0's own judges.
     """
-    endpoints = endpoints or [Endpoint(**spec) for spec in llm_endpoint_specs()]
+    endpoints = endpoints or [Endpoint(**spec) for spec in llm_endpoint_specs(profile)]
     errors: list[str] = []
     for endpoint in endpoints:
         for attempt in range(1, attempts_per_endpoint + 1):

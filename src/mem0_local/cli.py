@@ -1925,8 +1925,9 @@ def wiki_batch(
 
 @app.command("wiki-profile")
 def wiki_profile(
-    plan: Path = typer.Argument(..., help="Batch plan from wiki-batch."),
-    prompt: Path = typer.Option(..., "--prompt", help="Prompt template file (owned by the wiki skill)."),
+    plan: Optional[Path] = typer.Argument(None, help="Batch plan from wiki-batch."),
+    prompt: Optional[Path] = typer.Option(
+        None, "--prompt", help="Override the packaged prompt template."),
     out_dir: Path = typer.Option(..., "--out-dir", help="Directory for raw profiles, one file per batch."),
     kinds: str = typer.Option("session,pack,session-part", "--kinds",
                               help="Batch kinds to profile. Ledger chunks are handled by local agents."),
@@ -1940,9 +1941,10 @@ def wiki_profile(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Profile batches (or source documents) into raw per-batch topic profiles."""
-    from mem0_local.wiki_profile import profile_batches, profile_sources
+    from mem0_local.wiki_profile import default_prompt, profile_batches, profile_sources
 
-    template = prompt.read_text(encoding="utf-8")
+    template = (prompt.read_text(encoding="utf-8") if prompt
+                else default_prompt("wiki-profile-source" if source_dir else "wiki-profile-session"))
     if source_dir:
         summary = profile_sources(source_dir, template, out_dir, max_tokens=max_tokens,
                                   concurrency=concurrency, log=lambda m: console.print(m))
