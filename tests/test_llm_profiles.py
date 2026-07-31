@@ -68,8 +68,6 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual([s["model"] for s in specs][1], "judge-fallback")
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class FallbackVisibilityTest(unittest.TestCase):
@@ -86,3 +84,6 @@ class FallbackVisibilityTest(unittest.TestCase):
         from mem0_local.relay import CallResult
         r = CallResult(text="{}", endpoint="primary", model="m", attempt=1, seconds=1.0)
         self.assertEqual(r.provenance["earlier_failures"], [])
+
+if __name__ == "__main__":
+    unittest.main()
