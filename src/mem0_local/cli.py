@@ -1889,6 +1889,46 @@ def get(
     output(result, command="get", fmt=chosen_format(output_format, json_flag))
 
 
+@app.command("bundle")
+def bundle_command(
+    memory_ids: list[str] = typer.Argument(None, help="Memory IDs to bundle."),
+    ids_file: Optional[Path] = typer.Option(
+        None, "--ids-file", help="File with one memory ID per line (added to any arguments)."
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Write the bundle here (default: stdout)."),
+    mapping_out: Optional[Path] = typer.Option(
+        None, "--mapping-out", help="Write the placeholder->original mapping here. Keep it local."
+    ),
+    no_sanitize: bool = typer.Option(
+        False, "--no-sanitize", help="Skip placeholder substitution. Never for an outbound call."
+    ),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Resolve memories into a sanitized bundle for a call to an external model."""
+    from mem0_local.bundle import build_bundle
+
+    ids = list(memory_ids or [])
+    if ids_file:
+        ids += [line.strip() for line in ids_file.read_text().splitlines() if line.strip()]
+    if not ids:
+        raise typer.BadParameter("no memory ids given")
+    bundle, mapping = build_bundle(ids, execute, sanitize=not no_sanitize)
+    if out:
+        out.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+    if mapping_out:
+        mapping_out.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary = {
+        "memory_count": bundle["memory_count"],
+        "unresolved": len(bundle["unresolved"]),
+        "sanitized": bundle["sanitized"],
+        "placeholder_counts": bundle["sanitization"]["placeholder_counts"],
+        "review_flags": len(bundle["sanitization"]["review_flags"]),
+        "bundle_path": str(out) if out else None,
+    }
+    output(summary if out else bundle, command="bundle", fmt=chosen_format(output_format, json_flag))
+
+
 @app.command("wiki-check")
 def wiki_check(
     wiki_root: Optional[Path] = typer.Argument(
