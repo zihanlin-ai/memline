@@ -2019,6 +2019,38 @@ def bundle_command(
     output(summary if out else bundle, command="bundle", fmt=chosen_format(output_format, json_flag))
 
 
+@app.command("wiki-suggest")
+def wiki_suggest(
+    associations: Path = typer.Argument(..., help="Association decision from the agent."),
+    profile_dir: Path = typer.Option(..., "--profiles", help="Directory of raw profiles."),
+    out: Path = typer.Option(..., "--out", help="Write suggestions.jsonl here."),
+    run: int = typer.Option(1, "--run", help="Run number, used for suggestion ids."),
+    ledger: Optional[Path] = typer.Option(
+        None, "--ledger", help="decisions.md, so rejected topics are not proposed again."
+    ),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Assemble reviewed associations into the suggestion list, resolving evidence."""
+    from mem0_local.wiki_suggest import build_suggestions, load_threads
+
+    def resolve(memory_id: str) -> str | None:
+        try:
+            record = execute("get", {"memory_id": memory_id})
+        except Exception:  # noqa: BLE001 - an id that will not resolve is reported, not raised
+            return None
+        return record.get("memory") if isinstance(record, dict) else None
+
+    topics = json.loads(associations.read_text(encoding="utf-8"))
+    topics = topics.get("topics", topics) if isinstance(topics, dict) else topics
+    suggestions, report = build_suggestions(
+        topics, load_threads(profile_dir), resolve, run=run, ledger=ledger)
+    out.write_text("".join(json.dumps(s, ensure_ascii=False) + "\n" for s in suggestions),
+                   encoding="utf-8")
+    output({**report, "out": str(out)}, command="wiki-suggest",
+           fmt=chosen_format(output_format, json_flag))
+
+
 @app.command("wiki-check")
 def wiki_check(
     wiki_root: Optional[Path] = typer.Argument(
