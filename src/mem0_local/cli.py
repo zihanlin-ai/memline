@@ -1981,10 +1981,12 @@ def wiki_profile(
 
 @app.command("bundle")
 def bundle_command(
-    memory_ids: list[str] = typer.Argument(None, help="Memory IDs to bundle."),
+    memory_ids: list[str] = typer.Argument(None, help="Refs to bundle: memory ids or sources/<path>#<heading>."),
     ids_file: Optional[Path] = typer.Option(
-        None, "--ids-file", help="File with one memory ID per line (added to any arguments)."
+        None, "--ids-file", help="File with one ref per line (added to any arguments)."
     ),
+    wiki_root: Optional[Path] = typer.Option(
+        None, "--wiki-root", help="Wiki root, required to resolve sources/ refs."),
     out: Optional[Path] = typer.Option(None, "--out", help="Write the bundle here (default: stdout)."),
     mapping_out: Optional[Path] = typer.Option(
         None, "--mapping-out", help="Write the placeholder->original mapping here. Keep it local."
@@ -2003,13 +2005,14 @@ def bundle_command(
         ids += [line.strip() for line in ids_file.read_text().splitlines() if line.strip()]
     if not ids:
         raise typer.BadParameter("no memory ids given")
-    bundle, mapping = build_bundle(ids, execute, sanitize=not no_sanitize)
+    bundle, mapping = build_bundle(ids, execute, sanitize=not no_sanitize, wiki_root=wiki_root)
     if out:
         out.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
     if mapping_out:
         mapping_out.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
     summary = {
         "memory_count": bundle["memory_count"],
+        "source_section_count": bundle["source_section_count"],
         "unresolved": len(bundle["unresolved"]),
         "sanitized": bundle["sanitized"],
         "placeholder_counts": bundle["sanitization"]["placeholder_counts"],
@@ -2050,6 +2053,42 @@ def wiki_suggest(
                    encoding="utf-8")
     output({**report, "out": str(out)}, command="wiki-suggest",
            fmt=chosen_format(output_format, json_flag))
+
+
+@app.command("wiki-draft")
+def wiki_draft(
+    topics: Path = typer.Argument(..., help="accepted-topics.jsonl."),
+    out_dir: Path = typer.Option(..., "--out-dir", help="Where drafts and their bundles go."),
+    wiki_root: Path = typer.Option(Path("."), "--wiki-root", help="Wiki root, for sources/."),
+    only: Optional[str] = typer.Option(None, "--only", help="Draft just this topic_key or id."),
+    prompt: Optional[Path] = typer.Option(None, "--prompt", help="Override the packaged prompt."),
+    max_tokens: int = typer.Option(64000, "--max-tokens"),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Draft accepted topics from their evidence on the [llm.wiki] endpoints."""
+    from mem0_local.wiki_draft import draft_topic
+    from mem0_local.wiki_profile import default_prompt
+
+    template = prompt.read_text(encoding="utf-8") if prompt else default_prompt("wiki-draft")
+    queue = [json.loads(line) for line in topics.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if only:
+        queue = [t for t in queue if only in (t.get("topic_key"), t.get("id"))]
+    if not queue:
+        raise typer.BadParameter("no topics selected")
+    done, failed = [], []
+    for topic in queue:
+        if (out_dir / f"{topic.get('topic_key') or topic['id']}.md").exists():
+            console.print(f"{topic.get('topic_key')}: already drafted, skipping")
+            continue
+        try:
+            done.append(draft_topic(topic, execute, template, out_dir, wiki_root=wiki_root,
+                                    max_tokens=max_tokens, log=lambda m: console.print(m)))
+        except Exception as exc:  # noqa: BLE001 - one bad topic must not stop the queue
+            console.print(f"[red]{topic.get('topic_key')}: {exc}[/red]")
+            failed.append({"topic_key": topic.get("topic_key"), "error": str(exc)})
+    output({"drafted": done, "failed": failed, "out_dir": str(out_dir)},
+           command="wiki-draft", fmt=chosen_format(output_format, json_flag))
 
 
 @app.command("wiki-check")

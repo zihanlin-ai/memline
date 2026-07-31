@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 ExecuteFn = Callable[[str, dict[str, Any]], Any]
@@ -96,6 +97,52 @@ def review_flags(texts: dict[str, str]) -> list[dict[str, str]]:
     return flags
 
 
+def read_section(document: Path, heading: str | None) -> str | None:
+    """The text under one Markdown heading, or the whole file when unheaded.
+
+    A source citation points at a section, not a file: an article that cites a
+    dependency matrix should carry the matrix, not the whole runbook it lives
+    in. The heading is matched on its text so the citation survives a change of
+    heading level.
+    """
+    if not document.is_file():
+        return None
+    text = document.read_text(encoding="utf-8")
+    if not heading:
+        return text
+    wanted = heading.strip().lower()
+    lines = text.splitlines()
+    start = None
+    depth = 0
+    for index, line in enumerate(lines):
+        match = re.match(r"^(#+)\s+(.*?)\s*$", line)
+        if not match:
+            continue
+        if start is None:
+            if match.group(2).strip().lower() == wanted:
+                start, depth = index, len(match.group(1))
+        elif len(match.group(1)) <= depth:
+            return "\n".join(lines[start:index]).strip()
+    if start is None:
+        return None
+    return "\n".join(lines[start:]).strip()
+
+
+def _resolve_source(root: Path, ref: str) -> dict[str, Any]:
+    """One ``sources/<path>#<heading>`` citation as bundle material."""
+    path_part, _, heading = ref.partition("#")
+    document = (root / path_part).resolve()
+    try:
+        document.relative_to(root.resolve())
+    except ValueError:
+        return {"ref": ref, "error": "path escapes the wiki root"}
+    section = read_section(document, heading or None)
+    if section is None:
+        return {"ref": ref, "error": "section not found" if document.is_file() else "file missing"}
+    return {"ref": ref, "document": path_part, "heading": heading or None,
+            "sha256": hashlib.sha256(section.encode("utf-8")).hexdigest(), "text": section}
+
+
 def _memory_text(record: Any) -> str | None:
     if isinstance(record, dict):
         for key in ("memory", "text"):
@@ -146,24 +193,48 @@ def _resolve_one(execute: ExecuteFn, memory_id: str) -> dict[str, Any]:
 
 
 def build_bundle(
-    memory_ids: list[str], execute: ExecuteFn, *, sanitize: bool = True
+    refs: list[str],
+    execute: ExecuteFn,
+    *,
+    sanitize: bool = True,
+    wiki_root: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """Return ``(bundle, placeholder_mapping)``. The mapping stays local."""
-    resolved = [_resolve_one(execute, mid) for mid in dict.fromkeys(memory_ids)]
+    """Return ``(bundle, placeholder_mapping)``. The mapping stays local.
+
+    ``refs`` are citations as an article records them: ``mem:<id>`` or a bare
+    memory id for store material, ``sources/<path>#<heading>`` for a designated
+    document. Both kinds travel in one bundle because they are equal material —
+    a document section is often the settled conclusion a memory only gropes
+    towards, and the writer needs both in front of it.
+    """
+    memory_refs, source_refs = [], []
+    for ref in dict.fromkeys(refs):
+        (source_refs if ref.startswith("sources/") else memory_refs).append(
+            ref[4:] if ref.startswith("mem:") else ref)
+
+    resolved = [_resolve_one(execute, mid) for mid in memory_refs]
     ok = [entry for entry in resolved if "error" not in entry]
-    flags = review_flags({entry["id"]: entry["text"] for entry in ok})
+    sources = [_resolve_source(wiki_root, ref) for ref in source_refs] if wiki_root else []
+    sources_ok = [s for s in sources if "error" not in s]
+
+    flags = review_flags({entry["id"]: entry["text"] for entry in ok}
+                         | {s["ref"]: s["text"] for s in sources_ok})
     sanitizer = Sanitizer()
     if sanitize:
         for entry in ok:
             entry["text"] = sanitizer.scrub(entry["text"])
+        for section in sources_ok:
+            section["text"] = sanitizer.scrub(section["text"])
     bundle = {
         "memory_count": len(ok),
-        "unresolved": [entry for entry in resolved if "error" in entry],
+        "source_section_count": len(sources_ok),
+        "unresolved": [e for e in resolved if "error" in e] + [s for s in sources if "error" in s],
         "sanitized": sanitize,
         "sanitization": {
             "placeholder_counts": sanitizer.counts,
             "review_flags": flags,
         },
         "memories": ok,
+        "source_sections": sources_ok,
     }
     return bundle, sanitizer.mapping

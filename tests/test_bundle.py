@@ -8,7 +8,9 @@ are reported rather than dropped.
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from mem0_local.bundle import Sanitizer, build_bundle, review_flags, sha256_text
 
@@ -70,6 +72,57 @@ class ReviewFlagTest(unittest.TestCase):
 
     def test_clean_text_has_no_flags(self):
         self.assertEqual(review_flags({MEM_A: "vLLM v0.14.0 on Ascend A3"}), [])
+
+
+class SourceSectionTest(unittest.TestCase):
+    """A citation points at a section, and the bundle must carry that section."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "sources").mkdir()
+        (self.root / "sources" / "doc.md").write_text(
+            "# Title\n\nintro\n\n## Quick matrix\n\nrow one\nrow two\n\n"
+            "### Detail\n\nnested\n\n## Other\n\nelsewhere\n", encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def bundle(self, ref):
+        return build_bundle([ref], make_execute({}), wiki_root=self.root)[0]
+
+    def test_section_stops_at_the_next_heading_of_the_same_level(self):
+        text = self.bundle("sources/doc.md#Quick matrix")["source_sections"][0]["text"]
+        self.assertIn("row two", text)
+        self.assertNotIn("elsewhere", text)
+
+    def test_section_keeps_its_nested_subsections(self):
+        self.assertIn("nested", self.bundle("sources/doc.md#Quick matrix")["source_sections"][0]["text"])
+
+    def test_heading_match_ignores_level_and_case(self):
+        self.assertEqual(len(self.bundle("sources/doc.md#quick MATRIX")["source_sections"]), 1)
+
+    def test_whole_file_when_no_heading_is_given(self):
+        self.assertIn("elsewhere", self.bundle("sources/doc.md")["source_sections"][0]["text"])
+
+    def test_missing_section_is_reported_not_silently_empty(self):
+        b = self.bundle("sources/doc.md#Nope")
+        self.assertEqual(b["source_sections"], [])
+        self.assertEqual(b["unresolved"][0]["error"], "section not found")
+
+    def test_path_escaping_the_wiki_root_is_refused(self):
+        b = self.bundle("sources/../../etc/passwd")
+        self.assertEqual(b["unresolved"][0]["error"], "path escapes the wiki root")
+
+    def test_sections_are_sanitized_like_memories(self):
+        (self.root / "sources" / "hosts.md").write_text("reach 7.150.10.239 to start\n")
+        b = self.bundle("sources/hosts.md")
+        self.assertIn("<HOST-1>", b["source_sections"][0]["text"])
+
+    def test_memories_and_sections_travel_in_one_bundle(self):
+        execute = make_execute({MEM_A: TEXT_A})
+        b, _ = build_bundle([MEM_A, "sources/doc.md#Other"], execute, wiki_root=self.root)
+        self.assertEqual((b["memory_count"], b["source_section_count"]), (1, 1))
 
 
 class BuildBundleTest(unittest.TestCase):
