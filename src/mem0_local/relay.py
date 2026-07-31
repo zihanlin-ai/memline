@@ -89,7 +89,7 @@ def call_json(
     *,
     profile: str | None = "wiki",
     endpoints: list[Endpoint] | None = None,
-    max_tokens: int = 32000,
+    max_tokens: int = 64000,
     attempts_per_endpoint: int = 2,
     timeout: float = 2400.0,
     backoff: float = 30.0,

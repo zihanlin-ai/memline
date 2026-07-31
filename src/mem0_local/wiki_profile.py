@@ -94,7 +94,7 @@ def profile_batches(
     *,
     kinds: tuple[str, ...] = ("session", "pack", "session-part"),
     concurrency: int = DEFAULT_CONCURRENCY,
-    max_tokens: int = 32000,
+    max_tokens: int = 64000,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """Profile every batch of the given kinds. Resumable; returns a summary."""
@@ -158,7 +158,7 @@ def profile_sources(
     out_dir: Path,
     *,
     concurrency: int = DEFAULT_CONCURRENCY,
-    max_tokens: int = 32000,
+    max_tokens: int = 64000,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """Profile designated Markdown sources into the same shape as a memory batch.

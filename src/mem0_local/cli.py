@@ -1932,7 +1932,8 @@ def wiki_profile(
     kinds: str = typer.Option("session,pack,session-part", "--kinds",
                               help="Batch kinds to profile. Ledger chunks are handled by local agents."),
     concurrency: int = typer.Option(2, "--concurrency", help="Parallel calls; keep low, the relay queues."),
-    max_tokens: int = typer.Option(32000, "--max-tokens"),
+    max_tokens: int = typer.Option(64000, "--max-tokens",
+        help="Budget for reasoning AND output; high reasoning effort spends most of it thinking."),
     source_dir: Optional[Path] = typer.Option(
         None, "--source-dir", help="Profile these Markdown files instead of memory batches."
     ),
