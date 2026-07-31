@@ -28,6 +28,7 @@ from typing import Any
 from mem0_local.config import llm_endpoint_specs
 from mem0_local.llm import Endpoint
 from mem0_local.proxy import client_for_base_url
+from mem0_local.runtime import setup_env
 
 
 class RefusedError(RuntimeError):
@@ -103,6 +104,11 @@ def call_json(
     ``profile`` names the config section to read endpoints from, so long
     structured work can run on a different model from mem0's own judges.
     """
+    # The credential file has to be loaded even when nothing else in this
+    # process touched the store: a CLI that reads its data through the daemon
+    # never builds a client, so without this the fallback endpoint finds no key
+    # and a primary outage turns into a total outage.
+    setup_env()
     endpoints = endpoints or [Endpoint(**spec) for spec in llm_endpoint_specs(profile)]
     errors: list[str] = []
     for endpoint in endpoints:
