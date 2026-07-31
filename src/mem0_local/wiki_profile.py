@@ -14,9 +14,12 @@ once and then never notice:
 * **Every answer is kept.** The raw model output is written per batch before
   anything is derived from it, so a later disagreement about a topic can be
   traced to what the model actually said rather than re-run and re-argued.
-* **A finished batch is never re-run.** Passes are resumed constantly during
-  iteration; re-profiling a batch would spend quota to overwrite an artifact
-  that is already the record.
+* **A finished batch is never re-run — but "finished" means the same
+  memories.** Passes are resumed constantly during iteration, so an unchanged
+  batch must not be re-profiled. A batch whose session has since gained
+  memories is a different batch wearing the same id, and its old profile
+  describes a session that no longer exists that way; it is re-profiled and
+  the stale artifact is kept beside the new one.
 * **A refusal is recorded, not retried.** Some material is declined by the
   endpoint's moderation. That batch needs a human or a local agent, and the
   plan should say so rather than silently missing memories.
@@ -27,6 +30,7 @@ is one whose first byte arrives too late to survive the path.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -49,6 +53,36 @@ def default_prompt(name: str) -> str:
     prompt that asked for it, and the two have to change together.
     """
     return (PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8")
+
+
+def coverage_digest(batch: dict[str, Any]) -> str:
+    """Identity of what a profile actually covered.
+
+    The batch id says which slot; this says which memories were in it. Two
+    profiles of the same slot are only interchangeable when this matches.
+    """
+    return hashlib.sha256("\n".join(sorted(batch["memory_ids"])).encode()).hexdigest()
+
+
+def _needs_profiling(batch: dict[str, Any], out_dir: Path, log: Callable[[str], None]) -> bool:
+    """True when there is no artifact, or the artifact covers other memories."""
+    path = out_dir / f"{batch['batch_id']}.json"
+    if not path.exists():
+        return True
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - an unreadable artifact is not a result
+        return True
+    if existing.get("covers") == coverage_digest(batch):
+        return False
+    # Keep the superseded profile: it is the record of an earlier reading, and
+    # a later disagreement about a topic may turn on what the session looked
+    # like before it continued.
+    stale = out_dir / f"{batch['batch_id']}.superseded-{existing.get('covers', 'unknown')[:12]}.json"
+    if not stale.exists():
+        path.rename(stale)
+    log(f"{batch['batch_id']}: session changed since it was profiled — re-reading it whole")
+    return True
 
 
 def render(template: str, batch: dict[str, Any], material: str) -> str:
@@ -101,10 +135,10 @@ def profile_batches(
     out_dir.mkdir(parents=True, exist_ok=True)
     sanitizer = Sanitizer()
     failures: list[dict[str, Any]] = []
-    todo = [b for b in plan if b["kind"] in kinds
-            and not (out_dir / f"{b['batch_id']}.json").exists()]
-    skipped = sum(1 for b in plan if b["kind"] in kinds) - len(todo)
-    log(f"{len(todo)} batches to profile, {skipped} already done")
+    candidates = [b for b in plan if b["kind"] in kinds]
+    todo = [b for b in candidates if _needs_profiling(b, out_dir, log)]
+    skipped = len(candidates) - len(todo)
+    log(f"{len(todo)} batches to profile, {skipped} unchanged and already done")
 
     def run(batch: dict[str, Any]) -> dict[str, Any]:
         started = time.time()
@@ -123,8 +157,9 @@ def profile_batches(
             return {"batch_id": batch["batch_id"], "status": "failed", "detail": str(exc)}
         else:
             record = {"batch_id": batch["batch_id"], "status": "ok", "profile": data,
-                      "provenance": result.provenance, "batch": {
-                          k: batch[k] for k in ("kind", "span", "memory_count", "session_ids")}}
+                      "covers": coverage_digest(batch), "provenance": result.provenance,
+                      "batch": {k: batch[k] for k in
+                                ("kind", "span", "memory_count", "session_ids")}}
             log(f"{batch['batch_id']}: ok in {time.time()-started:.0f}s "
                 f"({result.usage.get('prompt_tokens')}/{result.usage.get('completion_tokens')} tok)")
         (out_dir / f"{batch['batch_id']}.json").write_text(

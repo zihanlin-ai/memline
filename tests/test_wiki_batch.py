@@ -87,5 +87,50 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(summary["sessions"], 1)
 
 
+
+class IncrementalTest(unittest.TestCase):
+    """A session that gained memories is re-read whole, not incrementally."""
+
+    def setUp(self):
+        self.memories = (
+            store({"old": (5, 1)})                      # untouched since the cursor
+            + store({"grew": (5, 1)})                   # profiled before, then continued
+            + [mem("grew-new", "grew", day=9)]
+            + store({"fresh": (3, 9)})                  # entirely new
+        )
+
+    def selected(self, since="2026-07-05"):
+        from mem0_local.wiki_batch import select_since
+        return {m["id"] for m in select_since(self.memories, since)}
+
+    def test_a_session_that_gained_a_memory_comes_back_whole(self):
+        picked = self.selected()
+        self.assertIn("grew-new", picked)
+        self.assertTrue(all(f"grew-{i}" in picked for i in range(5)),
+                        "the session's earlier memories must be re-read too")
+
+    def test_an_untouched_session_is_left_alone(self):
+        self.assertFalse(any(mid.startswith("old-") for mid in self.selected()))
+
+    def test_a_new_session_is_included(self):
+        self.assertTrue(all(f"fresh-{i}" in self.selected() for i in range(3)))
+
+    def test_updated_at_counts_as_movement(self):
+        from mem0_local.wiki_batch import select_since
+        edited = [mem("old-0", "old", day=1)]
+        edited[0]["updated_at"] = "2026-07-09T00:00:00"
+        self.assertEqual([m["id"] for m in select_since(edited, "2026-07-05")], ["old-0"])
+
+    def test_ledger_memories_are_taken_individually(self):
+        from mem0_local.wiki_batch import select_since
+        old = mem("L-old", None, day=1, source=LEDGER_SOURCE)
+        new = mem("L-new", None, day=9, source=LEDGER_SOURCE)
+        self.assertEqual([m["id"] for m in select_since([old, new], "2026-07-05")], ["L-new"])
+
+    def test_plan_since_batches_only_the_selection(self):
+        batches = plan_batches(self.memories, since="2026-07-05", max_memories=100)
+        placed = {mid for b in batches for mid in b["memory_ids"]}
+        self.assertEqual(placed, self.selected())
+
 if __name__ == "__main__":
     unittest.main()

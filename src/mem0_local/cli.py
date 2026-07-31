@@ -1892,6 +1892,11 @@ def get(
 @app.command("wiki-batch")
 def wiki_batch(
     out: Optional[Path] = typer.Option(None, "--out", help="Write the batch plan here."),
+    since: Optional[str] = typer.Option(
+        None, "--since",
+        help="Incremental run: plan only what moved at or after this timestamp. "
+             "A session that gained a memory is replanned WHOLE, since a profile "
+             "describes the session and not the increment."),
     max_memories: int = typer.Option(275, "--max-memories", help="Ceiling for one batch."),
     pack_threshold: int = typer.Option(
         60, "--pack-threshold", help="At or above this size a session travels alone."
@@ -1914,7 +1919,8 @@ def wiki_batch(
         if len(items) < 500:
             break
         page += 1
-    batches = plan_batches(memories, max_memories=max_memories, pack_threshold=pack_threshold)
+    batches = plan_batches(memories, since=since, max_memories=max_memories,
+                           pack_threshold=pack_threshold)
     if out:
         out.write_text(json.dumps(batches, ensure_ascii=False, indent=2), encoding="utf-8")
     summary = {**plan_summary(batches), "plan_path": str(out) if out else None,

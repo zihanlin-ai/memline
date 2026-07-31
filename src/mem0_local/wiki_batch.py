@@ -74,15 +74,50 @@ def group_by_session(
     return sessions, ledger
 
 
+def touched_at(memory: dict[str, Any]) -> str:
+    """The latest moment this memory changed in any way visible to a profile."""
+    meta = _meta(memory)
+    stamps = [memory.get("created_at"), memory.get("updated_at"),
+              meta.get("ingested_at"), meta.get("updated_by_cli_at")]
+    return max((str(s)[:19] for s in stamps if s), default="")
+
+
+def select_since(
+    memories: Iterable[dict[str, Any]], since: str, ledger_source: str = LEDGER_SOURCE
+) -> list[dict[str, Any]]:
+    """Everything an incremental run must re-read, given a cursor.
+
+    A session that gained a memory is re-profiled WHOLE, not incrementally.
+    A profile describes a session's lines of work, and a session that
+    continued may have concluded a thread, split one, or retracted one — none
+    of which is visible in the new memories alone. The cost of re-reading a
+    session is one call; the cost of not doing it is a profile that quietly
+    describes a session that no longer exists that way.
+
+    Ledger memories are bulk-imported history and do not grow, so they are
+    taken individually.
+    """
+    memories = list(memories)
+    sessions, ledger = group_by_session(memories, ledger_source)
+    moved = {sid for sid, group in sessions.items()
+             if any(touched_at(m) >= since for m in group)}
+    out = [m for sid in moved for m in sessions[sid]]
+    out += [m for m in ledger if touched_at(m) >= since]
+    return out
+
+
 def plan_batches(
     memories: Iterable[dict[str, Any]],
     *,
+    since: str | None = None,
     max_memories: int = DEFAULT_MAX_MEMORIES,
     pack_threshold: int = DEFAULT_PACK_THRESHOLD,
     ledger_source: str = LEDGER_SOURCE,
     key: Callable[[dict[str, Any]], str] = lambda m: m["id"],
 ) -> list[dict[str, Any]]:
     """Deterministic batch plan. Same input, same plan, every time."""
+    if since:
+        memories = select_since(memories, since, ledger_source)
     sessions, ledger = group_by_session(memories, ledger_source)
     ordered = sorted(sessions.items(), key=lambda item: _created(item[1][0]))
 
