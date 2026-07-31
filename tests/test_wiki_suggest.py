@@ -112,6 +112,15 @@ class SuggestTest(unittest.TestCase):
             profile("b000", [thread("old", ["m1"])])))
         self.assertNotIn(("b000", "old"), load_threads(self.dir))
 
+    def test_threads_are_gathered_from_several_directories(self):
+        other = self.dir / "sources"
+        other.mkdir()
+        (other / "doc.json").write_text(json.dumps(
+            profile("doc", [thread("t9", ["m3"])], session="source:doc.md")))
+        threads = load_threads(self.dir, other)
+        self.assertIn(("doc", "t9"), threads)
+        self.assertIn(("b000", "t1"), threads)
+
     def test_suppressed_topics_reads_only_rejections(self):
         ledger = self.dir / "d.md"
         ledger.write_text("a | rejected | d | n\nb | accepted | d | n\nc | deferred | d | n\n")

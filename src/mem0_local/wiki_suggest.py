@@ -30,10 +30,15 @@ from typing import Any, Callable, Iterable
 VERDICT_LINE = re.compile(r"^(\S+)\s*\|\s*(accepted|rejected|deferred|published)\s*\|")
 
 
-def load_threads(profile_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
-    """Every profiled thread, keyed by ``(batch_id, thread_key)``."""
+def load_threads(*profile_dirs: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    """Every profiled thread, keyed by ``(batch_id, thread_key)``.
+
+    Several directories because memory batches and source documents are
+    profiled separately but associate together: a docs page normally draws on
+    both, and reading only one directory would silently drop half its members.
+    """
     threads: dict[tuple[str, str], dict[str, Any]] = {}
-    for path in sorted(profile_dir.glob("*.json")):
+    for path in sorted(p for d in profile_dirs for p in d.glob("*.json")):
         if path.name.startswith("_") or ".superseded-" in path.name:
             continue
         record = json.loads(path.read_text(encoding="utf-8"))

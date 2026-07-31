@@ -2022,7 +2022,8 @@ def bundle_command(
 @app.command("wiki-suggest")
 def wiki_suggest(
     associations: Path = typer.Argument(..., help="Association decision from the agent."),
-    profile_dir: Path = typer.Option(..., "--profiles", help="Directory of raw profiles."),
+    profile_dir: list[Path] = typer.Option(..., "--profiles",
+        help="Directory of raw profiles. Repeat for memory batches and source documents."),
     out: Path = typer.Option(..., "--out", help="Write suggestions.jsonl here."),
     run: int = typer.Option(1, "--run", help="Run number, used for suggestion ids."),
     ledger: Optional[Path] = typer.Option(
@@ -2044,7 +2045,7 @@ def wiki_suggest(
     topics = json.loads(associations.read_text(encoding="utf-8"))
     topics = topics.get("topics", topics) if isinstance(topics, dict) else topics
     suggestions, report = build_suggestions(
-        topics, load_threads(profile_dir), resolve, run=run, ledger=ledger)
+        topics, load_threads(*profile_dir), resolve, run=run, ledger=ledger)
     out.write_text("".join(json.dumps(s, ensure_ascii=False) + "\n" for s in suggestions),
                    encoding="utf-8")
     output({**report, "out": str(out)}, command="wiki-suggest",
