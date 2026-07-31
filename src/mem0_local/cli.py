@@ -2091,6 +2091,28 @@ def wiki_draft(
            command="wiki-draft", fmt=chosen_format(output_format, json_flag))
 
 
+@app.command("wiki-verify")
+def wiki_verify(
+    draft: Path = typer.Argument(..., help="Draft Markdown written by wiki-draft."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Check a draft against the bundle it was written from (read-only)."""
+    from mem0_local.wiki_verify import verify
+
+    stem = draft.with_suffix("")
+    bundle_path = Path(str(stem) + ".bundle.json")
+    claims_path = Path(str(stem) + ".claims.json")
+    if not bundle_path.is_file():
+        raise typer.BadParameter(f"no bundle beside the draft: {bundle_path}")
+    report = verify(draft.read_text(encoding="utf-8"),
+                    json.loads(bundle_path.read_text(encoding="utf-8")),
+                    json.loads(claims_path.read_text(encoding="utf-8"))
+                    if claims_path.is_file() else None)
+    output({"draft": str(draft), **report}, command="wiki-verify",
+           fmt=chosen_format(output_format, json_flag))
+
+
 @app.command("wiki-check")
 def wiki_check(
     wiki_root: Optional[Path] = typer.Argument(
