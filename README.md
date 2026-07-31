@@ -77,6 +77,22 @@ An endpoint falls through on transport failure *and* on an empty answer, so a
 reasoning model that spends its whole token budget thinking is re-run on the
 next endpoint rather than surfacing as a judge failure.
 
+#### Endpoints behind a proxy
+
+A `base_url` on plain HTTP is reached through a CONNECT tunnel rather than
+being forward-proxied, because a forward proxy rewrites the request and may
+drop the body — which reads as `400 invalid JSON request body` from the
+endpoint on *every* call, and quietly demotes the whole pipeline to the
+fallback. `https://` endpoints are untouched: they are already tunnelled. A
+host that the environment's `no_proxy` exempts (including glob entries such
+as `10.*`, which httpx itself does not honour) is reached directly.
+
+`stream = true` on an endpoint asks for the answer as a token stream and
+reassembles it before returning; the answer is identical either way. Set it
+when the network path between here and the endpoint gives up on a slow first
+response byte — a judge at a few thousand `max_tokens` can easily take longer
+than such a limit, and a stream starts emitting immediately.
+
 ## Tests
 
 The daemon and CLI safety behavior is covered by standard-library `unittest`

@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from mem0_local import config
 
@@ -91,6 +92,17 @@ class EndpointSpecTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             cfg.llm_endpoint_specs()
+
+    def test_stream_reaches_the_primary_and_is_not_inherited(self):
+        """Streaming is a property of one endpoint's network path, not of the pair."""
+        cfg = self._reload_with(
+            '[llm]\nmodel = "m1"\nbase_url = "http://relay/v1"\napi_key_env = "K1"\n'
+            "stream = true\n"
+            '\n[llm.fallback]\nmodel = "m2"\nbase_url = "https://b/v1"\napi_key_env = "K2"\n'
+        )
+        primary, fallback = cfg.llm_endpoint_specs()
+        self.assertTrue(primary["stream"])
+        self.assertNotIn("stream", fallback)
 
     def test_attribution_headers_are_inherited_but_extra_body_is_not(self):
         cfg = self._reload_with(
@@ -259,6 +271,76 @@ class FallbackLLMTests(unittest.TestCase):
         llm = self._fallback({"primary": _FakeLLM("m1"), "fallback": _FakeLLM("m2")})
         llm.generate_response([])
         self.assertEqual(active_model(llm, "configured"), "m1")
+
+
+class _FakeCompletions:
+    """Stands in for ``client.chat.completions``: records params, emits chunks."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+        self.params: dict = {}
+
+    def create(self, **params):
+        self.params = params
+        return iter(self._chunks)
+
+
+def _chunk(content: str | None, finish_reason: str | None = None):
+    from openai.types.chat import ChatCompletionChunk
+
+    return ChatCompletionChunk.model_validate(
+        {
+            "id": "c1",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "m1",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": content},
+                    "finish_reason": finish_reason,
+                }
+            ],
+        }
+    )
+
+
+class StreamingClientTests(unittest.TestCase):
+    """Streaming exists to beat a relay that drops slow first bytes; the answer
+    handed back to mem0 must be indistinguishable from a non-streamed one."""
+
+    def _completions(self):
+        from mem0_local.llm import _StreamingClient
+
+        fake = _FakeCompletions([_chunk("part one "), _chunk("part two", "stop")])
+        client = _StreamingClient(SimpleNamespace(chat=SimpleNamespace(completions=fake)))
+        return client, fake
+
+    def test_chunks_are_reassembled_into_one_completion(self):
+        client, fake = self._completions()
+        response = client.chat.completions.create(
+            model="m1", messages=[{"role": "user", "content": "hi"}]
+        )
+        self.assertEqual(response.choices[0].message.content, "part one part two")
+        self.assertEqual(response.choices[0].finish_reason, "stop")
+
+    def test_the_request_asks_for_a_stream(self):
+        client, fake = self._completions()
+        client.chat.completions.create(model="m1", messages=[])
+        self.assertTrue(fake.params["stream"])
+
+    def test_a_caller_asking_for_the_raw_stream_gets_it(self):
+        client, fake = self._completions()
+        result = client.chat.completions.create(model="m1", messages=[], stream=True)
+        self.assertEqual([c.choices[0].delta.content for c in result], ["part one ", "part two"])
+
+    def test_everything_but_chat_passes_through_to_the_real_client(self):
+        from mem0_local.llm import _StreamingClient
+
+        inner = SimpleNamespace(
+            chat=SimpleNamespace(completions=_FakeCompletions([])), base_url="http://relay/v1"
+        )
+        self.assertEqual(_StreamingClient(inner).base_url, "http://relay/v1")
 
 
 if __name__ == "__main__":

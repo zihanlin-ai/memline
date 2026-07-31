@@ -17,6 +17,17 @@ Two mem0 behaviours force the construction below:
 * ``_get_common_params`` passes ``extra_body`` straight through to the SDK,
   which is how a per-endpoint body patch (e.g. OpenRouter provider pinning)
   reaches the wire without every call site knowing about it.
+
+The relay also constrains the transport, in two ways handled here:
+
+* Its ``base_url`` is plain HTTP, which the corporate proxy forwards rather
+  than tunnels — and it strips the body on the way, so every call came back
+  ``400 invalid JSON request body`` and every judge quietly ran on the
+  fallback. ``mem0_local.proxy`` supplies a CONNECT-tunnelling client.
+* That path also drops any request whose first response byte takes longer
+  than about 30 seconds, regardless of size. A streaming request starts
+  emitting immediately, so endpoints on such a path set ``stream = true`` and
+  get a client that streams and reassembles under mem0's synchronous call.
 """
 
 from __future__ import annotations
@@ -26,9 +37,11 @@ import os
 import sys
 import threading
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from mem0_local.config import llm_endpoint_specs
+from mem0_local.proxy import client_for_base_url
 
 
 @dataclass(frozen=True)
@@ -43,6 +56,10 @@ class Endpoint:
     api_key_json_path: str | None = None
     site_url: str | None = None
     app_name: str | None = None
+    # Request the answer as a token stream and reassemble it before returning.
+    # Only needed on a network path that times out on slow first bytes; the
+    # answer handed back to the caller is identical either way.
+    stream: bool = False
     # Merged under every call's own extra_body (the caller wins on conflict).
     extra_body: dict[str, Any] = field(default_factory=dict)
 
@@ -81,6 +98,50 @@ class Endpoint:
         )
 
 
+class _StreamingCompletions:
+    """``create()`` that asks for a stream and returns the assembled answer.
+
+    mem0 calls ``client.chat.completions.create(**params)`` and reads a
+    complete ``ChatCompletion`` off the result, so the streaming stays entirely
+    inside this call: the chunks are folded back into one completion object by
+    the SDK's own accumulator, and the caller cannot tell the difference.
+    """
+
+    def __init__(self, completions: Any) -> None:
+        self._completions = completions
+
+    def create(self, **params: Any) -> Any:
+        if params.get("stream"):
+            # A caller that wants the raw stream gets the raw stream.
+            return self._completions.create(**params)
+        from openai.lib.streaming.chat import ChatCompletionStreamState
+
+        # Both are optional; passing them lets the accumulator rebuild tool
+        # calls and parsed content exactly as the non-streamed call would.
+        state_args = {
+            key: params[field]
+            for key, field in (("input_tools", "tools"), ("response_format", "response_format"))
+            if params.get(field)
+        }
+        state = ChatCompletionStreamState(**state_args)
+        for chunk in self._completions.create(**{**params, "stream": True}):
+            state.handle_chunk(chunk)
+        return state.get_final_completion()
+
+
+class _StreamingClient:
+    """An OpenAI client whose chat completions stream; the rest passes through."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self.chat = SimpleNamespace(
+            completions=_StreamingCompletions(client.chat.completions)
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
 def build_endpoint_llm(endpoint: Endpoint, max_tokens: int) -> Any:
     """A mem0 OpenAILLM bound to exactly this endpoint."""
     from mem0.utils.factory import LlmFactory
@@ -100,8 +161,15 @@ def build_endpoint_llm(endpoint: Endpoint, max_tokens: int) -> Any:
         },
     )
     # Overwrite the client mem0 built: its OPENROUTER_API_KEY sniffing ignores
-    # openai_base_url whenever that variable exists, which it does here.
-    llm.client = OpenAI(api_key=endpoint.api_key(), base_url=endpoint.base_url)
+    # openai_base_url whenever that variable exists, which it does here. The
+    # explicit http_client is what keeps a plain-HTTP base_url off the
+    # body-stripping forward-proxy path (see mem0_local.proxy).
+    client = OpenAI(
+        api_key=endpoint.api_key(),
+        base_url=endpoint.base_url,
+        http_client=client_for_base_url(endpoint.base_url),
+    )
+    llm.client = _StreamingClient(client) if endpoint.stream else client
     return llm
 
 

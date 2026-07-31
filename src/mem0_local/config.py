@@ -118,6 +118,7 @@ _ENDPOINT_FIELDS = (
     "api_key_json_path",
     "site_url",
     "app_name",
+    "stream",
     "extra_body",
 )
 

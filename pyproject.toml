@@ -15,6 +15,12 @@ requires-python = ">=3.11"
 dependencies = [
   "click",
   "fastembed",
+  # Imported directly by mem0_local.proxy, which assembles the
+  # CONNECT-tunnelling transport for plain-HTTP endpoints from httpcore's
+  # connection classes. Both also arrive with openai; named here because this
+  # package uses them in its own right.
+  "httpcore",
+  "httpx",
   "python-dotenv",
   "pyyaml",
   "qdrant-client",
