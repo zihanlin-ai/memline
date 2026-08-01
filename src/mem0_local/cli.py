@@ -2474,6 +2474,29 @@ def wiki_index(
     output(report, command="wiki-index", fmt=fmt)
 
 
+@wiki_app.command("related")
+def wiki_related(
+    wiki_root: Optional[Path] = typer.Argument(
+        None, help="Wiki root (contains content/). Default: <workspace>/.agent-memory/wiki."),
+    min_shared: int = typer.Option(3, "--min-shared",
+        help="Fewest shared references that count as a relation."),
+    min_share: float = typer.Option(0.15, "--min-share",
+        help="Fewest shared references as a fraction of the smaller page."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Regenerate each page's related-pages block from shared evidence."""
+    from mem0_local.wiki_related import build_related
+
+    root = wiki_root or (ROOT / ".agent-memory" / "wiki")
+    report = build_related(root / "content", min_shared=min_shared, min_share=min_share)
+    fmt = chosen_format(output_format, json_flag)
+    if fmt == "text":
+        console.print(f"{report['pairs']} relation(s) across {report['pages']} page(s); "
+                      f"{len(report['written'])} file(s) rewritten")
+    output(report, command="wiki-related", fmt=fmt)
+
+
 @wiki_app.command("check-threads")
 def wiki_check_threads(
     draft: Path = typer.Argument(..., help="Draft Markdown written by wiki-draft."),

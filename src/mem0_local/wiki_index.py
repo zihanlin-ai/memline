@@ -30,8 +30,11 @@ from mem0_local.wiki_check import parse_frontmatter
 
 BEGIN = "<!-- index:begin -->"
 END = "<!-- index:end -->"
-GENERATED_REGION = re.compile(
-    re.escape(BEGIN) + r".*?" + re.escape(END), re.DOTALL)
+def region_pattern(begin: str, end: str) -> re.Pattern[str]:
+    return re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
+
+
+GENERATED_REGION = region_pattern(BEGIN, END)
 # Pages that describe the wiki rather than belonging to it.
 NON_ENTRY = {"README.md", "INDEX.md"}
 # States that mean "this page is fine". Anything else is worth a reader's
@@ -116,18 +119,24 @@ def render_shelf(entries: list[dict[str, Any]], shelf: str) -> str:
     return "\n".join(render_entry(e, base=shelf) for e in listed) + "\n"
 
 
-def write_region(path: Path, body: str, *, preamble: str = "") -> bool:
+def write_region(path: Path, body: str, *, preamble: str = "",
+                 begin: str = BEGIN, end: str = END) -> bool:
     """Replace the marked region in ``path``. Returns whether anything changed.
 
     Everything outside the markers is preserved exactly. A file without markers
     gains the block at the end — appended, never merged into what is there —
     and a file that does not exist is created from ``preamble``.
+
+    The marker pair is a parameter because one page can carry more than one
+    generated region, and each must be able to be rewritten without disturbing
+    the other.
     """
-    block = f"{BEGIN}\n{body.rstrip()}\n{END}"
+    pattern = region_pattern(begin, end)
+    block = f"{begin}\n{body.rstrip()}\n{end}"
     if path.is_file():
         current = path.read_text(encoding="utf-8")
-        if GENERATED_REGION.search(current):
-            updated = GENERATED_REGION.sub(lambda _: block, current, count=1)
+        if pattern.search(current):
+            updated = pattern.sub(lambda _: block, current, count=1)
         else:
             updated = current.rstrip("\n") + "\n\n" + block + "\n"
     else:
