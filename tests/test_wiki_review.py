@@ -13,6 +13,8 @@ from mem0_local.wiki_review import (
     load_prior_review,
     merge_reviews,
     run_external_review,
+    validate_merged_review_report,
+    validate_review_artifact,
     validate_review_report,
 )
 
@@ -316,6 +318,56 @@ class MergePassesTest(unittest.TestCase):
             merge_reviews([])
 
 
+class MergedReviewValidationTest(unittest.TestCase):
+    def setUp(self):
+        article = ("# T\n\nAlpha."
+                   "^[mem:aaaa1111-2222-3333-4444-555566667777]")
+        self.bundle = build_review_bundle(article, BUNDLE, full_claims(), {"scope": "alpha"})
+
+    def _pass(self):
+        report = passing_report(self.bundle)
+        report["review_provenance"] = {"model": "reviewer"}
+        report["validation"] = validate_review_report(report, self.bundle)
+        return report
+
+    def test_clean_merged_report_passes_the_machine_gate(self):
+        merged = merge_reviews([self._pass(), self._pass(), self._pass()])
+        validation = validate_merged_review_report(merged, self.bundle)
+        self.assertEqual(merged["review_bundle_sha256"],
+                         self.bundle["review_bundle_sha256"])
+        self.assertTrue(validation["report_valid"])
+        self.assertTrue(validation["clean"])
+        self.assertEqual(validation["claim_verdict_counts"], {"supported": 1})
+
+    def test_artifact_dispatch_uses_the_merged_schema(self):
+        merged = merge_reviews([self._pass(), self._pass(), self._pass()])
+        validation = validate_review_artifact(merged, self.bundle)
+        self.assertTrue(validation["clean"])
+        self.assertNotIn("review_summary_missing",
+                         {finding["kind"] for finding in validation["findings"]})
+
+    def test_one_contract_invalid_pass_blocks_the_merged_gate(self):
+        invalid = self._pass()
+        invalid["omission_reviews"] = [{
+            "severity": "info", "kind": "sensitivity",
+            "finding": "No sensitivity issues", "evidence_refs": [],
+        }]
+        invalid["validation"] = validate_review_report(invalid, self.bundle)
+        merged = merge_reviews([self._pass(), invalid, self._pass()])
+        validation = validate_merged_review_report(merged, self.bundle)
+        kinds = {finding["kind"] for finding in validation["findings"]}
+        self.assertIn("merged_review_contains_invalid_passes", kinds)
+        self.assertFalse(validation["report_valid"])
+        self.assertFalse(validation["clean"])
+
+    def test_merged_report_is_bound_to_the_review_bundle_hash(self):
+        merged = merge_reviews([self._pass()])
+        merged["review_bundle_sha256"] = "stale"
+        validation = validate_merged_review_report(merged, self.bundle)
+        self.assertIn("review_hash_mismatch",
+                      {finding["kind"] for finding in validation["findings"]})
+
+
 class PriorReviewTest(unittest.TestCase):
     """Accumulation is safe only because the article's hash gates it."""
 
@@ -338,6 +390,10 @@ class PriorReviewTest(unittest.TestCase):
         # Its findings describe sentences that may no longer exist.
         self._write(article_sha256="aaa")
         self.assertIsNone(load_prior_review(self.path, "bbb"))
+
+    def test_a_review_of_a_different_evidence_packet_is_not_reused(self):
+        self._write(article_sha256="aaa", review_bundle_sha256="bundle-a")
+        self.assertIsNone(load_prior_review(self.path, "aaa", "bundle-b"))
 
     def test_a_review_with_no_hash_is_not_reused(self):
         # Reports written before the hash was recorded cannot be matched, and

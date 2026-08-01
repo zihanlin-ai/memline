@@ -200,6 +200,47 @@ def build_review_bundle(
     return review_bundle
 
 
+def _validate_omission_reviews(
+    report: dict[str, Any], review_bundle: dict[str, Any], findings: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Validate omission records shared by single-pass and merged reports."""
+    known_refs = {item["ref"] for item in review_bundle.get("uncited_evidence") or []}
+    for packet in review_bundle.get("claim_packets") or []:
+        known_refs.update(c["resolved_ref"] for c in packet["citations"] if c["resolved_ref"])
+    article = review_bundle.get("article_markdown") or ""
+    omissions = report.get("omission_reviews")
+    if not isinstance(omissions, list):
+        findings.append({"kind": "omission_reviews_missing"})
+        return []
+    for index, item in enumerate(omissions):
+        if not isinstance(item, dict):
+            findings.append({"kind": "omission_review_not_object", "index": index})
+            continue
+        if item.get("severity") not in SEVERITIES:
+            findings.append({"kind": "omission_review_bad_severity", "index": index})
+        if not isinstance(item.get("finding"), str) or not item.get("finding", "").strip():
+            findings.append({"kind": "omission_review_finding_missing", "index": index})
+        refs = item.get("evidence_refs") or []
+        if not isinstance(refs, list) or any(ref not in known_refs for ref in refs):
+            findings.append({"kind": "omission_review_unknown_evidence", "index": index})
+        # A reviewer sees the article and the material it was written from in
+        # one document, and the material is *supposed* to be full of ticket
+        # numbers and people's names. A sensitivity finding therefore has to
+        # quote a string that actually survived into the article.
+        quotes = item.get("article_quotes")
+        if item.get("kind") == "sensitivity" and not quotes:
+            findings.append({"kind": "sensitivity_finding_without_quotes", "index": index})
+        elif quotes is not None:
+            if not isinstance(quotes, list) or not all(isinstance(q, str) for q in quotes):
+                findings.append({"kind": "article_quotes_not_strings", "index": index})
+            else:
+                for quote in quotes:
+                    if quote not in article:
+                        findings.append({"kind": "article_quote_not_in_article",
+                                         "index": index, "detail": quote[:80]})
+    return [item for item in omissions if isinstance(item, dict)]
+
+
 def validate_review_report(report: dict[str, Any], review_bundle: dict[str, Any]) -> dict[str, Any]:
     """Validate reviewer coverage, hashes, enum values and evidence joins."""
     findings: list[dict[str, Any]] = []
@@ -255,42 +296,7 @@ def validate_review_report(report: dict[str, Any], review_bundle: dict[str, Any]
     if report.get("overall_verdict") not in OVERALL_VERDICTS:
         findings.append({"kind": "overall_verdict_invalid"})
 
-    known_refs = {item["ref"] for item in review_bundle.get("uncited_evidence") or []}
-    for packet in review_bundle.get("claim_packets") or []:
-        known_refs.update(c["resolved_ref"] for c in packet["citations"] if c["resolved_ref"])
-    article = review_bundle.get("article_markdown") or ""
-    omissions = report.get("omission_reviews")
-    if not isinstance(omissions, list):
-        findings.append({"kind": "omission_reviews_missing"})
-        omissions = []
-    for index, item in enumerate(omissions):
-        if not isinstance(item, dict):
-            findings.append({"kind": "omission_review_not_object", "index": index})
-            continue
-        if item.get("severity") not in SEVERITIES:
-            findings.append({"kind": "omission_review_bad_severity", "index": index})
-        if not isinstance(item.get("finding"), str) or not item.get("finding", "").strip():
-            findings.append({"kind": "omission_review_finding_missing", "index": index})
-        refs = item.get("evidence_refs") or []
-        if not isinstance(refs, list) or any(ref not in known_refs for ref in refs):
-            findings.append({"kind": "omission_review_unknown_evidence", "index": index})
-        # A reviewer sees the article and the material it was written from in
-        # one document, and the material is *supposed* to be full of ticket
-        # numbers and people's names. The first audit run reported four of them
-        # as leaks — including a name the article had written as "a colleague",
-        # complete with an invented line number. A claim that a string is in
-        # the article is one a program can settle, so it does.
-        quotes = item.get("article_quotes")
-        if item.get("kind") == "sensitivity" and not quotes:
-            findings.append({"kind": "sensitivity_finding_without_quotes", "index": index})
-        elif quotes is not None:
-            if not isinstance(quotes, list) or not all(isinstance(q, str) for q in quotes):
-                findings.append({"kind": "article_quotes_not_strings", "index": index})
-            else:
-                for quote in quotes:
-                    if quote not in article:
-                        findings.append({"kind": "article_quote_not_in_article",
-                                         "index": index, "detail": quote[:80]})
+    omissions = _validate_omission_reviews(report, review_bundle, findings)
 
     verdicts = [item.get("verdict") for item in reviews if isinstance(item, dict)]
     verdict_counts = dict(sorted(Counter(
@@ -324,6 +330,186 @@ def validate_review_report(report: dict[str, Any], review_bundle: dict[str, Any]
         and report.get("overall_verdict") == "pass",
         "agent_review_required": True,
     }
+
+
+def validate_merged_review_report(
+    report: dict[str, Any], review_bundle: dict[str, Any]
+) -> dict[str, Any]:
+    """Validate the locally merged shape emitted by :func:`merge_reviews`."""
+    findings: list[dict[str, Any]] = []
+    expected_hash = _content_hash(review_bundle, "review_bundle_sha256")
+    if review_bundle.get("review_bundle_sha256") != expected_hash:
+        findings.append({"kind": "review_bundle_hash_invalid"})
+    for field in ("article_sha256", "review_bundle_sha256"):
+        if report.get(field) != review_bundle.get(field):
+            findings.append({"kind": "review_hash_mismatch", "field": field})
+
+    passes = report.get("passes")
+    if not isinstance(passes, int) or isinstance(passes, bool) or passes < 1:
+        findings.append({"kind": "merged_review_bad_pass_count"})
+        passes = 0
+
+    expected = {packet["claim_id"]: packet for packet in review_bundle.get("claim_packets") or []}
+    reviews = report.get("claim_reviews")
+    if not isinstance(reviews, list):
+        findings.append({"kind": "claim_reviews_missing"})
+        reviews = []
+    seen: set[str] = set()
+    for item in reviews:
+        if not isinstance(item, dict):
+            findings.append({"kind": "claim_review_not_object"})
+            continue
+        claim_id = item.get("claim_id")
+        if claim_id in seen:
+            findings.append({"kind": "claim_review_duplicate", "claim_id": claim_id})
+        seen.add(claim_id)
+        packet = expected.get(claim_id)
+        if packet is None:
+            findings.append({"kind": "claim_review_unknown", "claim_id": claim_id})
+            continue
+        verdict = item.get("verdict")
+        if verdict not in CLAIM_VERDICTS:
+            findings.append({"kind": "claim_review_bad_verdict", "claim_id": claim_id})
+        flagged_in = item.get("flagged_in")
+        if (not isinstance(flagged_in, int) or isinstance(flagged_in, bool)
+                or flagged_in < 0 or flagged_in > passes):
+            findings.append({"kind": "merged_claim_bad_flagged_in", "claim_id": claim_id})
+        if item.get("of_passes") != passes:
+            findings.append({"kind": "merged_claim_bad_pass_total", "claim_id": claim_id})
+        merged_findings = item.get("findings")
+        if not isinstance(merged_findings, list):
+            findings.append({"kind": "merged_claim_findings_missing", "claim_id": claim_id})
+            merged_findings = []
+        allowed = {c["resolved_ref"] for c in packet["citations"] if c["resolved_ref"]}
+        finding_passes: set[int] = set()
+        finding_verdicts: list[str] = []
+        for merged_finding in merged_findings:
+            if not isinstance(merged_finding, dict):
+                findings.append({"kind": "merged_claim_finding_not_object",
+                                 "claim_id": claim_id})
+                continue
+            finding_pass = merged_finding.get("pass")
+            if (not isinstance(finding_pass, int) or isinstance(finding_pass, bool)
+                    or finding_pass < 1 or finding_pass > passes):
+                findings.append({"kind": "merged_claim_finding_bad_pass",
+                                 "claim_id": claim_id})
+            elif finding_pass in finding_passes:
+                findings.append({"kind": "merged_claim_finding_duplicate_pass",
+                                 "claim_id": claim_id, "pass": finding_pass})
+            else:
+                finding_passes.add(finding_pass)
+            finding_verdict = merged_finding.get("verdict")
+            if finding_verdict not in CLAIM_VERDICTS or finding_verdict == "supported":
+                findings.append({"kind": "merged_claim_finding_bad_verdict",
+                                 "claim_id": claim_id})
+            else:
+                finding_verdicts.append(finding_verdict)
+            if merged_finding.get("confidence") not in CONFIDENCE:
+                findings.append({"kind": "claim_review_bad_confidence", "claim_id": claim_id})
+            if (not isinstance(merged_finding.get("reason"), str)
+                    or not merged_finding.get("reason", "").strip()):
+                findings.append({"kind": "claim_review_reason_missing", "claim_id": claim_id})
+            if not isinstance(merged_finding.get("suggested_rewrite"), str):
+                findings.append({"kind": "claim_review_rewrite_invalid", "claim_id": claim_id})
+            used = merged_finding.get("evidence_refs") or []
+            if not isinstance(used, list) or any(ref not in allowed for ref in used):
+                findings.append({"kind": "claim_review_evidence_outside_packet",
+                                 "claim_id": claim_id})
+        if isinstance(flagged_in, int) and not isinstance(flagged_in, bool):
+            if flagged_in != len(merged_findings):
+                findings.append({"kind": "merged_claim_flag_count_mismatch",
+                                 "claim_id": claim_id})
+        expected_verdict = (max(finding_verdicts, key=lambda value: _VERDICT_RANK[value])
+                            if finding_verdicts else "supported")
+        if verdict != expected_verdict:
+            findings.append({"kind": "merged_claim_verdict_mismatch", "claim_id": claim_id})
+
+    missing = sorted(set(expected) - seen)
+    if missing:
+        findings.append({"kind": "claim_reviews_incomplete", "claim_ids": missing,
+                         "count": len(missing)})
+
+    flagged = [item for item in reviews if isinstance(item, dict)
+               and isinstance(item.get("flagged_in"), int) and item.get("flagged_in") > 0]
+    if report.get("flagged_claims") != len(flagged):
+        findings.append({"kind": "merged_flagged_claim_count_mismatch"})
+    unanimous = sum(1 for item in flagged if item.get("flagged_in") == passes)
+    if report.get("unanimous_claims") != unanimous:
+        findings.append({"kind": "merged_unanimous_claim_count_mismatch"})
+    single = sum(1 for item in flagged if item.get("flagged_in") == 1)
+    if report.get("single_pass_claims") != single:
+        findings.append({"kind": "merged_single_pass_claim_count_mismatch"})
+
+    omissions = _validate_omission_reviews(report, review_bundle, findings)
+    aggregate = report.get("validation")
+    if not isinstance(aggregate, dict):
+        findings.append({"kind": "merged_validation_missing"})
+        aggregate = {}
+    per_pass = aggregate.get("per_pass")
+    if not isinstance(per_pass, list) or len(per_pass) != passes:
+        findings.append({"kind": "merged_per_pass_validation_incomplete"})
+        per_pass = []
+    else:
+        pass_numbers = [item.get("pass") for item in per_pass if isinstance(item, dict)]
+        if pass_numbers != list(range(1, passes + 1)):
+            findings.append({"kind": "merged_per_pass_numbers_invalid"})
+    invalid_passes = [item.get("pass") for item in per_pass
+                      if isinstance(item, dict) and item.get("report_valid") is not True]
+    if aggregate.get("invalid_passes") != invalid_passes:
+        findings.append({"kind": "merged_invalid_passes_mismatch"})
+    aggregate_valid = bool(per_pass) and not invalid_passes
+    if aggregate.get("report_valid") is not aggregate_valid:
+        findings.append({"kind": "merged_report_valid_mismatch"})
+    if not aggregate_valid:
+        findings.append({"kind": "merged_review_contains_invalid_passes",
+                         "passes": invalid_passes})
+    if aggregate.get("claims_expected") != len(expected):
+        findings.append({"kind": "merged_claims_expected_mismatch"})
+    if aggregate.get("deterministic_clean") is not bool(
+            (review_bundle.get("deterministic_report") or {}).get("clean")):
+        findings.append({"kind": "merged_deterministic_status_mismatch"})
+    scope_clean = aggregate.get("scope_clean") is True
+    if report.get("overall_verdict") not in OVERALL_VERDICTS:
+        findings.append({"kind": "overall_verdict_invalid"})
+
+    provenance = report.get("review_provenance")
+    if not isinstance(provenance, list) or len(provenance) != passes:
+        findings.append({"kind": "merged_review_provenance_incomplete"})
+
+    verdicts = [item.get("verdict") for item in reviews if isinstance(item, dict)]
+    semantic_clean = len(verdicts) == len(expected) and all(v == "supported" for v in verdicts)
+    omission_clean = all(item.get("severity") == "info" for item in omissions)
+    deterministic_clean = bool((review_bundle.get("deterministic_report") or {}).get("clean"))
+    verdict_counts = Counter(
+        verdict if isinstance(verdict, str) else "<invalid>" for verdict in verdicts)
+    severity_counts = Counter(
+        item.get("severity") if isinstance(item.get("severity"), str) else "<invalid>"
+        for item in omissions)
+    report_valid = not findings
+    return {
+        "findings": findings,
+        "report_valid": report_valid,
+        "deterministic_clean": deterministic_clean,
+        "semantic_clean": semantic_clean,
+        "omission_clean": omission_clean,
+        "scope_clean": scope_clean,
+        "claims_expected": len(expected),
+        "claims_reviewed": len(seen & set(expected)),
+        "claim_verdict_counts": dict(sorted(verdict_counts.items())),
+        "omission_severity_counts": dict(sorted(severity_counts.items())),
+        "clean": report_valid and deterministic_clean and semantic_clean
+        and omission_clean and scope_clean and report.get("overall_verdict") == "pass",
+        "agent_review_required": True,
+    }
+
+
+def validate_review_artifact(
+    report: dict[str, Any], review_bundle: dict[str, Any]
+) -> dict[str, Any]:
+    """Validate either a raw single pass or the local multi-pass merge."""
+    if "passes" in report:
+        return validate_merged_review_report(report, review_bundle)
+    return validate_review_report(report, review_bundle)
 
 
 def render_review_prompt(template: str, review_bundle: dict[str, Any]) -> str:
@@ -399,6 +585,10 @@ def merge_reviews(reports: list[dict[str, Any]], prior: dict[str, Any] | None = 
     total = offset + len(reports)
     article_sha256 = next((r.get("article_sha256") for r in reports if r.get("article_sha256")),
                           (prior or {}).get("article_sha256"))
+    review_bundle_sha256 = next(
+        (r.get("review_bundle_sha256") for r in reports if r.get("review_bundle_sha256")),
+        (prior or {}).get("review_bundle_sha256"),
+    )
     for entry in claims.values():
         entry["of_passes"] = total
 
@@ -440,6 +630,7 @@ def merge_reviews(reports: list[dict[str, Any]], prior: dict[str, Any] | None = 
         # The article these passes read. Accumulating onto a different one
         # would silently pool findings about two different texts.
         "article_sha256": article_sha256,
+        "review_bundle_sha256": review_bundle_sha256,
         "overall_verdict": overall,
         "claim_reviews": sorted(claims.values(), key=lambda c: c["claim_id"]),
         "omission_reviews": omissions,
@@ -474,12 +665,14 @@ def merge_reviews(reports: list[dict[str, Any]], prior: dict[str, Any] | None = 
     }
 
 
-def load_prior_review(path: Path, article_sha256: str) -> dict[str, Any] | None:
-    """A previous merged review of *this exact article*, if there is one.
+def load_prior_review(
+    path: Path, article_sha256: str, review_bundle_sha256: str | None = None
+) -> dict[str, Any] | None:
+    """A previous merged review of this exact article and evidence packet.
 
-    The hash is the whole safety of accumulation. A review of an earlier draft
-    describes sentences that may no longer exist, and pooling its findings with
-    a new one would produce a report about no single text.
+    Both hashes are needed when the bundle hash is available. Claims, approved
+    scope or evidence can change without changing the article text; pooling
+    passes across that boundary would produce a report about no single packet.
     """
     if not path.is_file():
         return None
@@ -489,7 +682,12 @@ def load_prior_review(path: Path, article_sha256: str) -> dict[str, Any] | None:
         return None
     if not isinstance(prior, dict) or not prior.get("passes"):
         return None
-    return prior if prior.get("article_sha256") == article_sha256 else None
+    if prior.get("article_sha256") != article_sha256:
+        return None
+    if (review_bundle_sha256 is not None
+            and prior.get("review_bundle_sha256") != review_bundle_sha256):
+        return None
+    return prior
 
 
 def run_review_passes(
@@ -517,4 +715,5 @@ def run_review_passes(
     # the echo is checked but optional, and a pass that omitted it would leave
     # the next run unable to recognise its own article and silently start over.
     merged["article_sha256"] = review_bundle.get("article_sha256")
+    merged["review_bundle_sha256"] = review_bundle.get("review_bundle_sha256")
     return merged

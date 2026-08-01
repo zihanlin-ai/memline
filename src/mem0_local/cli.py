@@ -2181,7 +2181,10 @@ def wiki_check_draft(
     result: dict[str, Any] = {"draft": str(draft), **report}
     gate_clean = report["clean"]
     if review:
-        from mem0_local.wiki_review import build_review_bundle, validate_review_report
+        from mem0_local.wiki_review import (
+            build_review_bundle,
+            validate_review_artifact,
+        )
 
         review_bundle_path = review_bundle or Path(str(stem) + ".review-bundle.json")
         if not review_bundle_path.is_file():
@@ -2206,8 +2209,9 @@ def wiki_check_draft(
                 "agent_review_required": True,
             }
         else:
-            result["review_validation"] = validate_review_report(
-                json.loads(review.read_text(encoding="utf-8")), compiled)
+            review_report = json.loads(review.read_text(encoding="utf-8"))
+            result["review_validation"] = validate_review_artifact(
+                review_report, compiled)
         gate_clean = bool(result["review_validation"].get("clean"))
     output(result, command="wiki-verify",
            fmt=chosen_format(output_format, json_flag))
@@ -2367,7 +2371,8 @@ def wiki_review_draft(
     # replacing the old report would discard real findings and look like an
     # update. A changed article makes the old report describe sentences that no
     # longer exist, and the hash catches that on its own.
-    prior = None if fresh else load_prior_review(target, compiled["article_sha256"])
+    prior = None if fresh else load_prior_review(
+        target, compiled["article_sha256"], compiled["review_bundle_sha256"])
     if prior:
         console.print(f"adding {passes} pass(es) to the existing {prior['passes']} "
                       f"for this unchanged article")

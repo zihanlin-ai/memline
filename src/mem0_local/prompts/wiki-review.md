@@ -52,6 +52,9 @@ not in it invalidates the report. Do not paraphrase the string, do not
 reconstruct it from evidence, and do not report a name or ticket you saw in a
 packet without first finding it in the article itself — an article that says
 "a colleague" has not named anyone, whatever the memory behind it says.
+If no sensitive string appears in the article, emit no `sensitivity` item at
+all. In particular, do not emit an info item saying that no sensitivity issue
+was found: such a negative result has no problematic article substring to quote.
 
 Return ONE JSON object and nothing else:
 
