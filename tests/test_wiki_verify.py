@@ -39,10 +39,24 @@ class VerifyTest(unittest.TestCase):
         body = "a claim.^[mem:dddd0000-0000-0000-0000-000000000000]"
         self.assertIn("citation_not_in_bundle", self.kinds(body))
 
+    def test_a_malformed_citation_is_caught(self):
+        body = "a claim.^[mem:short]"
+        self.assertIn("citation_invalid_format", self.kinds(body))
+
+    def test_a_citation_missing_its_caret_is_caught(self):
+        body = "a claim.[mem:aaaa1111-2222-3333-4444-555566667777]"
+        self.assertIn("citation_missing_caret", self.kinds(body))
+
     def test_a_section_with_no_citation_is_caught(self):
         body = ("intro.^[mem:aaaa1111-2222-3333-4444-555566667777]\n\n"
                 "## Findings\n\nWe concluded the obvious.\n")
         self.assertIn("section_without_citation", self.kinds(body))
+
+    def test_a_hierarchy_only_heading_does_not_need_a_citation(self):
+        body = ("intro.^[mem:aaaa1111-2222-3333-4444-555566667777]\n\n"
+                "## Group\n\n### Finding\n\n"
+                "supported.^[mem:aaaa1111-2222-3333-4444-555566667777]\n")
+        self.assertNotIn("section_without_citation", self.kinds(body))
 
     def test_a_filled_in_placeholder_is_caught(self):
         body = "the host 7.150.10.239 failed.^[mem:aaaa1111-2222-3333-4444-555566667777]"
@@ -64,6 +78,34 @@ class VerifyTest(unittest.TestCase):
         claims = {"claims": [{"claim": "x", "evidence_refs": ["mem:cccc0000-0000-0000-0000-000000000000"]}]}
         body = "text.^[mem:aaaa1111-2222-3333-4444-555566667777]"
         self.assertIn("claim_ref_not_in_bundle", self.kinds(body, claims))
+
+    def test_a_non_ref_hidden_in_retraction_evidence_is_caught(self):
+        claims = {"claims": [], "retraction_arcs": [{"evidence_refs": ["mems: prose"]}],
+                  "unused_evidence_refs": [
+                      "mem:bbbb1111-2222-3333-4444-555566667777",
+                      "sources/doc.md#Matrix",
+                  ]}
+        body = "text.^[mem:aaaa1111-2222-3333-4444-555566667777]"
+        self.assertIn("sidecar_ref_invalid_format", self.kinds(body, claims))
+
+    def test_evidence_cannot_be_both_cited_and_declared_unused(self):
+        claims = {"claims": [],
+                  "unused_evidence_refs": ["mem:aaaa1111-2222-3333-4444-555566667777",
+                                           "mem:bbbb1111-2222-3333-4444-555566667777",
+                                           "sources/doc.md#Matrix"]}
+        body = "text.^[mem:aaaa1111-2222-3333-4444-555566667777]"
+        self.assertIn("evidence_both_cited_and_unused", self.kinds(body, claims))
+
+    def test_every_bundle_ref_must_be_cited_or_declared_unused(self):
+        claims = {"claims": [], "unused_evidence_refs": []}
+        body = "text.^[mem:aaaa1111-2222-3333-4444-555566667777]"
+        self.assertIn("evidence_neither_cited_nor_unused", self.kinds(body, claims))
+
+    def test_an_invented_unused_ref_is_caught(self):
+        claims = {"claims": [],
+                  "unused_evidence_refs": ["mem:cccc0000-0000-0000-0000-000000000000"]}
+        body = "text.^[mem:aaaa1111-2222-3333-4444-555566667777]"
+        self.assertIn("unused_ref_not_in_bundle", self.kinds(body, claims))
 
     def test_citations_of_superseded_evidence_are_reported_not_failed(self):
         body = ("this was believed.^[mem:bbbb1111-2222-3333-4444-555566667777]")

@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any
 
 CITATION = re.compile(r"\^\[(mem:[0-9a-fA-F-]{8,}|sources/[^\]]+)\]")
+CITATION_TOKEN = re.compile(r"\^\[([^\]]+)\]")
+BARE_CITATION = re.compile(r"(?<!\^)\[(mem:[0-9a-fA-F-]{8,}|sources/[^\]]+)\]")
 PLACEHOLDER = re.compile(r"<(?:HOST|USER|INTERNAL_HOST|INTERNAL_REPO|JOB)-\d+>")
 LEAKS = (
     ("ipv4", re.compile(r"\b(?!127\.0\.0\.1\b)(?:\d{1,3}\.){3}\d{1,3}\b")),
@@ -64,6 +66,35 @@ def resolve_prefix(ref: str, memory_refs: set[str]) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def collect_sidecar_refs(value: Any, findings: list[dict[str, Any]],
+                         path: str = "$") -> set[str]:
+    """Collect every structured ``evidence_refs`` entry in a claims sidecar."""
+    refs: set[str] = set()
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            refs |= collect_sidecar_refs(item, findings, f"{path}[{index}]")
+        return refs
+    if not isinstance(value, dict):
+        return refs
+    for key, item in value.items():
+        item_path = f"{path}.{key}"
+        if key == "evidence_refs":
+            if not isinstance(item, list):
+                findings.append({"kind": "sidecar_evidence_refs_not_list", "detail": item_path})
+                continue
+            for ref in item:
+                if not isinstance(ref, str) or not (
+                    ref.startswith("mem:") or ref.startswith("sources/")
+                ):
+                    findings.append({"kind": "sidecar_ref_invalid_format", "ref": ref,
+                                     "detail": item_path})
+                else:
+                    refs.add(ref)
+        else:
+            refs |= collect_sidecar_refs(item, findings, item_path)
+    return refs
+
+
 def verify(draft_markdown: str, bundle: dict[str, Any], claims: dict[str, Any] | None = None
            ) -> dict[str, Any]:
     memory_refs, source_refs, corpus = _bundle_index(bundle)
@@ -71,6 +102,11 @@ def verify(draft_markdown: str, bundle: dict[str, Any], claims: dict[str, Any] |
     cited = CITATION.findall(draft_markdown)
 
     findings: list[dict[str, Any]] = []
+    for ref in dict.fromkeys(BARE_CITATION.findall(draft_markdown)):
+        findings.append({"kind": "citation_missing_caret", "ref": ref})
+    for token in dict.fromkeys(CITATION_TOKEN.findall(draft_markdown)):
+        if CITATION.fullmatch(f"^[{token}]") is None:
+            findings.append({"kind": "citation_invalid_format", "ref": token})
     abbreviated: dict[str, str] = {}
     for ref in dict.fromkeys(cited):
         if ref in known:
@@ -84,8 +120,13 @@ def verify(draft_markdown: str, bundle: dict[str, Any], claims: dict[str, Any] |
 
     sections = re.split(r"\n(?=#{1,6} )", draft_markdown)
     for section in sections:
-        heading = section.splitlines()[0] if section.strip() else ""
-        if heading.startswith("#") and not CITATION.search(section):
+        lines = section.splitlines()
+        heading = lines[0] if section.strip() else ""
+        # A hierarchy-only heading has no claim to support. Requiring a
+        # citation on it encourages meaningless footnotes; only sections with
+        # actual body text are evidence-bearing.
+        body = "\n".join(lines[1:]).strip()
+        if heading.startswith("#") and body and not CITATION.search(body):
             findings.append({"kind": "section_without_citation", "detail": heading[:80]})
 
     for kind, pattern in LEAKS:
@@ -103,13 +144,37 @@ def verify(draft_markdown: str, bundle: dict[str, Any], claims: dict[str, Any] |
     for number in unsupported[:40]:
         findings.append({"kind": "number_not_in_material", "detail": number})
 
-    claim_refs = {r for c in (claims or {}).get("claims") or [] for r in c.get("evidence_refs") or []}
-    for ref in sorted(claim_refs - known):
-        if resolve_prefix(ref, memory_refs) is None:
+    claim_items = (claims or {}).get("claims") or []
+    if not isinstance(claim_items, list):
+        findings.append({"kind": "claims_not_list"})
+    claim_refs = collect_sidecar_refs(claims or {}, findings)
+    resolved_claim_refs = {resolve_prefix(r, memory_refs) or r for r in claim_refs}
+    for ref in sorted(claim_refs):
+        if ref not in known and resolve_prefix(ref, memory_refs) is None:
             findings.append({"kind": "claim_ref_not_in_bundle", "ref": ref})
+
+    unused_raw = (claims or {}).get("unused_evidence_refs") or []
+    if not isinstance(unused_raw, list):
+        findings.append({"kind": "unused_refs_not_list"})
+        unused_raw = []
+    unused_refs = {r for r in unused_raw if isinstance(r, str)}
+    if any(not isinstance(r, str) for r in unused_raw):
+        findings.append({"kind": "unused_ref_not_string"})
+    resolved_unused = {resolve_prefix(r, memory_refs) or r for r in unused_refs}
+    for ref in sorted(unused_refs):
+        if ref not in known and resolve_prefix(ref, memory_refs) is None:
+            findings.append({"kind": "unused_ref_not_in_bundle", "ref": ref})
 
     superseded = {f"mem:{m['id']}" for m in bundle.get("memories", []) if m.get("superseded")}
     resolved = {abbreviated.get(c, c) for c in cited}
+    both = sorted((resolved & known) & (resolved_unused & known))
+    if both:
+        findings.append({"kind": "evidence_both_cited_and_unused", "refs": both,
+                         "count": len(both)})
+    unaccounted = sorted(known - resolved - resolved_unused)
+    if claims is not None and unaccounted:
+        findings.append({"kind": "evidence_neither_cited_nor_unused", "refs": unaccounted,
+                         "count": len(unaccounted)})
     return {
         "citations": len(cited),
         "distinct_citations": len(set(cited)),
@@ -118,6 +183,8 @@ def verify(draft_markdown: str, bundle: dict[str, Any], claims: dict[str, Any] |
         "coverage": round(len(resolved & known) / max(1, len(known)), 3),
         "cited_superseded": sorted(resolved & superseded),
         "uncited_material": len(known - resolved),
+        "claim_refs": len(resolved_claim_refs & known),
+        "unused_refs": len(resolved_unused & known),
         "findings": findings,
         "clean": not findings,
     }
