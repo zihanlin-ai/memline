@@ -2346,7 +2346,7 @@ def wiki_review_draft(
 ) -> None:
     """Compile the evidence packet, audit it on the configured review endpoint, and validate the report."""
     from mem0_local.wiki_profile import default_prompt
-    from mem0_local.wiki_review import build_review_bundle, run_external_review
+    from mem0_local.wiki_review import build_review_bundle, run_review_passes
 
     draft_text, bundle, claims, topic = _review_artifacts(draft, topics)
     if bundle.get("sanitized") is not True:
