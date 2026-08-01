@@ -76,6 +76,10 @@ stale_app = typer.Typer(help="Inspect and dispose staleness suspicions (advisory
 app.add_typer(stale_app, name="stale")
 protected_app = typer.Typer(help="Inspect temporary displacement protections.")
 stale_app.add_typer(protected_app, name="protected")
+# The wiki is a consumer of the store, not part of it: one namespace keeps that
+# visible, and keeps the seam where this subsystem would be lifted out.
+wiki_app = typer.Typer(help="Compile the workspace wiki from memories and designated documents.")
+app.add_typer(wiki_app, name="wiki")
 
 agent_mode = False
 
@@ -202,6 +206,30 @@ def maybe_daemon_request(op: str, args: dict[str, Any]) -> tuple[bool, Any]:
             ) from retry_exc
     except Exception as exc:
         raise click.ClickException(f"mem0-local daemon {op} failed: {exc}") from exc
+
+
+def read_all_memories(user_id: str = DEFAULT_USER_ID) -> tuple[list[dict[str, Any]], str]:
+    """Every memory, and the moment reading began.
+
+    The moment is returned with the rows because a cursor must record when a
+    run started reading, not when it finished: memories written while a long
+    pass was in flight belong to the next run. Three commands used to page the
+    store themselves, which meant three chances to disagree about that.
+    """
+    from datetime import datetime, timezone
+
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    memories: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        filters = filters_from_scope(user_id, None, None, None, {})
+        got = execute("list", {"filters": filters or None, "top_k": page * 500,
+                               "start": (page - 1) * 500, "end": page * 500})
+        items = got if isinstance(got, list) else (got.get("results") or got.get("memories") or [])
+        memories.extend(items)
+        if len(items) < 500:
+            return memories, started_at
+        page += 1
 
 
 def execute(op: str, args: dict[str, Any]) -> Any:
@@ -1889,10 +1917,13 @@ def get(
     output(result, command="get", fmt=chosen_format(output_format, json_flag))
 
 
-@app.command("wiki-close-run")
+@wiki_app.command("close-run")
 def wiki_close_run(
     state: Path = typer.Argument(..., help="state/compile.json."),
-    started_at: str = typer.Option(..., "--started-at", help="When the run began READING, not when it ended."),
+    started_at: Optional[str] = typer.Option(
+        None, "--started-at",
+        help="When the run began READING. Pass the value the plan recorded; omitting it "
+             "stamps now, which is only correct if nothing was written during the run."),
     source_dir: Optional[Path] = typer.Option(None, "--source-dir", help="sources/, to hash."),
     user_id: str = typer.Option(DEFAULT_USER_ID, "--user-id", "-u"),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
@@ -1901,25 +1932,16 @@ def wiki_close_run(
     """Advance the compile cursor. Only for a run that actually completed."""
     from mem0_local.wiki_state import close_run
 
-    memories: list[dict[str, Any]] = []
-    page = 1
-    while True:
-        filters = filters_from_scope(user_id, None, None, None, {})
-        got = execute("list", {"filters": filters or None, "top_k": page * 500,
-                               "start": (page - 1) * 500, "end": page * 500})
-        items = got if isinstance(got, list) else (got.get("results") or got.get("memories") or [])
-        memories.extend(items)
-        if len(items) < 500:
-            break
-        page += 1
-    new = close_run(state, started_at=started_at, memories=memories, source_dir=source_dir)
+    memories, read_at = read_all_memories(user_id)
+    new = close_run(state, started_at=started_at or read_at, memories=memories,
+                    source_dir=source_dir)
     output({**new, "boundary_memory_ids": len(new["boundary_memory_ids"]),
             "source_hashes": len(new["source_hashes"]), "memories_read": len(memories)},
            command="wiki-close-run", fmt=chosen_format(output_format, json_flag))
 
 
-@app.command("wiki-batch")
-def wiki_batch(
+@wiki_app.command("plan")
+def wiki_plan(
     out: Optional[Path] = typer.Option(None, "--out", help="Write the batch plan here."),
     since: Optional[str] = typer.Option(
         None, "--since",
@@ -1937,28 +1959,21 @@ def wiki_batch(
     """Plan how the store is cut into batches for wiki topic profiling."""
     from mem0_local.wiki_batch import plan_batches, plan_summary
 
-    memories: list[dict[str, Any]] = []
-    page = 1
-    while True:
-        filters = filters_from_scope(user_id, None, None, None, {})
-        got = execute("list", {"filters": filters or None, "top_k": page * 500,
-                               "start": (page - 1) * 500, "end": page * 500})
-        items = got if isinstance(got, list) else (got.get("results") or got.get("memories") or [])
-        memories.extend(items)
-        if len(items) < 500:
-            break
-        page += 1
+    memories, read_at = read_all_memories(user_id)
     batches = plan_batches(memories, since=since, max_memories=max_memories,
                            pack_threshold=pack_threshold)
     if out:
         out.write_text(json.dumps(batches, ensure_ascii=False, indent=2), encoding="utf-8")
     summary = {**plan_summary(batches), "plan_path": str(out) if out else None,
-               "memories_read": len(memories)}
+               "memories_read": len(memories),
+               # Hand this to `wiki close-run`: the cursor must record when the
+               # run began reading, and this is that moment.
+               "read_at": read_at}
     output(summary if out else {"summary": summary, "batches": batches},
            command="wiki-batch", fmt=chosen_format(output_format, json_flag))
 
 
-@app.command("wiki-profile")
+@wiki_app.command("profile")
 def wiki_profile(
     plan: Optional[Path] = typer.Argument(None, help="Batch plan from wiki-batch."),
     prompt: Optional[Path] = typer.Option(
@@ -1988,17 +2003,7 @@ def wiki_profile(
         batches = json.loads(plan.read_text(encoding="utf-8"))
         wanted = [mid for b in batches if b["kind"] in tuple(kinds.split(","))
                   for mid in b["memory_ids"]]
-        texts: dict[str, Any] = {}
-        page = 1
-        while True:
-            filters = filters_from_scope(user_id, None, None, None, {})
-            got = execute("list", {"filters": filters or None, "top_k": page * 500,
-                                   "start": (page - 1) * 500, "end": page * 500})
-            items = got if isinstance(got, list) else (got.get("results") or got.get("memories") or [])
-            texts.update({m["id"]: m for m in items})
-            if len(items) < 500:
-                break
-            page += 1
+        texts = {row['id']: row for row in read_all_memories(user_id)[0]}
         missing = [mid for mid in wanted if mid not in texts]
         if missing:
             console.print(f"[yellow]{len(missing)} planned memories no longer in the store[/yellow]")
@@ -2008,8 +2013,8 @@ def wiki_profile(
     output(summary, command="wiki-profile", fmt=chosen_format(output_format, json_flag))
 
 
-@app.command("bundle")
-def bundle_command(
+@wiki_app.command("bundle")
+def wiki_bundle(
     memory_ids: list[str] = typer.Argument(None, help="Refs to bundle: memory ids or sources/<path>#<heading>."),
     ids_file: Optional[Path] = typer.Option(
         None, "--ids-file", help="File with one ref per line (added to any arguments)."
@@ -2051,7 +2056,7 @@ def bundle_command(
     output(summary if out else bundle, command="bundle", fmt=chosen_format(output_format, json_flag))
 
 
-@app.command("wiki-suggest")
+@wiki_app.command("suggest")
 def wiki_suggest(
     associations: Path = typer.Argument(..., help="Association decision from the agent."),
     profile_dir: list[Path] = typer.Option(..., "--profiles",
@@ -2084,7 +2089,7 @@ def wiki_suggest(
            fmt=chosen_format(output_format, json_flag))
 
 
-@app.command("wiki-draft")
+@wiki_app.command("draft")
 def wiki_draft(
     topics: Path = typer.Argument(..., help="accepted-topics.jsonl."),
     out_dir: Path = typer.Option(..., "--out-dir", help="Where drafts and their bundles go."),
@@ -2125,8 +2130,8 @@ def wiki_draft(
            command="wiki-draft", fmt=chosen_format(output_format, json_flag))
 
 
-@app.command("wiki-verify")
-def wiki_verify(
+@wiki_app.command("check-draft")
+def wiki_check_draft(
     draft: Path = typer.Argument(..., help="Draft Markdown written by wiki-draft."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
@@ -2147,8 +2152,8 @@ def wiki_verify(
            fmt=chosen_format(output_format, json_flag))
 
 
-@app.command("wiki-check")
-def wiki_check(
+@wiki_app.command("check-pages")
+def wiki_check_pages(
     wiki_root: Optional[Path] = typer.Argument(
         None, help="Wiki root directory (contains content/). Default: <workspace>/.agent-memory/wiki."
     ),
