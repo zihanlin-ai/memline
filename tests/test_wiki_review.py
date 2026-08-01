@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
 
 from mem0_local.wiki_review import (
     _content_hash,
     build_review_bundle,
+    load_prior_review,
     merge_reviews,
     run_external_review,
     validate_review_report,
@@ -278,6 +281,76 @@ class MergePassesTest(unittest.TestCase):
         self.assertEqual([p["report_valid"] for p in merged["validation"]["per_pass"]],
                          [True, False])
 
+    def test_the_invalid_pass_is_named_rather_than_left_to_colour_everything(self):
+        # One pass quoting a string the article does not contain should not
+        # read as "this whole audit is untrustworthy" when two others were
+        # clean and every pass's findings are still in the union.
+        merged = merge_reviews([self._report({"c1": "partially_supported"}),
+                                self._report({}, valid=False),
+                                self._report({})])
+        self.assertEqual(merged["validation"]["invalid_passes"], [2])
+        self.assertEqual(merged["flagged_claims"], 1)
+
+    def test_a_later_run_adds_passes_instead_of_replacing_them(self):
+        # Re-auditing an unchanged article returned 5 findings once and 19
+        # another time. Replacing would have thrown away fourteen real ones
+        # while looking like an update.
+        first = merge_reviews([self._report({"c1": "partially_supported", "c2": "supported"})])
+        second = merge_reviews([self._report({"c1": "supported", "c2": "unverifiable"})],
+                               prior=first)
+        self.assertEqual(second["passes"], 2)
+        by_id = {c["claim_id"]: c for c in second["claim_reviews"]}
+        self.assertEqual(by_id["c1"]["verdict"], "partially_supported")
+        self.assertEqual(by_id["c2"]["verdict"], "unverifiable")
+        self.assertEqual((by_id["c1"]["flagged_in"], by_id["c1"]["of_passes"]), (1, 2))
+        self.assertEqual([f["pass"] for f in by_id["c2"]["findings"]], [2])
+
+    def test_accumulated_provenance_records_every_pass_ever_run(self):
+        first = merge_reviews([self._report({})])
+        second = merge_reviews([self._report({}), self._report({})], prior=first)
+        self.assertEqual(len(second["review_provenance"]), 3)
+        self.assertEqual([p["pass"] for p in second["validation"]["per_pass"]], [1, 2, 3])
+
     def test_merging_nothing_is_an_error_not_an_empty_pass(self):
         with self.assertRaises(ValueError):
             merge_reviews([])
+
+
+class PriorReviewTest(unittest.TestCase):
+    """Accumulation is safe only because the article's hash gates it."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "x.review.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write(self, **fields):
+        self.path.write_text(json.dumps({"passes": 3, **fields}), encoding="utf-8")
+
+    def test_a_review_of_the_same_article_is_returned(self):
+        self._write(article_sha256="aaa")
+        self.assertEqual(load_prior_review(self.path, "aaa")["passes"], 3)
+
+    def test_a_review_of_a_different_article_is_not(self):
+        # Its findings describe sentences that may no longer exist.
+        self._write(article_sha256="aaa")
+        self.assertIsNone(load_prior_review(self.path, "bbb"))
+
+    def test_a_review_with_no_hash_is_not_reused(self):
+        # Reports written before the hash was recorded cannot be matched, and
+        # guessing they belong to this article is exactly the wrong default.
+        self._write()
+        self.assertIsNone(load_prior_review(self.path, "aaa"))
+
+    def test_a_missing_or_unreadable_file_is_simply_no_prior(self):
+        self.assertIsNone(load_prior_review(self.path, "aaa"))
+        self.path.write_text("{not json", encoding="utf-8")
+        self.assertIsNone(load_prior_review(self.path, "aaa"))
+
+    def test_a_single_pass_report_from_before_the_merge_is_ignored(self):
+        self.path.write_text(json.dumps({"article_sha256": "aaa", "claim_reviews": []}),
+                             encoding="utf-8")
+        self.assertIsNone(load_prior_review(self.path, "aaa"))

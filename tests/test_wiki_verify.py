@@ -162,3 +162,56 @@ class NumberNoiseTest(unittest.TestCase):
         body = "throughput hit 25900.^[mem:aaaa1111-2222-3333-4444-555566667777]"
         kinds = [f["kind"] for f in verify(draft(body), BUNDLE)["findings"]]
         self.assertIn("number_not_in_material", kinds)
+
+
+class LeakPatternTest(unittest.TestCase):
+    """Identifiers the bundle cannot redact by shape, checked in the article.
+
+    The sanitizer replaces what it recognises; an issue id, a merge request, an
+    internal path and a build tag it cannot. Those were left to a sentence in
+    the prompt asking the writer to omit them, and one article carried all four
+    into its prose — each named in that topic's own sensitivity notes. An
+    instruction the program cannot check is one that holds until it doesn't.
+    """
+
+    def _kinds(self, text):
+        bundle = {"memories": [], "source_sections": []}
+        return {f["kind"][len("redaction_lost_"):]: f["detail"]
+                for f in verify(text, bundle)["findings"]
+                if f["kind"].startswith("redaction_lost_")}
+
+    def test_internal_tracker_ids_are_found(self):
+        self.assertEqual(self._kinds("Filed as IJU4XZ.").get("issue_id"), "IJU4XZ")
+
+    def test_all_caps_words_are_not_mistaken_for_tracker_ids(self):
+        # Without the leading-I anchor this claimed README, REJECT, SHA256 and
+        # PEP604 — four false positives against two real ids in one draft.
+        for word in ("README", "REJECT", "SHA256", "PEP604"):
+            with self.subTest(word=word):
+                self.assertNotIn("issue_id", self._kinds(f"See {word} for details."))
+
+    def test_merge_and_pull_request_numbers_are_found(self):
+        self.assertIn("change_id", self._kinds("Fixed by !1137."))
+        self.assertIn("change_id", self._kinds("Upstreamed as #36030."))
+
+    def test_internal_absolute_paths_are_found(self):
+        self.assertEqual(self._kinds("Run /workspace/scripts/ab_features_8k1k next.")
+                         .get("internal_path"), "/workspace/scripts/ab_features_8k1k")
+
+    def test_internal_build_tags_are_found(self):
+        self.assertEqual(self._kinds("Image vllm-202606120009 failed to pull.")
+                         .get("image_tag"), "vllm-202606120009")
+
+    def test_measurements_are_never_read_as_a_host_pool(self):
+        # A rule for two-octet host pools was tried and removed: `7.246` and
+        # `0.998` are the same shape, so it fired 28-45 times per draft and was
+        # wrong every time. A gate that is always wrong teaches its reader to
+        # skip the report, which costs more than the leak it was meant to catch.
+        text = "Utilisation went 0.93 to 1.05 and throughput 14.55 to 22.66."
+        self.assertEqual(self._kinds(text), {})
+
+    def test_public_identifiers_still_pass(self):
+        # Public model names, versions and commit hashes are allowed to stay;
+        # a rule that removed them would make the articles unusable.
+        text = "DeepSeek-V4-285B at commit a5c61021 on vLLM 0.9.1 gave 22,000 tok/s."
+        self.assertEqual(self._kinds(text), {})

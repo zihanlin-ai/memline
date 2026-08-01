@@ -354,7 +354,8 @@ _VERDICT_RANK = {"supported": 0, "unverifiable": 1, "partially_supported": 2,
 _OVERALL_RANK = {"pass": 0, "revise": 1, "reject": 2}
 
 
-def merge_reviews(reports: list[dict[str, Any]]) -> dict[str, Any]:
+def merge_reviews(reports: list[dict[str, Any]], prior: dict[str, Any] | None = None
+                  ) -> dict[str, Any]:
     """Fold several independent passes over one draft into a union.
 
     One pass is not a measurement. Five audits of one unchanged article flagged
@@ -384,15 +385,31 @@ def merge_reviews(reports: list[dict[str, Any]]) -> dict[str, Any]:
     """
     if not reports:
         raise ValueError("no review passes to merge")
+    # Auditing the same article again adds passes to the union rather than
+    # re-rolling it. Two audits of one unchanged draft returned 5 findings and
+    # 19; replacing the first with the second would have discarded fourteen
+    # real ones and looked like an update. The article's hash is what makes
+    # this safe, and the caller checks it before passing a prior report.
     claims: dict[str, dict[str, Any]] = {}
-    for index, report in enumerate(reports):
+    offset = 0
+    if prior:
+        offset = int(prior.get("passes") or 0)
+        for item in prior.get("claim_reviews") or []:
+            claims[item["claim_id"]] = {**item, "findings": list(item.get("findings") or [])}
+    total = offset + len(reports)
+    article_sha256 = next((r.get("article_sha256") for r in reports if r.get("article_sha256")),
+                          (prior or {}).get("article_sha256"))
+    for entry in claims.values():
+        entry["of_passes"] = total
+
+    for index, report in enumerate(reports, start=offset):
         for item in report.get("claim_reviews") or []:
             if not isinstance(item, dict) or not item.get("claim_id"):
                 continue
             claim_id = item["claim_id"]
             entry = claims.setdefault(claim_id, {
                 "claim_id": claim_id, "verdict": "supported", "flagged_in": 0,
-                "of_passes": len(reports), "findings": [],
+                "of_passes": total, "findings": [],
             })
             verdict = item.get("verdict")
             if _VERDICT_RANK.get(verdict, 0) > _VERDICT_RANK.get(entry["verdict"], 0):
@@ -406,17 +423,23 @@ def merge_reviews(reports: list[dict[str, Any]]) -> dict[str, Any]:
                     "evidence_refs": item.get("evidence_refs"),
                 })
 
-    omissions = [{**item, "pass": index + 1}
-                 for index, report in enumerate(reports)
-                 for item in report.get("omission_reviews") or []
-                 if isinstance(item, dict)]
+    omissions = list((prior or {}).get("omission_reviews") or [])
+    omissions += [{**item, "pass": index + 1}
+                  for index, report in enumerate(reports, start=offset)
+                  for item in report.get("omission_reviews") or []
+                  if isinstance(item, dict)]
 
-    overall = max((r.get("overall_verdict") for r in reports),
+    overall = max([r.get("overall_verdict") for r in reports]
+                  + ([(prior or {}).get("overall_verdict")] if prior else []),
                   key=lambda v: _OVERALL_RANK.get(v, 0), default=None)
     validations = [r.get("validation") or {} for r in reports]
+    prior_passes = list(((prior or {}).get("validation") or {}).get("per_pass") or [])
     flagged = [c for c in claims.values() if c["flagged_in"]]
     return {
-        "passes": len(reports),
+        "passes": total,
+        # The article these passes read. Accumulating onto a different one
+        # would silently pool findings about two different texts.
+        "article_sha256": article_sha256,
         "overall_verdict": overall,
         "claim_reviews": sorted(claims.values(), key=lambda c: c["claim_id"]),
         "omission_reviews": omissions,
@@ -424,21 +447,49 @@ def merge_reviews(reports: list[dict[str, Any]]) -> dict[str, Any]:
         # How much a second opinion actually bought. All passes agreeing is a
         # reason to trust a finding; only one pass seeing it is a reason to run
         # more passes, not to discount it.
-        "unanimous_claims": sum(1 for c in flagged if c["flagged_in"] == len(reports)),
+        "unanimous_claims": sum(1 for c in flagged if c["flagged_in"] == total),
         "single_pass_claims": sum(1 for c in flagged if c["flagged_in"] == 1),
         "validation": {
-            "report_valid": all(v.get("report_valid") for v in validations),
+            # True only when every pass honoured the contract. A pass that
+            # broke it still contributes its findings — the union does not
+            # discard what an otherwise-sloppy reader saw — so the scope of the
+            # breach is named rather than left to colour the whole report.
+            "report_valid": all(v.get("report_valid") for v in validations)
+            and all(p.get("report_valid") for p in prior_passes),
+            "invalid_passes": [p["pass"] for p in prior_passes if not p.get("report_valid")]
+            + [i + 1 for i, v in enumerate(validations, start=offset)
+               if not v.get("report_valid")],
             "deterministic_clean": all(v.get("deterministic_clean") for v in validations),
             "scope_clean": all(v.get("scope_clean") for v in validations),
             "claims_expected": max((v.get("claims_expected") or 0 for v in validations), default=0),
-            "per_pass": [{"pass": i + 1, "report_valid": v.get("report_valid"),
-                          "findings": v.get("findings") or [],
-                          "claim_verdict_counts": v.get("claim_verdict_counts")}
-                         for i, v in enumerate(validations)],
+            "per_pass": prior_passes + [
+                {"pass": i + 1, "report_valid": v.get("report_valid"),
+                 "findings": v.get("findings") or [],
+                 "claim_verdict_counts": v.get("claim_verdict_counts")}
+                for i, v in enumerate(validations, start=offset)],
             "agent_review_required": True,
         },
-        "review_provenance": [r.get("review_provenance") for r in reports],
+        "review_provenance": list((prior or {}).get("review_provenance") or [])
+        + [r.get("review_provenance") for r in reports],
     }
+
+
+def load_prior_review(path: Path, article_sha256: str) -> dict[str, Any] | None:
+    """A previous merged review of *this exact article*, if there is one.
+
+    The hash is the whole safety of accumulation. A review of an earlier draft
+    describes sentences that may no longer exist, and pooling its findings with
+    a new one would produce a report about no single text.
+    """
+    if not path.is_file():
+        return None
+    try:
+        prior = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(prior, dict) or not prior.get("passes"):
+        return None
+    return prior if prior.get("article_sha256") == article_sha256 else None
 
 
 def run_review_passes(
@@ -447,6 +498,7 @@ def run_review_passes(
     *,
     passes: int = 3,
     max_tokens: int = 64000,
+    prior: dict[str, Any] | None = None,
     caller: Callable[..., tuple[Any, CallResult]] = call_json,
     log: Callable[[str], None] = lambda _: None,
 ) -> dict[str, Any]:
@@ -460,4 +512,9 @@ def run_review_passes(
         log(f"pass {index + 1}/{passes}: {flagged} flagged, "
             f"verdict {report.get('overall_verdict')}")
         reports.append(report)
-    return merge_reviews(reports)
+    merged = merge_reviews(reports, prior=prior)
+    # Taken from the bundle this run compiled, not from the model's echo of it:
+    # the echo is checked but optional, and a pass that omitted it would leave
+    # the next run unable to recognise its own article and silently start over.
+    merged["article_sha256"] = review_bundle.get("article_sha256")
+    return merged

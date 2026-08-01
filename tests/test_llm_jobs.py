@@ -86,6 +86,30 @@ class JobTest(unittest.TestCase):
             resolve(thin, "profile")
         self.assertIn("model", str(caught.exception))
 
+    def test_a_job_naming_a_file_credential_does_not_inherit_the_env_one(self):
+        # Endpoint.api_key consults api_key_env first, so inheriting the shared
+        # env variable makes a file-credentialled job send the *other*
+        # endpoint's key. It shows up as a 401 from a relay whose token is
+        # sitting correctly on disk.
+        mixed = {**BASE, "review": {"model": "m", "base_url": "http://relay/v1",
+                                    "api_key_json": "~/auth.json",
+                                    "api_key_json_path": "vendor.key"}}
+        spec = resolve(mixed, "review")[0]
+        self.assertNotIn("api_key_env", spec)
+        self.assertEqual(spec["api_key_json"], "~/auth.json")
+
+    def test_a_job_naming_an_env_credential_does_not_inherit_a_file_one(self):
+        shared = {"base_url": "https://gw/v1", "api_key_json": "~/auth.json",
+                  "api_key_json_path": "vendor.key",
+                  "draft": {"model": "m", "api_key_env": "KEY"}}
+        spec = resolve(shared, "draft")[0]
+        self.assertEqual(spec["api_key_env"], "KEY")
+        self.assertNotIn("api_key_json", spec)
+        self.assertNotIn("api_key_json_path", spec)
+
+    def test_a_job_naming_no_credential_still_inherits_the_shared_one(self):
+        self.assertEqual(resolve(BASE, "review")[0]["api_key_env"], "KEY")
+
     def test_missing_credential_is_named_as_the_missing_key(self):
         thin = {"base_url": "https://gateway.example/v1", "draft": {"model": "m"}}
         with self.assertRaises(config.ConfigError) as caught:

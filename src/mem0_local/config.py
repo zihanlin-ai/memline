@@ -218,8 +218,16 @@ def _resolve_job_table(job: str | None) -> dict[str, Any]:
     # reasoning config is worse than either half of it.
     siblings = {k for k, v in llm.items()
                 if isinstance(v, dict) and k not in ("fallback", "extra_body")}
-    inherited = {k: v for k, v in llm.items()
-                 if k not in chosen and k not in siblings and k != "fallback"}
+    blocked = siblings | {"fallback"}
+    # A credential is one choice, not two. ``Endpoint.api_key`` consults
+    # ``api_key_env`` before ``api_key_json``, so a job that reads its key from
+    # a file and inherits the shared env variable sends the *other* endpoint's
+    # credential and is rejected — a 401 from a relay whose token is sitting
+    # correctly on disk. Naming any credential therefore replaces the inherited
+    # one whole.
+    if any(k in chosen for k in ("api_key_env", "api_key_json")):
+        blocked |= {"api_key_env", "api_key_json", "api_key_json_path"}
+    inherited = {k: v for k, v in llm.items() if k not in chosen and k not in blocked}
     return {**inherited, **chosen}
 
 

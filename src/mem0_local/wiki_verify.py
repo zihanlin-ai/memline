@@ -31,10 +31,42 @@ CITATION = re.compile(r"\^\[(mem:[0-9a-fA-F-]{8,}|sources/[^\]]+)\]")
 CITATION_TOKEN = re.compile(r"\^\[([^\]]+)\]")
 BARE_CITATION = re.compile(r"(?<!\^)\[(mem:[0-9a-fA-F-]{8,}|sources/[^\]]+)\]")
 PLACEHOLDER = re.compile(r"<(?:HOST|USER|INTERNAL_HOST|INTERNAL_REPO|JOB)-\d+>")
+# Shapes that must not reach a published page. The first three replace a
+# redaction the bundle already made, so their presence means the writer filled
+# one back in. The rest are the opposite case: the bundle never redacted them
+# because it cannot recognise them by shape, the approved topic *declared* them
+# sensitive in prose, and the writer was asked in words to leave them out and
+# did not. One article carried an internal host pool, four issue ids, a merge
+# request, an internal script path and another tenant's port straight into the
+# prose, every one of them named in its own topic's sensitivity notes. An
+# instruction the program cannot check is an instruction that holds until it
+# doesn't, so these are checked.
+#
+# They are heuristics over one organisation's conventions and they produce
+# findings for a human, never a block: the cost of a false positive here is one
+# glance, and the cost of a miss is a published leak.
 LEAKS = (
     ("ipv4", re.compile(r"\b(?!127\.0\.0\.1\b)(?:\d{1,3}\.){3}\d{1,3}\b")),
     ("account_id", re.compile(r"\b[a-zA-Z]\d{8}\b")),
     ("internal_host", re.compile(r"\b[\w.-]+\.(?:huawei\.com|inhuawei\.com|hisilicon\.cn)\b")),
+    # A host pool written as its last two octets has no rule here on purpose.
+    # `7.246` and `0.998` are the same shape, and an article of measurements is
+    # nothing but that shape: the pattern matched 28 to 45 times per draft and
+    # every single hit was a ratio or a version. A gate that is wrong every
+    # time it fires teaches its reader to skip the whole report, which costs
+    # more than the leak it was meant to catch. Host pools are left to the
+    # topic's sensitivity notes and the audit.
+    #
+    # Internal tracker ids all begin with I and run six characters. Without the
+    # anchor this also claimed README, REJECT, SHA256 and PEP604.
+    ("issue_id", re.compile(r"\bI[A-Z0-9]{5}\b")),
+    # Merge requests and pull requests by number. A bare number is meaningless
+    # outside the repository that issued it.
+    ("change_id", re.compile(r"(?<![\w!#])[!#]\d{3,6}\b")),
+    # Absolute paths on a machine no reader has.
+    ("internal_path", re.compile(r"(?<![\w/])/(?:workspace|data|home|mnt)/[\w./-]+")),
+    # Build tags naming a specific internal image.
+    ("image_tag", re.compile(r"\bvllm-\d{8,}\b")),
 )
 # Numbers worth tracing back. Small integers appear as counts, step numbers and
 # prose, and checking them produces noise rather than findings.

@@ -2340,13 +2340,15 @@ def wiki_review_draft(
     prompt: Optional[Path] = typer.Option(None, "--prompt", help="Override the review prompt."),
     passes: int = typer.Option(3, "--passes",
         help="Independent audits to merge. One pass misses findings it does not contradict."),
+    fresh: bool = typer.Option(False, "--fresh",
+        help="Discard the existing review instead of adding these passes to it."),
     max_tokens: int = typer.Option(64000, "--max-tokens"),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Compile the evidence packet, audit it on the configured review endpoint, and validate the report."""
     from mem0_local.wiki_profile import default_prompt
-    from mem0_local.wiki_review import build_review_bundle, run_review_passes
+    from mem0_local.wiki_review import build_review_bundle, load_prior_review, run_review_passes
 
     draft_text, bundle, claims, topic = _review_artifacts(draft, topics)
     if bundle.get("sanitized") is not True:
@@ -2359,9 +2361,18 @@ def wiki_review_draft(
     bundle_target.parent.mkdir(parents=True, exist_ok=True)
     bundle_target.write_text(json.dumps(compiled, ensure_ascii=False, indent=1), encoding="utf-8")
     template = prompt.read_text(encoding="utf-8") if prompt else default_prompt("wiki-review")
-    report = run_review_passes(compiled, template, passes=passes, max_tokens=max_tokens,
-                               log=lambda m: console.print(m))
     target = out or Path(str(draft.with_suffix("")) + ".review.json")
+    # Auditing the same text again buys coverage rather than a re-roll: one
+    # unchanged article returned 5 findings on one pass and 19 on another, so
+    # replacing the old report would discard real findings and look like an
+    # update. A changed article makes the old report describe sentences that no
+    # longer exist, and the hash catches that on its own.
+    prior = None if fresh else load_prior_review(target, compiled["article_sha256"])
+    if prior:
+        console.print(f"adding {passes} pass(es) to the existing {prior['passes']} "
+                      f"for this unchanged article")
+    report = run_review_passes(compiled, template, passes=passes, max_tokens=max_tokens,
+                               prior=prior, log=lambda m: console.print(m))
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     validation = report["validation"]
