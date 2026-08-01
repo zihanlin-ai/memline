@@ -160,3 +160,103 @@ def _count(values: Iterable[Any]) -> dict[str, int]:
     for value in values:
         out[str(value)] = out.get(str(value), 0) + 1
     return out
+
+
+# What each page-level flag means for the page, and how urgently. The wording
+# is what a reviewer reads first, so it says what happened rather than naming
+# the check that noticed.
+_FLAG_MEANING: dict[str, tuple[str, str]] = {
+    "memory_missing": (
+        "retired-evidence",
+        "cites a memory that no longer exists; the sentence resting on it is unsupported"),
+    "memory_superseded": (
+        "retired-evidence",
+        "cites a memory that has been replaced; the page may state a belief that was overturned"),
+    "memory_content_changed": (
+        "changed-evidence",
+        "cites a memory whose text changed after publication; the citation resolves but may no "
+        "longer say what the page claims"),
+    "source_missing": (
+        "retired-evidence",
+        "cites a source document that is no longer under sources/"),
+    "source_content_changed": (
+        "changed-evidence",
+        "cites a source section whose document changed after publication"),
+    "memory_status_unverified": (
+        "unverifiable-evidence",
+        "the store could not confirm whether this memory is still current"),
+    "missing_provenance": (
+        "missing-provenance",
+        "formal page carries no sources block, so nothing it says can be traced"),
+    "malformed_source_entry": (
+        "missing-provenance", "a provenance entry cannot be read"),
+    "missing_content_hash": (
+        "missing-provenance",
+        "a provenance entry records no hash, so silent edits to its evidence cannot be detected"),
+    "unknown_ref_scheme": ("missing-provenance", "a provenance ref uses an unrecognised scheme"),
+    "link_broken": ("broken-link", "links to a file that does not exist"),
+    "link_outside_wiki": ("broken-link", "links outside the wiki"),
+    "source_outside_wiki": ("broken-link", "cites a path outside the wiki"),
+}
+
+
+def maintenance_suggestions(check_report: dict[str, Any], *, run: int,
+                            start_number: int = 0) -> list[dict[str, Any]]:
+    """Turn page-check flags into suggestions, one per affected page.
+
+    This exists because the alternative did not work. The rule was written
+    down — compile should also propose maintenance from the page check — but
+    it lived only in the skill, as an instruction for whoever was driving, and
+    it named a command that had since been renamed. Nothing in the program
+    read a check report, and no maintenance suggestion was ever produced.
+
+    A retired memory is the case that makes this non-optional. A *superseded*
+    one is at least visible from the store: its session moved, so the next
+    incremental compile re-reads and re-profiles it. A *deleted* one is not
+    visible at all — the incremental plan iterates memories that exist, and a
+    memory that is gone leaves nothing to iterate. The only record that the
+    page ever depended on it is the page's own frontmatter, which is exactly
+    what the check reads. Skip the check and that dependency is not merely
+    missed this run; it becomes permanently invisible.
+
+    Grouped per page rather than per flag: eleven dead citations on one page
+    are one decision about one page, not eleven.
+    """
+    by_page: dict[str, list[dict[str, Any]]] = {}
+    for flag in check_report.get("flags") or []:
+        if isinstance(flag, dict) and flag.get("page"):
+            by_page.setdefault(flag["page"], []).append(flag)
+
+    out: list[dict[str, Any]] = []
+    for page, flags in sorted(by_page.items()):
+        kinds = sorted({f.get("kind") for f in flags if f.get("kind")})
+        categories = {_FLAG_MEANING.get(k, ("other", k))[0] for k in kinds}
+        reasons = [_FLAG_MEANING.get(k, ("other", f"flagged {k}"))[1] for k in kinds]
+        refs = [f["ref"] for f in flags if f.get("ref")]
+        # Blog is frozen: its body is the record of what was believed, so the
+        # fix is an erratum beside it rather than an edit to it. Docs are
+        # living and are simply corrected.
+        frozen = page.startswith("content/blog/")
+        out.append({
+            "id": f"run-{run:03d}-S{start_number + len(out) + 1:03d}",
+            "run": run,
+            "type": "erratum" if frozen else "maintenance",
+            "topic_key": f"maintain-{Path(page).stem}",
+            "title": f"{'Erratum for' if frozen else 'Refresh'} {page}",
+            "value": "; ".join(sorted(set(reasons))),
+            "rationale": ("A frozen article cannot be rewritten, so a correction belongs in "
+                          "content/errata/ beside it." if frozen else
+                          "A living page states current guidance and its evidence moved."),
+            "member_threads": [],
+            "session_count": 0,
+            # The page's own dead refs, so a reviewer sees what broke without
+            # opening the check report.
+            "evidence": [{"ref": ref, "sha256": None} for ref in sorted(set(refs))],
+            "evidence_gaps": f"{len(flags)} flag(s): {', '.join(kinds)}",
+            "conflicts": "none seen",
+            "sensitive": "none seen",
+            "proposed_location": page,
+            "affected_pages": page,
+            "flag_categories": sorted(categories),
+        })
+    return out

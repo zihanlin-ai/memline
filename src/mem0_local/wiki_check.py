@@ -74,7 +74,11 @@ def _memory_text(record: Any) -> str | None:
 
 
 def _check_memory_ref(
-    execute: ExecuteFn, memory_id: str, recorded_hash: str | None
+    execute: ExecuteFn,
+    memory_id: str,
+    recorded_hash: str | None,
+    *,
+    check_superseded: bool = True,
 ) -> list[dict[str, str]]:
     """Return flag dicts (without page context) for one mem:<id> reference."""
     flags: list[dict[str, str]] = []
@@ -93,9 +97,12 @@ def _check_memory_ref(
         flags.append({"kind": "memory_status_unverified", "detail": str(exc)})
         return flags
     head_ids = _head_ids(head)
-    if head_ids and memory_id not in head_ids:
+    if head_ids and memory_id not in head_ids and check_superseded:
         flags.append(
-            {"kind": "memory_superseded", "detail": "head: " + ", ".join(sorted(head_ids))}
+            {
+                "kind": "memory_superseded",
+                "detail": "head: " + ", ".join(sorted(head_ids)),
+            }
         )
     return flags
 
@@ -161,6 +168,11 @@ def run_check(wiki_root: Path, execute: ExecuteFn) -> dict[str, Any]:
     pages = sorted(p for p in content_dir.rglob("*.md")) if content_dir.is_dir() else []
     for page in pages:
         rel = str(page.relative_to(wiki_root))
+        # A Blog is a frozen historical record. Its cited memory must still
+        # exist and retain its publication-time text, but a later head does not
+        # make the historical article stale. Docs represent current guidance,
+        # so their provenance must continue to resolve to active heads.
+        check_superseded = not rel.startswith("content/blog/")
         markdown = page.read_text(encoding="utf-8")
         front = parse_frontmatter(markdown)
         sources = front.get("sources")
@@ -169,14 +181,32 @@ def run_check(wiki_root: Path, execute: ExecuteFn) -> dict[str, Any]:
             sources = sources if isinstance(sources, list) else []
         for entry in sources or []:
             if not isinstance(entry, dict) or not isinstance(entry.get("ref"), str):
-                flags.append({"page": rel, "kind": "malformed_source_entry", "detail": str(entry)})
+                flags.append(
+                    {
+                        "page": rel,
+                        "kind": "malformed_source_entry",
+                        "detail": str(entry),
+                    }
+                )
                 continue
             ref = entry["ref"]
             recorded_hash = entry.get("content_hash")
             if not recorded_hash:
-                flags.append({"page": rel, "ref": ref, "kind": "missing_content_hash", "detail": ""})
+                flags.append(
+                    {
+                        "page": rel,
+                        "ref": ref,
+                        "kind": "missing_content_hash",
+                        "detail": "",
+                    }
+                )
             if ref.startswith("mem:"):
-                found = _check_memory_ref(execute, ref[len("mem:"):], recorded_hash)
+                found = _check_memory_ref(
+                    execute,
+                    ref[len("mem:") :],
+                    recorded_hash,
+                    check_superseded=check_superseded,
+                )
             elif ref.startswith("sources/"):
                 found = _check_source_ref(wiki_root, ref, recorded_hash)
             else:

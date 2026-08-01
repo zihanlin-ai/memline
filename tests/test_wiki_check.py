@@ -43,29 +43,45 @@ class WikiCheckTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def page(self, body, name="page.md"):
-        (self.root / "content" / name).write_text(body, encoding="utf-8")
+        path = self.root / "content" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
 
     def flags(self, execute):
         return run_check(self.root, execute)["flags"]
 
-    def provenance_page(self, content_hash=None):
+    def provenance_page(self, content_hash=None, *, name="page.md"):
         hash_line = f'    content_hash: "{content_hash}"\n' if content_hash else ""
         self.page(
-            "---\nsources:\n" + f'  - ref: "mem:{MEM_ID}"\n' + hash_line + "---\nbody\n"
+            "---\nsources:\n"
+            + f'  - ref: "mem:{MEM_ID}"\n'
+            + hash_line
+            + "---\nbody\n",
+            name=name,
         )
 
     def kinds(self, execute):
         return [f["kind"] for f in self.flags(execute)]
 
-    def test_superseded_head_list_of_strings_is_detected(self):
-        self.provenance_page(sha256_text(MEM_TEXT))
+    def test_docs_require_an_active_memory_head(self):
+        self.provenance_page(sha256_text(MEM_TEXT), name="docs/page.md")
         kinds = self.kinds(make_execute(head={"heads": [HEAD_ID]}))
         self.assertEqual(kinds, ["memory_superseded"])
 
-    def test_active_head_is_clean(self):
-        self.provenance_page(sha256_text(MEM_TEXT))
+    def test_docs_with_an_active_memory_head_are_clean(self):
+        self.provenance_page(sha256_text(MEM_TEXT), name="docs/page.md")
         kinds = self.kinds(make_execute(head={"heads": [MEM_ID]}))
         self.assertEqual(kinds, [])
+
+    def test_frozen_blog_may_archive_a_superseded_memory(self):
+        self.provenance_page(sha256_text(MEM_TEXT), name="blog/post.md")
+        kinds = self.kinds(make_execute(head={"heads": [HEAD_ID]}))
+        self.assertEqual(kinds, [])
+
+    def test_blog_archive_still_checks_publication_time_content_hash(self):
+        self.provenance_page(sha256_text("older text"), name="blog/post.md")
+        kinds = self.kinds(make_execute(head={"heads": [HEAD_ID]}))
+        self.assertEqual(kinds, ["memory_content_changed"])
 
     def test_missing_content_hash_is_flagged(self):
         self.provenance_page(content_hash=None)
@@ -89,9 +105,12 @@ class WikiCheckTest(unittest.TestCase):
         self.assertEqual(self.kinds(make_execute(get_raises=True)), ["memory_missing"])
 
     def test_broken_relative_link_is_flagged(self):
-        self.page("---\nsources:\n" + f'  - ref: "mem:{MEM_ID}"\n'
-                  + f'    content_hash: "{sha256_text(MEM_TEXT)}"\n'
-                  + "---\nsee [gone](./gone.md)\n")
+        self.page(
+            "---\nsources:\n"
+            + f'  - ref: "mem:{MEM_ID}"\n'
+            + f'    content_hash: "{sha256_text(MEM_TEXT)}"\n'
+            + "---\nsee [gone](./gone.md)\n"
+        )
         self.assertIn("link_broken", self.kinds(make_execute(head=None)))
 
     def test_readme_pages_are_exempt_from_provenance(self):

@@ -2080,11 +2080,20 @@ def wiki_suggest(
     ledger: Optional[Path] = typer.Option(
         None, "--ledger", help="decisions.md, so rejected topics are not proposed again."
     ),
+    wiki_root: Optional[Path] = typer.Option(
+        None, "--wiki-root",
+        help="Wiki root whose published pages are checked for retired evidence. "
+             "Defaults to the parent of --out."),
+    skip_page_check: bool = typer.Option(
+        False, "--skip-page-check",
+        help="Do not check published pages. A deleted memory is invisible to the "
+             "incremental plan, so skipping this hides it permanently."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Assemble reviewed associations into the suggestion list, resolving evidence."""
-    from mem0_local.wiki_suggest import build_suggestions, load_threads
+    from mem0_local.wiki_check import run_check
+    from mem0_local.wiki_suggest import build_suggestions, load_threads, maintenance_suggestions
 
     def resolve(memory_id: str) -> str | None:
         try:
@@ -2097,10 +2106,38 @@ def wiki_suggest(
     topics = topics.get("topics", topics) if isinstance(topics, dict) else topics
     suggestions, report = build_suggestions(
         topics, load_threads(*profile_dir), resolve, run=run, ledger=ledger)
+
+    # The published pages are the only place a *deleted* memory is still
+    # recorded: the incremental plan iterates what exists, so a citation whose
+    # memory is gone leaves nothing for it to notice. Running the check here
+    # rather than asking whoever drives compile to remember it is the whole
+    # point — the instruction existed for weeks, named a command that had since
+    # been renamed, and produced not one maintenance suggestion.
+    root = wiki_root or out.resolve().parent.parent
+    page_check: dict[str, Any] = {"skipped": True}
+    if not skip_page_check and (root / "content").is_dir():
+        page_check = run_check(root, execute)
+        maintenance = maintenance_suggestions(page_check, run=run,
+                                              start_number=len(suggestions))
+        if maintenance:
+            console.print(f"[yellow]{len(maintenance)} published page(s) need attention: "
+                          f"{page_check['flag_count']} flag(s)[/yellow]")
+        suggestions += maintenance
+
     out.write_text("".join(json.dumps(s, ensure_ascii=False) + "\n" for s in suggestions),
                    encoding="utf-8")
-    output({**report, "out": str(out)}, command="wiki-suggest",
-           fmt=chosen_format(output_format, json_flag))
+    output({**report, "suggestions": len(suggestions),
+            "by_type": _count_types(suggestions),
+            "page_check": {k: v for k, v in page_check.items() if k != "flags"},
+            "out": str(out)},
+           command="wiki-suggest", fmt=chosen_format(output_format, json_flag))
+
+
+def _count_types(suggestions: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in suggestions:
+        counts[item.get("type") or "?"] = counts.get(item.get("type") or "?", 0) + 1
+    return dict(sorted(counts.items()))
 
 
 @wiki_app.command("draft")
