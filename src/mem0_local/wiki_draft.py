@@ -94,7 +94,7 @@ def draft_topic(
     *,
     wiki_root: Path,
     review_file: Path | None = None,
-    max_tokens: int = 64000,
+    max_tokens: int = 128000,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """Bundle, draft, and write ``<slug>.md`` plus its sidecars. Returns a summary."""
