@@ -90,6 +90,7 @@ def _looks_refused(exc: Exception) -> bool:
     return "high risk" in text or "content" in text and "reject" in text
 
 
+
 def call_json(
     prompt: str,
     *,
