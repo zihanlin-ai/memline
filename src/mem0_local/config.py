@@ -100,16 +100,46 @@ EMBEDDING_PROVIDER = str(value("embedder", "provider", "fastembed"))
 EMBEDDING_MODEL = str(value("embedder", "model", "jinaai/jina-embeddings-v2-base-zh"))
 EMBEDDING_DIMS = int(value("embedder", "dims", 768))
 
-LLM_PROVIDER = str(value("llm", "provider", "openrouter"))
-LLM_MODEL = str(value("llm", "model", "@preset/work"))
-LLM_BASE_URL = str(value("llm", "base_url", "https://openrouter.ai/api/v1"))
-LLM_SITE_URL = str(value("llm", "site_url", "http://localhost"))
-LLM_APP_NAME = str(value("llm", "app_name", "mem0-local"))
-LLM_API_KEY_ENV = str(value("llm", "api_key_env", "OPENROUTER_API_KEY"))
+# ---------------------------------------------------------------------------
+# LLM endpoints
+#
+# Every LLM call in this package belongs to a named *job*, and each job reads
+# its endpoint from ``[llm.<job>]``. The split of responsibility is deliberate
+# and total: the code owns the job names and the knobs (budgets, retries,
+# timeouts), the configuration owns every identity — vendor, model, base_url,
+# credential. None of those has a default here.
+#
+# That rule was bought. The relay serving the drafting model ran out of quota
+# mid-run and its channel then disappeared entirely, and because this module
+# could still resolve *an* endpoint from built-in defaults, the failure never
+# surfaced as "your configuration names a model that no longer exists" — work
+# just continued somewhere else, on someone's metered account, producing
+# articles nobody could tell apart until they were measured. An endpoint
+# identity nobody wrote down is not a default; it is a guess about which
+# vendor gets billed.
+#
+# Jobs are split by the work, not by the module that happens to call them, so
+# that two jobs with genuinely different economics can never be forced onto one
+# model. The pairing that matters most is draft/review: an audit is only
+# independent if it is allowed to run on a different model from the writing it
+# audits, and that is a configuration question, not a code one.
+LLM_JOBS = (
+    "infer",    # mem0's own fact extraction behind `add --infer`
+    "rerank",   # the opt-in `search --rerank` relevance scorer
+    "judge",    # staleness / necessity / safety / correctness
+    "profile",  # wiki: one call per memory batch or source document
+    "draft",    # wiki: one call per article
+    "review",   # wiki: the independent audit of a draft
+)
+
+
+class ConfigError(RuntimeError):
+    """config.toml cannot answer a question the code must not answer for it."""
+
 
 # Fields of one endpoint spec, mirroring mem0_local.llm.Endpoint. Anything
-# else under [llm] (paths, provider name, the legacy keys above) is config
-# for other layers and must not reach the Endpoint constructor.
+# else under [llm] (paths, provider name, per-job knobs) is config for other
+# layers and must not reach the Endpoint constructor.
 _ENDPOINT_FIELDS = (
     "model",
     "base_url",
@@ -121,6 +151,11 @@ _ENDPOINT_FIELDS = (
     "stream",
     "extra_body",
 )
+
+# Knobs a job may state in config; anything absent keeps the caller's own
+# value. These are budgets and patience, not identities: a wrong one costs a
+# retry, where a wrong identity costs the wrong vendor.
+_KNOB_FIELDS = ("max_tokens", "attempts_per_endpoint", "timeout", "backoff")
 
 
 def _endpoint_spec(raw: dict[str, Any], name: str, *, inherit: dict[str, Any]) -> dict[str, Any]:
@@ -137,44 +172,79 @@ def _endpoint_spec(raw: dict[str, Any], name: str, *, inherit: dict[str, Any]) -
     return spec
 
 
-def llm_endpoint_specs(profile: str | None = None) -> list[dict[str, Any]]:
-    """Endpoints in preference order: the profile's table first, then its fallbacks.
+def _require_identity(spec: dict[str, Any], where: str) -> dict[str, Any]:
+    """Fail with the exact missing key rather than resolving to a built-in one."""
+    missing = [key for key in ("model", "base_url") if not spec.get(key)]
+    if not (spec.get("api_key_env") or spec.get("api_key_json")):
+        missing.append("api_key_env or api_key_json")
+    if not missing:
+        return spec
+    # A fallback states its whole identity; only a job table inherits. Saying
+    # otherwise would send someone to edit [llm] and watch nothing change.
+    fix = ("state it on this table" if spec.get("name") != "primary"
+           else "state it on this table or on [llm] for it to inherit")
+    raise ConfigError(
+        f"[{where}] is missing {', '.join(missing)}. Endpoint identity has no "
+        f"default in code — {fix}, in {CONFIG_PATH or 'config.toml'}.")
+
+
+def _resolve_job_table(job: str | None) -> dict[str, Any]:
+    """``[llm]`` merged with ``[llm.<job>]``, with the job's own keys winning."""
+    llm = section("llm")
+    if job is None:
+        return llm
+    if job not in LLM_JOBS:
+        # A typo must not resolve to some other job's model. The old behaviour
+        # here was to fall through to [llm] so a caller was never disabled;
+        # that traded a loud failure for a silent bill on the wrong endpoint.
+        raise ConfigError(f"unknown llm job {job!r}; known jobs: {', '.join(LLM_JOBS)}")
+    chosen = llm.get(job)
+    if not isinstance(chosen, dict):
+        return llm
+    # A job inherits what it does not state — base_url, credential, attribution
+    # headers, extra_body — so a job may name a model and nothing else. Two
+    # things never cross the boundary:
+    #
+    # ``fallback``, because a fallback is a choice of *which other model* runs
+    # this job when the first one cannot, and the parent's answer was chosen
+    # for different work. Inheriting it is how a drafting job silently acquires
+    # the judges' cheap vendor and returns a thinner article that still looks
+    # like a success. A job with no fallback of its own has no fallback.
+    #
+    # Sibling job tables, because they are other jobs, not settings for this
+    # one.
+    #
+    # A key the job does state replaces the inherited one whole: a half-merged
+    # reasoning config is worse than either half of it.
+    siblings = {k for k, v in llm.items()
+                if isinstance(v, dict) and k not in ("fallback", "extra_body")}
+    inherited = {k: v for k, v in llm.items()
+                 if k not in chosen and k not in siblings and k != "fallback"}
+    return {**inherited, **chosen}
+
+
+def llm_knobs(job: str | None = None) -> dict[str, Any]:
+    """Budgets and patience this job states, if any. Absent means "caller decides"."""
+    table = _resolve_job_table(job)
+    return {key: table[key] for key in _KNOB_FIELDS if key in table}
+
+
+def llm_endpoint_specs(job: str | None = None) -> list[dict[str, Any]]:
+    """Endpoints in preference order: the job's own table first, then its fallbacks.
 
     ``[llm.fallback]`` may be a single table or an array of tables; presenting
     both as one ordered list keeps the retry loop indifferent to how many
     fallbacks exist.
 
-    A ``profile`` selects a different table — ``[llm.wiki]`` for
-    ``profile="wiki"`` — so work with different economics can use a different
-    model without touching the judges. A profile that is not configured falls
-    back to ``[llm]``, which keeps a missing section from silently disabling a
-    caller; anything the profile omits is inherited from ``[llm]`` too, so a
-    profile can name a model and nothing else.
+    ``job`` selects a table — ``[llm.draft]`` for ``job="draft"`` — so work with
+    different economics never shares a model by accident. Anything the job
+    omits is inherited from ``[llm]``, so a job may name a model and nothing
+    else; what it may not do is leave the identity unnamed everywhere, because
+    there is nothing here to fall back on.
     """
-    llm = section("llm")
-    if profile:
-        chosen = llm.get(profile)
-        if isinstance(chosen, dict):
-            # Inherit every key the profile does not state, including
-            # ``fallback`` and ``extra_body``: a profile that names only a model
-            # would otherwise silently lose its fallback endpoint. A key the
-            # profile does state replaces the inherited one whole — a
-            # half-merged reasoning config is worse than either half.
-            # Sibling profile tables are not endpoint settings and never merge.
-            siblings = {k for k, v in llm.items()
-                        if isinstance(v, dict) and k not in ("fallback", "extra_body")}
-            inherited = {k: v for k, v in llm.items()
-                         if k not in chosen and k not in siblings}
-            llm = {**inherited, **chosen}
-    primary = _endpoint_spec(llm, "primary", inherit={})
-    primary.setdefault("model", LLM_MODEL)
-    primary.setdefault("base_url", LLM_BASE_URL)
-    # The legacy api_key_env default only applies when the primary names no
-    # credential at all. Defaulting it unconditionally would hand an endpoint
-    # that reads its key from a file the *other* endpoint's env credential,
-    # because api_key_env is consulted first.
-    if "api_key_env" not in primary and "api_key_json" not in primary:
-        primary["api_key_env"] = LLM_API_KEY_ENV
+    llm = _resolve_job_table(job)
+    primary = _require_identity(_endpoint_spec(llm, "primary", inherit={}),
+                                f"llm.{job}" if job else "llm")
 
     raw_fallbacks = llm.get("fallback") or []
     if isinstance(raw_fallbacks, dict):
@@ -185,7 +255,8 @@ def llm_endpoint_specs(profile: str | None = None) -> list[dict[str, Any]]:
     specs = [primary]
     for index, raw in enumerate(raw_fallbacks):
         name = "fallback" if len(raw_fallbacks) == 1 else f"fallback{index + 1}"
-        specs.append(_endpoint_spec(raw, name, inherit=inherit))
+        where = f"llm.{job}.{name}" if job else f"llm.{name}"
+        specs.append(_require_identity(_endpoint_spec(raw, name, inherit=inherit), where))
     return specs
 
 MANUAL_SOURCE = str(value("metadata", "manual_source", "manual"))

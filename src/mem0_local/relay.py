@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from mem0_local.config import llm_endpoint_specs
+from mem0_local.config import llm_endpoint_specs, llm_knobs
 from mem0_local.llm import Endpoint
 from mem0_local.proxy import client_for_base_url
 from mem0_local.runtime import setup_env
@@ -93,7 +93,7 @@ def _looks_refused(exc: Exception) -> bool:
 def call_json(
     prompt: str,
     *,
-    profile: str | None = "wiki",
+    job: str,
     endpoints: list[Endpoint] | None = None,
     max_tokens: int = 128000,
     attempts_per_endpoint: int = 4,
@@ -106,19 +106,33 @@ def call_json(
     unparseable answer costs one attempt; a refusal ends the whole call, since
     every endpoint of the same vendor will refuse the same content.
 
-    ``profile`` names the config section to read endpoints from, so long
-    structured work can run on a different model from mem0's own judges.
+    ``job`` names the config table to read endpoints from, and it is required:
+    a default here would mean any new caller that forgot to say what it was
+    doing quietly spent some other job's budget on some other job's model.
+    Config may also state this job's knobs, and when it does they win over the
+    caller's — the numbers below are what a caller assumes when nobody has
+    tuned the job, not a policy the configuration has to argue with.
 
-    The primary is retried several times before the fallback is reached: this
-    path drops connections often enough that one flake would otherwise move
-    the work — and its cost — to a metered vendor for no reason.
+    The primary is retried several times before the fallback is reached: a
+    relay path drops connections often enough that one flake would otherwise
+    move the work — and its cost — to a metered vendor for no reason.
+
+    ``timeout`` is httpx's, so it bounds the wait for *each read*, not the call
+    as a whole. A stream that goes quiet mid-answer therefore hangs for this
+    long per silent gap; one such gap held a drafting run for 55 minutes with
+    nothing to show and no error.
     """
     # The credential file has to be loaded even when nothing else in this
     # process touched the store: a CLI that reads its data through the daemon
     # never builds a client, so without this the fallback endpoint finds no key
     # and a primary outage turns into a total outage.
     setup_env()
-    endpoints = endpoints or [Endpoint(**spec) for spec in llm_endpoint_specs(profile)]
+    knobs = llm_knobs(job)
+    max_tokens = int(knobs.get("max_tokens", max_tokens))
+    attempts_per_endpoint = int(knobs.get("attempts_per_endpoint", attempts_per_endpoint))
+    timeout = float(knobs.get("timeout", timeout))
+    backoff = float(knobs.get("backoff", backoff))
+    endpoints = endpoints or [Endpoint(**spec) for spec in llm_endpoint_specs(job)]
     errors: list[str] = []
     for endpoint in endpoints:
         for attempt in range(1, attempts_per_endpoint + 1):

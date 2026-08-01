@@ -330,7 +330,7 @@ def _get_judge_llm() -> Any:
         if _judge_llm is None:
             from mem0_local.llm import build_llm
 
-            _judge_llm = build_llm(4096)
+            _judge_llm = build_llm(4096, job="judge")
         return _judge_llm
 
 

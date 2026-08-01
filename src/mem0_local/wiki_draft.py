@@ -127,7 +127,7 @@ def draft_topic(
         json.dumps(mapping, ensure_ascii=False, indent=1), encoding="utf-8")
 
     prompt = render(template, topic, material_of(bundle))
-    data, result = call_json(prompt, max_tokens=max_tokens)
+    data, result = call_json(prompt, job="draft", max_tokens=max_tokens)
     missing = [f for f in REQUIRED_FIELDS if f not in data]
     if missing:
         raise ValueError(f"{slug}: draft is missing {missing}")

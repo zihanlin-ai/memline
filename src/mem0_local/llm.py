@@ -250,9 +250,14 @@ class FallbackLLM:
         raise RuntimeError("all llm endpoints failed: " + " | ".join(errors))
 
 
-def build_llm(max_tokens: int) -> FallbackLLM:
-    """The configured judge LLM: primary first, fallbacks in config order."""
-    endpoints = [Endpoint(**spec) for spec in llm_endpoint_specs()]
+def build_llm(max_tokens: int, *, job: str) -> FallbackLLM:
+    """This job's endpoint chain: primary first, fallbacks in config order.
+
+    ``job`` is required. There is no sensible endpoint to assume for a caller
+    that has not said what work it is doing, and assuming one is how a call
+    ends up on a model nobody chose for it.
+    """
+    endpoints = [Endpoint(**spec) for spec in llm_endpoint_specs(job)]
     return FallbackLLM(endpoints, max_tokens)
 
 

@@ -69,9 +69,9 @@ class EndpointSpecTests(unittest.TestCase):
 
     def test_multiple_fallbacks_keep_declaration_order(self):
         cfg = self._reload_with(
-            '[llm]\nmodel = "m1"\napi_key_env = "K1"\n'
-            '\n[[llm.fallback]]\nmodel = "m2"\napi_key_env = "K2"\n'
-            '\n[[llm.fallback]]\nmodel = "m3"\napi_key_env = "K3"\n'
+            '[llm]\nmodel = "m1"\nbase_url = "https://a/v1"\napi_key_env = "K1"\n'
+            '\n[[llm.fallback]]\nmodel = "m2"\nbase_url = "https://b/v1"\napi_key_env = "K2"\n'
+            '\n[[llm.fallback]]\nmodel = "m3"\nbase_url = "https://c/v1"\napi_key_env = "K3"\n'
         )
         specs = cfg.llm_endpoint_specs()
         self.assertEqual([s["name"] for s in specs], ["primary", "fallback1", "fallback2"])
@@ -88,7 +88,8 @@ class EndpointSpecTests(unittest.TestCase):
 
     def test_fallback_must_declare_its_own_credential(self):
         cfg = self._reload_with(
-            '[llm]\nmodel = "m1"\napi_key_env = "K1"\n\n[llm.fallback]\nmodel = "m2"\n'
+            '[llm]\nmodel = "m1"\nbase_url = "https://a/v1"\napi_key_env = "K1"\n'
+            '\n[llm.fallback]\nmodel = "m2"\nbase_url = "https://b/v1"\n'
         )
         with self.assertRaises(ValueError):
             cfg.llm_endpoint_specs()
@@ -106,9 +107,9 @@ class EndpointSpecTests(unittest.TestCase):
 
     def test_attribution_headers_are_inherited_but_extra_body_is_not(self):
         cfg = self._reload_with(
-            '[llm]\nmodel = "m1"\napi_key_env = "K1"\n'
+            '[llm]\nmodel = "m1"\nbase_url = "https://a/v1"\napi_key_env = "K1"\n'
             'site_url = "http://site"\napp_name = "app"\n'
-            '\n[llm.fallback]\nmodel = "m2"\napi_key_env = "K2"\n'
+            '\n[llm.fallback]\nmodel = "m2"\nbase_url = "https://b/v1"\napi_key_env = "K2"\n'
             '\n[llm.fallback.extra_body.provider]\nonly = ["deepseek"]\n'
         )
         primary, fallback = cfg.llm_endpoint_specs()

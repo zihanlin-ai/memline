@@ -27,10 +27,7 @@ from mem0_local.config import (
     EMBEDDING_MODEL,
     EMBEDDING_PROVIDER,
     HISTORY_DB,
-    LLM_API_KEY_ENV,
-    LLM_MODEL,
-    LLM_BASE_URL,
-    LLM_PROVIDER,
+    LLM_JOBS,
     LOCAL_TZ,
     MANUAL_SESSION,
     MANUAL_SOURCE,
@@ -792,6 +789,27 @@ def daemon_status(
     output(result, command="daemon-status", fmt=chosen_format(output_format, json_flag))
 
 
+def _llm_job_status(job: str) -> dict[str, Any]:
+    """What this job resolves to, or why it does not resolve at all."""
+    from mem0_local.config import ConfigError, llm_endpoint_specs, llm_knobs
+
+    try:
+        specs = llm_endpoint_specs(job)
+    except ConfigError as exc:
+        return {"error": str(exc)}
+    primary = specs[0]
+    key_env = primary.get("api_key_env")
+    return {
+        "model": primary["model"],
+        "base_url": primary["base_url"],
+        "credential": key_env or primary.get("api_key_json"),
+        # Whether the key is *present*, never the key.
+        "credential_set": bool(os.environ.get(key_env)) if key_env else None,
+        "fallbacks": [spec["model"] for spec in specs[1:]],
+        "knobs": llm_knobs(job) or None,
+    }
+
+
 @app.command()
 def status(
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
@@ -815,14 +833,10 @@ def status(
         "mem0_dir": os.environ["MEM0_DIR"],
         "fastembed_cache_path": os.environ["FASTEMBED_CACHE_PATH"],
         "embedder": {"provider": EMBEDDING_PROVIDER, "model": EMBEDDING_MODEL, "dims": EMBEDDING_DIMS},
-        "llm": {
-            "provider": LLM_PROVIDER,
-            "model": LLM_MODEL,
-            "api_key_env": LLM_API_KEY_ENV,
-            "api_key_set": bool(os.environ.get(LLM_API_KEY_ENV)),
-            "base_url": LLM_BASE_URL,
-        },
-        "reranker": {"provider": "llm_reranker", "llm_provider": LLM_PROVIDER, "llm_model": LLM_MODEL},
+        # One row per job, because "which model does this run on" now has six
+        # answers and no default. A job whose table is unresolvable reports the
+        # error here rather than at the call that needed it.
+        "llm": {job: _llm_job_status(job) for job in LLM_JOBS},
         "auto_context": detect_writer_context(),
     }
     output(data, command="status", fmt=chosen_format(output_format, json_flag))
@@ -1818,7 +1832,7 @@ def search(
         "--threshold",
         help="Minimum score threshold. Local default 0.1 (official CLI uses 0.3): intentional — hybrid vector+BM25 scores here are distributed lower than Platform scores.",
     ),
-    rerank: bool = typer.Option(False, "--rerank", help="Use configured OpenRouter LLM reranker."),
+    rerank: bool = typer.Option(False, "--rerank", help="Score results with the [llm.rerank] endpoint."),
     keyword: bool = typer.Option(False, "--keyword", help="Pure BM25 keyword retrieval instead of hybrid semantic search."),
     include_superseded: bool = typer.Option(
         False,
@@ -2133,10 +2147,18 @@ def wiki_draft(
 @wiki_app.command("check-draft")
 def wiki_check_draft(
     draft: Path = typer.Argument(..., help="Draft Markdown written by wiki-draft."),
+    review: Optional[Path] = typer.Option(
+        None, "--review", help="Review report JSON to bind and validate against this draft."),
+    review_bundle: Optional[Path] = typer.Option(
+        None, "--review-bundle", help="Review bundle used by --review (defaults beside draft)."),
+    sensitivity_review: Optional[Path] = typer.Option(
+        None, "--sensitivity-review",
+        help="Human redaction rulings; auto-detected for workspace drafts."),
+    strict: bool = typer.Option(False, "--strict", help="Exit non-zero unless every active gate is clean."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
-    """Check a draft against the bundle it was written from (read-only)."""
+    """Check a draft and, optionally, bind an external review to its exact hashes."""
     from mem0_local.wiki_verify import verify
 
     stem = draft.with_suffix("")
@@ -2144,12 +2166,207 @@ def wiki_check_draft(
     claims_path = Path(str(stem) + ".claims.json")
     if not bundle_path.is_file():
         raise typer.BadParameter(f"no bundle beside the draft: {bundle_path}")
-    report = verify(draft.read_text(encoding="utf-8"),
-                    json.loads(bundle_path.read_text(encoding="utf-8")),
-                    json.loads(claims_path.read_text(encoding="utf-8"))
-                    if claims_path.is_file() else None)
-    output({"draft": str(draft), **report}, command="wiki-verify",
+    draft_text = draft.read_text(encoding="utf-8")
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    claims = (json.loads(claims_path.read_text(encoding="utf-8"))
+              if claims_path.is_file() else None)
+    report = verify(draft_text, bundle, claims)
+    result: dict[str, Any] = {"draft": str(draft), **report}
+    gate_clean = report["clean"]
+    if review:
+        from mem0_local.wiki_review import build_review_bundle, validate_review_report
+
+        review_bundle_path = review_bundle or Path(str(stem) + ".review-bundle.json")
+        if not review_bundle_path.is_file():
+            raise typer.BadParameter(f"no review bundle: {review_bundle_path}")
+        if not review.is_file():
+            raise typer.BadParameter(f"no review report: {review}")
+        compiled = json.loads(review_bundle_path.read_text(encoding="utf-8"))
+        # Rebuilding makes a stale article, evidence bundle or claims sidecar
+        # visible even when the old artifacts still agree with one another.
+        _, _, _, current_topic = _review_artifacts(draft)
+        review_evidence, review_claims, review_topic = _sanitize_review_artifacts(
+            draft, draft_text, bundle, claims,
+            current_topic if current_topic is not None else compiled.get("approved_topic"),
+            sensitivity_review)
+        rebuilt = build_review_bundle(
+            draft_text, review_evidence, review_claims, review_topic, draft_name=draft.name)
+        if rebuilt["review_bundle_sha256"] != compiled.get("review_bundle_sha256"):
+            result["review_validation"] = {
+                "clean": False,
+                "report_valid": False,
+                "findings": [{"kind": "review_bundle_stale"}],
+                "agent_review_required": True,
+            }
+        else:
+            result["review_validation"] = validate_review_report(
+                json.loads(review.read_text(encoding="utf-8")), compiled)
+        gate_clean = bool(result["review_validation"].get("clean"))
+    output(result, command="wiki-verify",
            fmt=chosen_format(output_format, json_flag))
+    if strict and not gate_clean:
+        raise typer.Exit(code=1)
+
+
+def _review_artifacts(
+    draft: Path, topics: Path | None = None
+) -> tuple[str, dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
+    """Load a draft's sidecars and its approved topic without touching the store."""
+    from mem0_local.wiki_review import load_approved_topic
+
+    stem = draft.with_suffix("")
+    bundle_path = Path(str(stem) + ".bundle.json")
+    claims_path = Path(str(stem) + ".claims.json")
+    if not draft.is_file():
+        raise typer.BadParameter(f"no draft: {draft}")
+    if not bundle_path.is_file():
+        raise typer.BadParameter(f"no bundle beside the draft: {bundle_path}")
+    draft_text = draft.read_text(encoding="utf-8")
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    claims = json.loads(claims_path.read_text(encoding="utf-8")) if claims_path.is_file() else None
+    topic_key = (claims or {}).get("topic_key") or stem.name
+    if topics is None:
+        candidate = draft.parent.parent / "suggestions" / "accepted-topics.jsonl"
+        topics = candidate if candidate.is_file() else None
+    return draft_text, bundle, claims, load_approved_topic(topics, topic_key)
+
+
+def _sanitize_review_artifacts(
+    draft: Path,
+    draft_text: str,
+    bundle: dict[str, Any],
+    claims: dict[str, Any] | None,
+    topic: dict[str, Any] | None,
+    sensitivity_review: Path | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
+    """Apply current human rulings to old sidecars before an outbound review."""
+    import copy
+
+    from mem0_local.bundle import Sanitizer
+    from mem0_local.wiki_draft import BLOCKING_FLAG_KINDS, load_review
+
+    if sensitivity_review is None:
+        candidate = draft.parent.parent / "sanitization-review.json"
+        sensitivity_review = candidate if candidate.is_file() else None
+    redactions, cleared = load_review(sensitivity_review)
+    reviewed = set(redactions) | cleared
+    blocking = sorted({
+        flag.get("value") for flag in (bundle.get("sanitization") or {}).get("review_flags") or []
+        if flag.get("kind") in BLOCKING_FLAG_KINDS and flag.get("value") not in reviewed
+    })
+    if blocking:
+        raise typer.BadParameter(
+            f"{len(blocking)} sensitive-looking value(s) remain unreviewed; "
+            "refusing external review")
+    leaked = [value for value in redactions if value in draft_text]
+    if leaked:
+        raise typer.BadParameter(
+            f"the article still contains {len(leaked)} value(s) ruled for redaction; fix it first")
+
+    sanitizer = Sanitizer(redactions)
+    clean_bundle = copy.deepcopy(bundle)
+    for memory in clean_bundle.get("memories") or []:
+        memory["text"] = sanitizer.scrub(memory.get("text") or "")
+    for source in clean_bundle.get("source_sections") or []:
+        source["text"] = sanitizer.scrub(source.get("text") or "")
+
+    def scrub_tree(value: Any) -> Any:
+        if isinstance(value, str):
+            return sanitizer.scrub(value)
+        if isinstance(value, list):
+            return [scrub_tree(item) for item in value]
+        if isinstance(value, dict):
+            return {key: scrub_tree(item) for key, item in value.items()}
+        return value
+
+    return clean_bundle, scrub_tree(claims), scrub_tree(topic)
+
+
+@wiki_app.command("prepare-review")
+def wiki_prepare_review(
+    draft: Path = typer.Argument(..., help="Draft Markdown written by wiki-draft."),
+    out: Optional[Path] = typer.Option(None, "--out", help="Review bundle JSON path."),
+    topics: Optional[Path] = typer.Option(
+        None, "--topics", help="Accepted topics JSONL; auto-detected for workspace drafts."),
+    sensitivity_review: Optional[Path] = typer.Option(
+        None, "--sensitivity-review",
+        help="Human redaction rulings; auto-detected for workspace drafts."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Resolve every citation and attach its evidence in an immutable review bundle."""
+    from mem0_local.wiki_review import build_review_bundle
+
+    draft_text, bundle, claims, topic = _review_artifacts(draft, topics)
+    bundle, claims, topic = _sanitize_review_artifacts(
+        draft, draft_text, bundle, claims, topic, sensitivity_review)
+    review_bundle = build_review_bundle(
+        draft_text, bundle, claims, topic, draft_name=draft.name)
+    target = out or Path(str(draft.with_suffix("")) + ".review-bundle.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(review_bundle, ensure_ascii=False, indent=1), encoding="utf-8")
+    unresolved = sum(
+        citation["status"] in {"missing", "ambiguous"}
+        for packet in review_bundle["claim_packets"] for citation in packet["citations"])
+    output({
+        "draft": str(draft), "out": str(target),
+        "review_bundle_sha256": review_bundle["review_bundle_sha256"],
+        "claim_packets": len(review_bundle["claim_packets"]),
+        "uncited_passages": len(review_bundle["uncited_passages"]),
+        "uncited_evidence": len(review_bundle["uncited_evidence"]),
+        "unresolved_citations": unresolved,
+        "deterministic_clean": review_bundle["deterministic_report"]["clean"],
+    }, command="wiki-prepare-review", fmt=chosen_format(output_format, json_flag))
+
+
+@wiki_app.command("review-draft")
+def wiki_review_draft(
+    draft: Path = typer.Argument(..., help="Draft Markdown written by wiki-draft."),
+    out: Optional[Path] = typer.Option(None, "--out", help="Review report JSON path."),
+    review_bundle_out: Optional[Path] = typer.Option(
+        None, "--review-bundle-out", help="Compiled review bundle JSON path."),
+    topics: Optional[Path] = typer.Option(
+        None, "--topics", help="Accepted topics JSONL; auto-detected for workspace drafts."),
+    sensitivity_review: Optional[Path] = typer.Option(
+        None, "--sensitivity-review",
+        help="Human redaction rulings; auto-detected for workspace drafts."),
+    prompt: Optional[Path] = typer.Option(None, "--prompt", help="Override the review prompt."),
+    max_tokens: int = typer.Option(64000, "--max-tokens"),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Compile the evidence packet, ask the [llm.review] endpoint to audit it, and validate the report."""
+    from mem0_local.wiki_profile import default_prompt
+    from mem0_local.wiki_review import build_review_bundle, run_external_review
+
+    draft_text, bundle, claims, topic = _review_artifacts(draft, topics)
+    if bundle.get("sanitized") is not True:
+        raise typer.BadParameter("the evidence bundle is not marked sanitized; refusing external review")
+    bundle, claims, topic = _sanitize_review_artifacts(
+        draft, draft_text, bundle, claims, topic, sensitivity_review)
+
+    compiled = build_review_bundle(draft_text, bundle, claims, topic, draft_name=draft.name)
+    bundle_target = review_bundle_out or Path(str(draft.with_suffix("")) + ".review-bundle.json")
+    bundle_target.parent.mkdir(parents=True, exist_ok=True)
+    bundle_target.write_text(json.dumps(compiled, ensure_ascii=False, indent=1), encoding="utf-8")
+    template = prompt.read_text(encoding="utf-8") if prompt else default_prompt("wiki-review")
+    report = run_external_review(compiled, template, max_tokens=max_tokens)
+    target = out or Path(str(draft.with_suffix("")) + ".review.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    validation = report["validation"]
+    output({
+        "draft": str(draft), "review_bundle": str(bundle_target), "out": str(target),
+        "review_bundle_sha256": compiled["review_bundle_sha256"],
+        "overall_verdict": report.get("overall_verdict"),
+        "claim_reviews": len(report.get("claim_reviews") or []),
+        "omission_reviews": len(report.get("omission_reviews") or []),
+        "report_valid": validation["report_valid"], "clean": validation["clean"],
+        "claim_verdict_counts": validation["claim_verdict_counts"],
+        "omission_severity_counts": validation["omission_severity_counts"],
+        "agent_review_required": True,
+        "provenance": report.get("review_provenance"),
+    }, command="wiki-review-draft", fmt=chosen_format(output_format, json_flag))
 
 
 @wiki_app.command("check-pages")

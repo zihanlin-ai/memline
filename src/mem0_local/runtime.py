@@ -20,10 +20,6 @@ from mem0_local.config import (
     ENV_FILE,
     FASTEMBED_CACHE,
     HISTORY_DB,
-    LLM_APP_NAME,
-    LLM_BASE_URL,
-    LLM_MODEL,
-    LLM_SITE_URL,
     LOCK_FILE,
     MEM0_DIR,
     MEM0_HOME,
@@ -70,8 +66,8 @@ def acquire_cli_lock() -> None:
         return
 
 
-def require_llm_api_key() -> None:
-    """Fail fast when the primary endpoint has no credential.
+def require_llm_api_key(job: str = "infer") -> None:
+    """Fail fast when ``job``'s primary endpoint has no credential.
 
     Only the primary is required: a missing fallback credential should not
     block work that the primary can do, and it surfaces loudly enough as the
@@ -79,7 +75,7 @@ def require_llm_api_key() -> None:
     """
     from mem0_local.llm import Endpoint
 
-    primary = Endpoint(**llm_endpoint_specs()[0])
+    primary = Endpoint(**llm_endpoint_specs(job)[0])
     try:
         primary.api_key()
     except RuntimeError as exc:
@@ -88,33 +84,44 @@ def require_llm_api_key() -> None:
         ) from exc
 
 
-# mem0 validates llm.provider against a closed list and builds the client
-# itself, so the config it sees names the primary endpoint only; the real
-# primary/fallback pair is installed over client.llm right after construction
-# (see install_llm). Both max_tokens live here so the two stay in step.
+# Budgets, which the code is allowed to know. Which model spends them is the
+# configuration's business, and neither number below implies an endpoint.
 CLIENT_LLM_MAX_TOKENS = 2000
 # The reranker asks for a bare relevance score, but a thinking primary spends
-# tokens before it answers (kimi-for-coding used 76 of 100 on a short pair),
-# and a truncated score comes back as empty content. 256 keeps the headroom
-# without meaningfully changing the cost of an opt-in --rerank search.
+# tokens before it answers (one model used 76 of 100 on a short pair), and a
+# truncated score comes back as empty content. 256 keeps the headroom without
+# meaningfully changing the cost of an opt-in --rerank search.
 RERANKER_MAX_TOKENS = 256
 
 
-def build_config() -> dict[str, Any]:
-    placeholder_llm = {
+def _placeholder_llm(job: str, max_tokens: int) -> dict[str, Any]:
+    """The config mem0 validates before ``install_llm`` replaces the client.
+
+    mem0 checks ``llm.provider`` against a closed list and builds its own
+    client, so it has to be handed *something* well-formed. It is handed this
+    job's real primary rather than an invented one: if the two disagreed, a
+    construction-time error would name an endpoint that never runs a call.
+    """
+    primary = llm_endpoint_specs(job)[0]
+    return {
+        # mem0's client type, i.e. "speaks the OpenAI wire protocol" — not a
+        # choice of vendor. Every endpoint this package configures is reached
+        # this way, whoever serves it.
         "provider": "openai",
         "config": {
-            "model": LLM_MODEL,
-            "openai_base_url": LLM_BASE_URL,
-            "site_url": LLM_SITE_URL,
-            "app_name": LLM_APP_NAME,
+            "model": primary["model"],
+            "openai_base_url": primary["base_url"],
+            "site_url": primary.get("site_url"),
+            "app_name": primary.get("app_name"),
             "temperature": 0.0,
-            "max_tokens": CLIENT_LLM_MAX_TOKENS,
+            "max_tokens": max_tokens,
             "top_p": 0.1,
             "is_reasoning_model": False,
         },
     }
 
+
+def build_config() -> dict[str, Any]:
     return {
         "vector_store": vector_store_config(),
         "embedder": {
@@ -124,14 +131,14 @@ def build_config() -> dict[str, Any]:
                 "embedding_dims": EMBEDDING_DIMS,
             },
         },
-        "llm": placeholder_llm,
+        "llm": _placeholder_llm("infer", CLIENT_LLM_MAX_TOKENS),
         "reranker": {
             "provider": "llm_reranker",
             "config": {
                 "top_k": 8,
                 "temperature": 0.0,
                 "max_tokens": RERANKER_MAX_TOKENS,
-                "llm": placeholder_llm,
+                "llm": _placeholder_llm("rerank", RERANKER_MAX_TOKENS),
             },
         },
         "history_db_path": str(HISTORY_DB),
@@ -139,19 +146,20 @@ def build_config() -> dict[str, Any]:
 
 
 def install_llm(client: Any) -> Any:
-    """Replace mem0's own clients with the configured primary/fallback pair.
+    """Replace mem0's own clients with each job's configured endpoint chain.
 
     mem0 builds one OpenAILLM per consumer from the config dict, and that
-    constructor cannot express "try the relay, then OpenRouter". Swapping the
-    objects afterwards is the whole integration: every judge reaches the LLM
-    through ``client.llm`` or the reranker's, so both are covered here.
+    constructor cannot express "try this endpoint, then that one". Swapping the
+    objects afterwards is the whole integration — and it is also where the two
+    consumers stop sharing a model: extraction and reranking have different
+    shapes and different budgets, so they read different tables.
     """
     from mem0_local.llm import build_llm
 
-    client.llm = build_llm(CLIENT_LLM_MAX_TOKENS)
+    client.llm = build_llm(CLIENT_LLM_MAX_TOKENS, job="infer")
     reranker = getattr(client, "reranker", None)
     if getattr(reranker, "llm", None) is not None:
-        reranker.llm = build_llm(RERANKER_MAX_TOKENS)
+        reranker.llm = build_llm(RERANKER_MAX_TOKENS, job="rerank")
     return client
 
 
