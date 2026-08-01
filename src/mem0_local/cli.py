@@ -1889,6 +1889,35 @@ def get(
     output(result, command="get", fmt=chosen_format(output_format, json_flag))
 
 
+@app.command("wiki-close-run")
+def wiki_close_run(
+    state: Path = typer.Argument(..., help="state/compile.json."),
+    started_at: str = typer.Option(..., "--started-at", help="When the run began READING, not when it ended."),
+    source_dir: Optional[Path] = typer.Option(None, "--source-dir", help="sources/, to hash."),
+    user_id: str = typer.Option(DEFAULT_USER_ID, "--user-id", "-u"),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Advance the compile cursor. Only for a run that actually completed."""
+    from mem0_local.wiki_state import close_run
+
+    memories: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        filters = filters_from_scope(user_id, None, None, None, {})
+        got = execute("list", {"filters": filters or None, "top_k": page * 500,
+                               "start": (page - 1) * 500, "end": page * 500})
+        items = got if isinstance(got, list) else (got.get("results") or got.get("memories") or [])
+        memories.extend(items)
+        if len(items) < 500:
+            break
+        page += 1
+    new = close_run(state, started_at=started_at, memories=memories, source_dir=source_dir)
+    output({**new, "boundary_memory_ids": len(new["boundary_memory_ids"]),
+            "source_hashes": len(new["source_hashes"]), "memories_read": len(memories)},
+           command="wiki-close-run", fmt=chosen_format(output_format, json_flag))
+
+
 @app.command("wiki-batch")
 def wiki_batch(
     out: Optional[Path] = typer.Option(None, "--out", help="Write the batch plan here."),
