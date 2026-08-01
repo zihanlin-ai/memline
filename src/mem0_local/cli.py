@@ -2451,6 +2451,29 @@ def wiki_check_pages(
     output(report, command="wiki-check", fmt=chosen_format(output_format, json_flag))
 
 
+@wiki_app.command("index")
+def wiki_index(
+    wiki_root: Optional[Path] = typer.Argument(
+        None, help="Wiki root (contains content/). Default: <workspace>/.agent-memory/wiki."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Regenerate INDEX.md and each shelf listing from page frontmatter."""
+    from mem0_local.wiki_index import build_index
+
+    root = wiki_root or (ROOT / ".agent-memory" / "wiki")
+    report = build_index(root / "content")
+    fmt = chosen_format(output_format, json_flag)
+    if fmt == "text":
+        console.print(f"{report['pages']} page(s) across {report['shelves']} shelf/shelves; "
+                      f"{len(report['written'])} file(s) rewritten")
+        for path in report["pages_without_summary"]:
+            console.print(f"[yellow]no summary: {path}[/yellow]")
+        for item in report["flagged_pages"]:
+            console.print(f"[yellow]{item['status']}: {item['path']}[/yellow]")
+    output(report, command="wiki-index", fmt=fmt)
+
+
 @wiki_app.command("check-threads")
 def wiki_check_threads(
     draft: Path = typer.Argument(..., help="Draft Markdown written by wiki-draft."),

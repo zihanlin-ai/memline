@@ -5,8 +5,9 @@ verifies every reference against current reality:
 
 - ``mem:<id>`` refs: the memory must still exist, must not be superseded, and
   its text hash must match the hash recorded at publication time.
-- ``sources/<path>`` refs: the file must still exist under the wiki root and
-  its content hash must match the recorded hash.
+- ``sources/<path>[#<heading>]`` refs: the file (and cited section, when
+  present) must still exist under the wiki root and its content hash must
+  match the recorded hash.
 - Body links: relative Markdown links must resolve to existing files.
 
 The checker only reads; it never mutates the wiki or the store. Its report is
@@ -36,6 +37,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 import yaml
+
+from .bundle import read_section
 
 FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 # [text](target) — capture the target; ignore images ![...](...) too? Images
@@ -130,13 +133,17 @@ def _head_ids(head: Any) -> set[str]:
 def _check_source_ref(
     wiki_root: Path, ref: str, recorded_hash: str | None
 ) -> list[dict[str, str]]:
-    path = (wiki_root / ref).resolve()
+    path_part, _, heading = ref.partition("#")
+    path = (wiki_root / path_part).resolve()
     if wiki_root.resolve() not in path.parents:
         return [{"kind": "source_outside_wiki", "detail": ref}]
     if not path.is_file():
         return [{"kind": "source_missing", "detail": ref}]
+    text = read_section(path, heading or None)
+    if text is None:
+        return [{"kind": "source_section_missing", "detail": ref}]
     if recorded_hash:
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        actual = sha256_text(text)
         if actual != recorded_hash:
             return [{"kind": "source_content_changed", "detail": ref}]
     return []
@@ -176,7 +183,11 @@ def run_check(wiki_root: Path, execute: ExecuteFn) -> dict[str, Any]:
         markdown = page.read_text(encoding="utf-8")
         front = parse_frontmatter(markdown)
         sources = front.get("sources")
-        if page.name != "README.md" and not (isinstance(sources, list) and sources):
+        # README.md and INDEX.md describe the wiki rather than asserting
+        # anything about the world, so they carry no provenance and are not
+        # missing any. INDEX.md is generated; flagging it would produce a
+        # findings list nobody reads, which is worse than no check at all.
+        if page.name not in ("README.md", "INDEX.md") and not (isinstance(sources, list) and sources):
             flags.append({"page": rel, "kind": "missing_provenance", "detail": ""})
             sources = sources if isinstance(sources, list) else []
         for entry in sources or []:

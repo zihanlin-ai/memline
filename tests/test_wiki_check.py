@@ -104,6 +104,35 @@ class WikiCheckTest(unittest.TestCase):
         self.provenance_page(sha256_text(MEM_TEXT))
         self.assertEqual(self.kinds(make_execute(get_raises=True)), ["memory_missing"])
 
+    def test_source_section_ref_checks_the_section_hash(self):
+        sources = self.root / "sources"
+        sources.mkdir()
+        (sources / "runbook.md").write_text(
+            "# Runbook\n\n## First\n\none\n\n## Second\n\ntwo\n", encoding="utf-8"
+        )
+        section = "## Second\n\ntwo"
+        self.page(
+            "---\nsources:\n"
+            + '  - ref: "sources/runbook.md#Second"\n'
+            + f'    content_hash: "{sha256_text(section)}"\n'
+            + "---\nbody\n"
+        )
+        self.assertEqual(self.kinds(make_execute(head=None)), [])
+
+    def test_missing_source_section_is_flagged(self):
+        sources = self.root / "sources"
+        sources.mkdir()
+        (sources / "runbook.md").write_text("# Runbook\n", encoding="utf-8")
+        self.page(
+            "---\nsources:\n"
+            + '  - ref: "sources/runbook.md#Missing"\n'
+            + f'    content_hash: "{sha256_text("## Missing")}"\n'
+            + "---\nbody\n"
+        )
+        self.assertEqual(
+            self.kinds(make_execute(head=None)), ["source_section_missing"]
+        )
+
     def test_broken_relative_link_is_flagged(self):
         self.page(
             "---\nsources:\n"
