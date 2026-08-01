@@ -258,6 +258,7 @@ def validate_review_report(report: dict[str, Any], review_bundle: dict[str, Any]
     known_refs = {item["ref"] for item in review_bundle.get("uncited_evidence") or []}
     for packet in review_bundle.get("claim_packets") or []:
         known_refs.update(c["resolved_ref"] for c in packet["citations"] if c["resolved_ref"])
+    article = review_bundle.get("article_markdown") or ""
     omissions = report.get("omission_reviews")
     if not isinstance(omissions, list):
         findings.append({"kind": "omission_reviews_missing"})
@@ -273,6 +274,23 @@ def validate_review_report(report: dict[str, Any], review_bundle: dict[str, Any]
         refs = item.get("evidence_refs") or []
         if not isinstance(refs, list) or any(ref not in known_refs for ref in refs):
             findings.append({"kind": "omission_review_unknown_evidence", "index": index})
+        # A reviewer sees the article and the material it was written from in
+        # one document, and the material is *supposed* to be full of ticket
+        # numbers and people's names. The first audit run reported four of them
+        # as leaks — including a name the article had written as "a colleague",
+        # complete with an invented line number. A claim that a string is in
+        # the article is one a program can settle, so it does.
+        quotes = item.get("article_quotes")
+        if item.get("kind") == "sensitivity" and not quotes:
+            findings.append({"kind": "sensitivity_finding_without_quotes", "index": index})
+        elif quotes is not None:
+            if not isinstance(quotes, list) or not all(isinstance(q, str) for q in quotes):
+                findings.append({"kind": "article_quotes_not_strings", "index": index})
+            else:
+                for quote in quotes:
+                    if quote not in article:
+                        findings.append({"kind": "article_quote_not_in_article",
+                                         "index": index, "detail": quote[:80]})
 
     verdicts = [item.get("verdict") for item in reviews if isinstance(item, dict)]
     verdict_counts = dict(sorted(Counter(
@@ -328,3 +346,118 @@ def run_external_review(
     data["review_provenance"] = result.provenance
     data["validation"] = validate_review_report(data, review_bundle)
     return data
+
+
+# Strictest wins when passes disagree, in both directions a verdict can go.
+_VERDICT_RANK = {"supported": 0, "unverifiable": 1, "partially_supported": 2,
+                 "superseded_misused": 3, "contradicted": 4}
+_OVERALL_RANK = {"pass": 0, "revise": 1, "reject": 2}
+
+
+def merge_reviews(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fold several independent passes over one draft into a union.
+
+    One pass is not a measurement. Five audits of one unchanged article flagged
+    17, 1, 1, 5 and 19 claims — and the last two ran on the *same* prompt as
+    each other. The union across three of them is 21, which no single pass
+    reached. Passes also surface claims no earlier pass did, so this is not one
+    thorough reading plus four lazy ones; each reading stops somewhere
+    different.
+
+    So the merge takes the union, not the majority. A claim flagged once is
+    flagged, and ``flagged_in`` records how many passes saw it — the number a
+    reviewer should read as strength of signal, since a finding every pass
+    agrees on is a different thing from one that surfaced once. Voting would
+    discard precisely the findings this exists to buy: the ones easy to miss.
+    With this much spread, a majority rule over three passes would have thrown
+    away most of what was found.
+
+    The reverse never applies. A pass cannot clear a claim another flagged,
+    because "I did not notice this" and "this is fine" are not the same
+    statement, and nothing in the report distinguishes them.
+
+    What the spread does *not* license is reading a low ``flagged_in`` as a
+    weak finding. The one claim flagged by every pass was also the only one any
+    pass marked high-confidence; everything else, including a genuine causal
+    error confirmed by hand against the evidence, moved in and out of view
+    between runs.
+    """
+    if not reports:
+        raise ValueError("no review passes to merge")
+    claims: dict[str, dict[str, Any]] = {}
+    for index, report in enumerate(reports):
+        for item in report.get("claim_reviews") or []:
+            if not isinstance(item, dict) or not item.get("claim_id"):
+                continue
+            claim_id = item["claim_id"]
+            entry = claims.setdefault(claim_id, {
+                "claim_id": claim_id, "verdict": "supported", "flagged_in": 0,
+                "of_passes": len(reports), "findings": [],
+            })
+            verdict = item.get("verdict")
+            if _VERDICT_RANK.get(verdict, 0) > _VERDICT_RANK.get(entry["verdict"], 0):
+                entry["verdict"] = verdict
+            if verdict != "supported":
+                entry["flagged_in"] += 1
+                entry["findings"].append({
+                    "pass": index + 1, "verdict": verdict,
+                    "confidence": item.get("confidence"), "reason": item.get("reason"),
+                    "suggested_rewrite": item.get("suggested_rewrite"),
+                    "evidence_refs": item.get("evidence_refs"),
+                })
+
+    omissions = [{**item, "pass": index + 1}
+                 for index, report in enumerate(reports)
+                 for item in report.get("omission_reviews") or []
+                 if isinstance(item, dict)]
+
+    overall = max((r.get("overall_verdict") for r in reports),
+                  key=lambda v: _OVERALL_RANK.get(v, 0), default=None)
+    validations = [r.get("validation") or {} for r in reports]
+    flagged = [c for c in claims.values() if c["flagged_in"]]
+    return {
+        "passes": len(reports),
+        "overall_verdict": overall,
+        "claim_reviews": sorted(claims.values(), key=lambda c: c["claim_id"]),
+        "omission_reviews": omissions,
+        "flagged_claims": len(flagged),
+        # How much a second opinion actually bought. All passes agreeing is a
+        # reason to trust a finding; only one pass seeing it is a reason to run
+        # more passes, not to discount it.
+        "unanimous_claims": sum(1 for c in flagged if c["flagged_in"] == len(reports)),
+        "single_pass_claims": sum(1 for c in flagged if c["flagged_in"] == 1),
+        "validation": {
+            "report_valid": all(v.get("report_valid") for v in validations),
+            "deterministic_clean": all(v.get("deterministic_clean") for v in validations),
+            "scope_clean": all(v.get("scope_clean") for v in validations),
+            "claims_expected": max((v.get("claims_expected") or 0 for v in validations), default=0),
+            "per_pass": [{"pass": i + 1, "report_valid": v.get("report_valid"),
+                          "findings": v.get("findings") or [],
+                          "claim_verdict_counts": v.get("claim_verdict_counts")}
+                         for i, v in enumerate(validations)],
+            "agent_review_required": True,
+        },
+        "review_provenance": [r.get("review_provenance") for r in reports],
+    }
+
+
+def run_review_passes(
+    review_bundle: dict[str, Any],
+    template: str,
+    *,
+    passes: int = 3,
+    max_tokens: int = 64000,
+    caller: Callable[..., tuple[Any, CallResult]] = call_json,
+    log: Callable[[str], None] = lambda _: None,
+) -> dict[str, Any]:
+    """Several independent passes over one draft, merged into their union."""
+    reports = []
+    for index in range(max(1, passes)):
+        report = run_external_review(review_bundle, template,
+                                     max_tokens=max_tokens, caller=caller)
+        counts = (report.get("validation") or {}).get("claim_verdict_counts") or {}
+        flagged = sum(n for v, n in counts.items() if v != "supported")
+        log(f"pass {index + 1}/{passes}: {flagged} flagged, "
+            f"verdict {report.get('overall_verdict')}")
+        reports.append(report)
+    return merge_reviews(reports)

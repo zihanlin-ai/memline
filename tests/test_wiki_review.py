@@ -6,7 +6,9 @@ import unittest
 from dataclasses import dataclass
 
 from mem0_local.wiki_review import (
+    _content_hash,
     build_review_bundle,
+    merge_reviews,
     run_external_review,
     validate_review_report,
 )
@@ -142,3 +144,140 @@ class ReviewValidationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SensitivityQuoteTest(unittest.TestCase):
+    """A leak claim names a string. Whether it is in the article is not an opinion.
+
+    The first live audit reported four sensitive identifiers and two colleagues'
+    names as published leaks. None of the six were in the article — all were in
+    the evidence packets quoted alongside it, which is where internal
+    identifiers are supposed to live. One finding even carried a line number
+    for a sentence that says "a colleague".
+    """
+
+    def setUp(self):
+        self.bundle = {
+            "article_markdown": "# T\n\nThe patch landed on stack ab93.\n",
+            "review_bundle_sha256": "x", "article_sha256": "y",
+            "claim_packets": [], "uncited_evidence": [],
+        }
+        self.bundle["review_bundle_sha256"] = _content_hash(self.bundle, "review_bundle_sha256")
+        self.report = {
+            "summary": "s",
+            "article_sha256": "y",
+            "review_bundle_sha256": self.bundle["review_bundle_sha256"],
+            "claim_reviews": [],
+            "scope_review": {"verdict": "in_scope", "reason": "r"},
+            "overall_verdict": "pass",
+            "omission_reviews": [],
+        }
+
+    def _kinds(self, omission):
+        report = {**self.report, "omission_reviews": [omission]}
+        return {f["kind"] for f in validate_review_report(report, self.bundle)["findings"]}
+
+    def test_a_quote_that_is_in_the_article_passes(self):
+        self.assertNotIn("article_quote_not_in_article", self._kinds(
+            {"severity": "warning", "kind": "sensitivity", "finding": "stack id",
+             "article_quotes": ["ab93"]}))
+
+    def test_a_quote_only_present_in_the_evidence_is_rejected(self):
+        kinds = self._kinds({"severity": "critical", "kind": "sensitivity",
+                             "finding": "names a colleague", "article_quotes": ["DINGYiBin"]})
+        self.assertIn("article_quote_not_in_article", kinds)
+
+    def test_a_sensitivity_finding_must_quote_something(self):
+        self.assertIn("sensitivity_finding_without_quotes", self._kinds(
+            {"severity": "critical", "kind": "sensitivity", "finding": "leaks ticket ids"}))
+
+    def test_other_kinds_need_no_quotes(self):
+        # An omission is about what is *absent*; there is nothing to quote.
+        self.assertNotIn("sensitivity_finding_without_quotes", self._kinds(
+            {"severity": "info", "kind": "omission", "finding": "dropped counter-evidence"}))
+
+
+class MergePassesTest(unittest.TestCase):
+    """Passes do not contradict each other; they stop looking at different points.
+
+    Five audits of one unchanged article flagged 17, 1, 1, 5 and 19 claims —
+    the last two on the same prompt as each other — for a union of 21 that no
+    single pass reached. No pass ever asserted that a claim another had flagged
+    was in fact fine. So the merge unions rather than votes: with this much
+    spread a majority rule would discard most of what was found, and what it
+    discarded would be the findings hardest to see.
+    """
+
+    @staticmethod
+    def _report(verdicts, overall="revise", valid=True, omissions=()):
+        return {
+            "overall_verdict": overall,
+            "claim_reviews": [{"claim_id": cid, "verdict": v, "confidence": "medium",
+                               "reason": f"{cid} says {v}"} for cid, v in verdicts.items()],
+            "omission_reviews": list(omissions),
+            "validation": {"report_valid": valid, "deterministic_clean": True,
+                           "scope_clean": True, "claims_expected": len(verdicts),
+                           "claim_verdict_counts": {}},
+            "review_provenance": {"model": "m"},
+        }
+
+    def test_a_claim_flagged_by_one_pass_stays_flagged(self):
+        merged = merge_reviews([
+            self._report({"c1": "partially_supported", "c2": "supported"}),
+            self._report({"c1": "supported", "c2": "supported"}),
+        ])
+        c1 = next(c for c in merged["claim_reviews"] if c["claim_id"] == "c1")
+        self.assertEqual(c1["verdict"], "partially_supported")
+        self.assertEqual((c1["flagged_in"], c1["of_passes"]), (1, 2))
+
+    def test_the_strictest_verdict_wins(self):
+        merged = merge_reviews([
+            self._report({"c1": "partially_supported"}),
+            self._report({"c1": "contradicted"}),
+        ])
+        self.assertEqual(merged["claim_reviews"][0]["verdict"], "contradicted")
+
+    def test_agreement_is_reported_so_a_reviewer_can_weigh_it(self):
+        merged = merge_reviews([
+            self._report({"c1": "partially_supported", "c2": "partially_supported"}),
+            self._report({"c1": "partially_supported", "c2": "supported"}),
+        ])
+        self.assertEqual(merged["flagged_claims"], 2)
+        self.assertEqual(merged["unanimous_claims"], 1)
+        self.assertEqual(merged["single_pass_claims"], 1)
+
+    def test_every_reason_is_kept_with_the_pass_that_gave_it(self):
+        merged = merge_reviews([
+            self._report({"c1": "partially_supported"}),
+            self._report({"c1": "unverifiable"}),
+        ])
+        findings = merged["claim_reviews"][0]["findings"]
+        self.assertEqual([f["pass"] for f in findings], [1, 2])
+
+    def test_a_supported_verdict_records_no_reason(self):
+        merged = merge_reviews([self._report({"c1": "supported"})])
+        self.assertEqual(merged["claim_reviews"][0]["findings"], [])
+
+    def test_the_strictest_overall_verdict_wins(self):
+        self.assertEqual(merge_reviews([self._report({}, overall="pass"),
+                                        self._report({}, overall="reject")])["overall_verdict"],
+                         "reject")
+
+    def test_omissions_from_every_pass_survive_tagged(self):
+        merged = merge_reviews([
+            self._report({}, omissions=[{"severity": "warning", "finding": "a"}]),
+            self._report({}, omissions=[{"severity": "info", "finding": "b"}]),
+        ])
+        self.assertEqual([(o["finding"], o["pass"]) for o in merged["omission_reviews"]],
+                         [("a", 1), ("b", 2)])
+
+    def test_one_invalid_pass_invalidates_the_merge(self):
+        # A report that broke the contract cannot vouch for the ones that did not.
+        merged = merge_reviews([self._report({}), self._report({}, valid=False)])
+        self.assertFalse(merged["validation"]["report_valid"])
+        self.assertEqual([p["report_valid"] for p in merged["validation"]["per_pass"]],
+                         [True, False])
+
+    def test_merging_nothing_is_an_error_not_an_empty_pass(self):
+        with self.assertRaises(ValueError):
+            merge_reviews([])

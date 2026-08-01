@@ -23,12 +23,35 @@ Use `evidence_refs` only from that packet's resolved citations. Give a concise,
 specific reason and a minimal suggested rewrite when the verdict is not
 `supported`.
 
+Be strict here, and note that the sensitivity rule further down does not apply
+to this section. `partially_supported` is the normal verdict for prose that
+runs one step ahead of its citation — a stated cause where the evidence shows
+only a correlation, a superlative the evidence does not rank, a symmetry the
+evidence contradicts. Judge the passage as written: if you find yourself
+writing "note that the evidence actually shows X" while returning `supported`,
+the verdict is wrong. A reviewer that passes everything has reviewed nothing.
+
 Then perform a separate omission audit. Compare the article and approved scope
 with `uncited_evidence`, `uncited_passages`, the claims manifest, retraction
 arcs and unused-evidence declarations. Report dropped counter-evidence,
 missing current conclusions, incomplete retraction arcs, unsupported causal
-strength, scope drift and unnecessary sensitive operational identifiers. An
-omission may cite any exact ref present in the review bundle.
+strength and scope drift. An omission may cite any exact ref present in the
+review bundle.
+
+**For sensitivity findings only: the article is `article_markdown` and nothing else.** Every other field here
+quotes the raw material it was written from: memory text, document sections,
+the evidence inside each claim packet. That material is *expected* to be full
+of internal identifiers — hostnames, ticket numbers, merge-request numbers,
+people's names — because it is what an engineer wrote while working. None of
+that is a finding. Only what survived into `article_markdown` is.
+
+So a `sensitivity` finding must carry `article_quotes`: the exact substrings,
+copied character for character from `article_markdown`, that you believe should
+not be published. Each one is checked against the article, and a quote that is
+not in it invalidates the report. Do not paraphrase the string, do not
+reconstruct it from evidence, and do not report a name or ticket you saw in a
+packet without first finding it in the article itself — an article that says
+"a colleague" has not named anyone, whatever the memory behind it says.
 
 Return ONE JSON object and nothing else:
 
@@ -54,6 +77,7 @@ Return ONE JSON object and nothing else:
       "kind": "omission|retraction|scope|sensitivity|causal_strength|other",
       "finding": "specific finding",
       "evidence_refs": ["exact refs from the review bundle"],
+      "article_quotes": ["exact substrings of article_markdown; REQUIRED for kind=sensitivity"],
       "article_location": "heading, line or empty"
     }
   ],

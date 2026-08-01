@@ -1832,7 +1832,7 @@ def search(
         "--threshold",
         help="Minimum score threshold. Local default 0.1 (official CLI uses 0.3): intentional — hybrid vector+BM25 scores here are distributed lower than Platform scores.",
     ),
-    rerank: bool = typer.Option(False, "--rerank", help="Score results with the [llm.rerank] endpoint."),
+    rerank: bool = typer.Option(False, "--rerank", help="Score results with the configured rerank endpoint."),
     keyword: bool = typer.Option(False, "--keyword", help="Pure BM25 keyword retrieval instead of hybrid semantic search."),
     include_superseded: bool = typer.Option(
         False,
@@ -2114,11 +2114,16 @@ def wiki_draft(
         help="Rulings on sensitive-looking values: {\"redact\": {value: category}, \"cleared\": [...]}. "
              "An unruled personal name or address blocks the call."),
     prompt: Optional[Path] = typer.Option(None, "--prompt", help="Override the packaged prompt."),
-    max_tokens: int = typer.Option(64000, "--max-tokens"),
+    # One purse for reasoning AND output. The first drafting round ran at 64000
+    # and read its own truncations as a vendor ceiling; they were this number.
+    max_tokens: int = typer.Option(128000, "--max-tokens",
+        help="Budget for reasoning AND output together. Truncation is a wasted call, not a cheaper one."),
+    force: bool = typer.Option(False, "--force",
+        help="Redraft topics that already have a draft, overwriting it."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
-    """Draft accepted topics from their evidence on the [llm.wiki] endpoints."""
+    """Draft accepted topics from their evidence on the configured drafting endpoint."""
     from mem0_local.wiki_draft import draft_topic
     from mem0_local.wiki_profile import default_prompt
 
@@ -2130,8 +2135,10 @@ def wiki_draft(
         raise typer.BadParameter("no topics selected")
     done, failed = [], []
     for topic in queue:
-        if (out_dir / f"{topic.get('topic_key') or topic['id']}.md").exists():
-            console.print(f"{topic.get('topic_key')}: already drafted, skipping")
+        # Drafting is expensive and a draft may have been edited by hand since,
+        # so an existing one is kept unless overwriting it is asked for by name.
+        if not force and (out_dir / f"{topic.get('topic_key') or topic['id']}.md").exists():
+            console.print(f"{topic.get('topic_key')}: already drafted, skipping (--force to redraft)")
             continue
         try:
             done.append(draft_topic(topic, execute, template, out_dir, wiki_root=wiki_root,
@@ -2331,11 +2338,13 @@ def wiki_review_draft(
         None, "--sensitivity-review",
         help="Human redaction rulings; auto-detected for workspace drafts."),
     prompt: Optional[Path] = typer.Option(None, "--prompt", help="Override the review prompt."),
+    passes: int = typer.Option(3, "--passes",
+        help="Independent audits to merge. One pass misses findings it does not contradict."),
     max_tokens: int = typer.Option(64000, "--max-tokens"),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
-    """Compile the evidence packet, ask the [llm.review] endpoint to audit it, and validate the report."""
+    """Compile the evidence packet, audit it on the configured review endpoint, and validate the report."""
     from mem0_local.wiki_profile import default_prompt
     from mem0_local.wiki_review import build_review_bundle, run_external_review
 
@@ -2350,7 +2359,8 @@ def wiki_review_draft(
     bundle_target.parent.mkdir(parents=True, exist_ok=True)
     bundle_target.write_text(json.dumps(compiled, ensure_ascii=False, indent=1), encoding="utf-8")
     template = prompt.read_text(encoding="utf-8") if prompt else default_prompt("wiki-review")
-    report = run_external_review(compiled, template, max_tokens=max_tokens)
+    report = run_review_passes(compiled, template, passes=passes, max_tokens=max_tokens,
+                               log=lambda m: console.print(m))
     target = out or Path(str(draft.with_suffix("")) + ".review.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -2358,12 +2368,15 @@ def wiki_review_draft(
     output({
         "draft": str(draft), "review_bundle": str(bundle_target), "out": str(target),
         "review_bundle_sha256": compiled["review_bundle_sha256"],
+        "passes": report["passes"],
         "overall_verdict": report.get("overall_verdict"),
         "claim_reviews": len(report.get("claim_reviews") or []),
+        "flagged_claims": report["flagged_claims"],
+        "unanimous_claims": report["unanimous_claims"],
+        "single_pass_claims": report["single_pass_claims"],
         "omission_reviews": len(report.get("omission_reviews") or []),
-        "report_valid": validation["report_valid"], "clean": validation["clean"],
-        "claim_verdict_counts": validation["claim_verdict_counts"],
-        "omission_severity_counts": validation["omission_severity_counts"],
+        "report_valid": validation["report_valid"],
+        "per_pass": validation["per_pass"],
         "agent_review_required": True,
         "provenance": report.get("review_provenance"),
     }, command="wiki-review-draft", fmt=chosen_format(output_format, json_flag))
@@ -2383,6 +2396,44 @@ def wiki_check_pages(
     root = wiki_root or (ROOT / ".agent-memory" / "wiki")
     report = run_check(root, execute)
     output(report, command="wiki-check", fmt=chosen_format(output_format, json_flag))
+
+
+@wiki_app.command("check-threads")
+def wiki_check_threads(
+    draft: Path = typer.Argument(..., help="Draft Markdown written by wiki-draft."),
+    topics: Optional[Path] = typer.Option(
+        None, "--topics", help="accepted-topics.jsonl; auto-detected for workspace drafts."),
+    profiles: Optional[list[Path]] = typer.Option(
+        None, "--profiles", help="Profile directories; repeatable. Auto-detected for workspace drafts."),
+    show: int = typer.Option(10, "--show", help="How many dropped threads to list."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Which profiled sub-topics a draft used, and which it dropped whole."""
+    from mem0_local.wiki_threads import check_draft_threads
+
+    wiki_root = draft.resolve().parent.parent
+    topics_file = topics or (wiki_root / "suggestions" / "accepted-topics.jsonl")
+    dirs = list(profiles or [])
+    if not dirs:
+        runs = sorted((wiki_root / "suggestions" / "runs").glob("run-*"))
+        if not runs:
+            raise typer.BadParameter("no suggestion runs found; pass --profiles")
+        dirs = [runs[-1] / "profiles", runs[-1] / "sources"]
+    report = check_draft_threads(draft, topics_file, dirs)
+    fmt = chosen_format(output_format, json_flag)
+    if fmt == "text":
+        console.print(
+            f"{report['topic_key']}: {report['cited_evidence']}/{report['approved_evidence']} refs cited, "
+            f"{report['dropped_threads']}/{report['contributing_threads']} threads dropped whole "
+            f"({report['evidence_in_dropped_threads']} refs, "
+            f"{report['share_of_evidence_dropped_whole']:.0%} of the topic)")
+        for item in report["dropped"][:show]:
+            console.print(f"  [{item['members']:3} mem] {item['thread_key']}")
+            console.print(f"            {(item['what'] or '')[:120]}")
+        if report["dropped_threads"] > show:
+            console.print(f"  … {report['dropped_threads'] - show} more (--show or --json for all)")
+    output(report, command="wiki-check-threads", fmt=fmt)
 
 
 @app.command()
