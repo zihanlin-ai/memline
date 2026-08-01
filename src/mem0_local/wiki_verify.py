@@ -50,9 +50,9 @@ LEAKS = (
     ("account_id", re.compile(r"\b[a-zA-Z]\d{8}\b")),
     ("internal_host", re.compile(r"\b[\w.-]+\.(?:huawei\.com|inhuawei\.com|hisilicon\.cn)\b")),
     # A host pool written as its last two octets has no rule here on purpose.
-    # `7.246` and `0.998` are the same shape, and an article of measurements is
-    # nothing but that shape: the pattern matched 28 to 45 times per draft and
-    # every single hit was a ratio or a version. A gate that is wrong every
+    # It is the same shape as a ratio or a version number, and an article of
+    # measurements is nothing but that shape: the pattern matched 28 to 45
+    # times per draft and every single hit was a measurement. A gate that is wrong every
     # time it fires teaches its reader to skip the whole report, which costs
     # more than the leak it was meant to catch. Host pools are left to the
     # topic's sensitivity notes and the audit.

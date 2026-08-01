@@ -181,7 +181,7 @@ class LeakPatternTest(unittest.TestCase):
                 if f["kind"].startswith("redaction_lost_")}
 
     def test_internal_tracker_ids_are_found(self):
-        self.assertEqual(self._kinds("Filed as IJU4XZ.").get("issue_id"), "IJU4XZ")
+        self.assertEqual(self._kinds("Filed as IZZ9QW.").get("issue_id"), "IZZ9QW")
 
     def test_all_caps_words_are_not_mistaken_for_tracker_ids(self):
         # Without the leading-I anchor this claimed README, REJECT, SHA256 and
@@ -191,22 +191,23 @@ class LeakPatternTest(unittest.TestCase):
                 self.assertNotIn("issue_id", self._kinds(f"See {word} for details."))
 
     def test_merge_and_pull_request_numbers_are_found(self):
-        self.assertIn("change_id", self._kinds("Fixed by !1137."))
+        self.assertIn("change_id", self._kinds("Fixed by !9001."))
         self.assertIn("change_id", self._kinds("Upstreamed as #36030."))
 
     def test_internal_absolute_paths_are_found(self):
-        self.assertEqual(self._kinds("Run /workspace/scripts/ab_features_8k1k next.")
-                         .get("internal_path"), "/workspace/scripts/ab_features_8k1k")
+        self.assertEqual(self._kinds("Run /workspace/scripts/example_suite next.")
+                         .get("internal_path"), "/workspace/scripts/example_suite")
 
     def test_internal_build_tags_are_found(self):
-        self.assertEqual(self._kinds("Image vllm-202606120009 failed to pull.")
-                         .get("image_tag"), "vllm-202606120009")
+        self.assertEqual(self._kinds("Image vllm-209901010000 failed to pull.")
+                         .get("image_tag"), "vllm-209901010000")
 
     def test_measurements_are_never_read_as_a_host_pool(self):
-        # A rule for two-octet host pools was tried and removed: `7.246` and
-        # `0.998` are the same shape, so it fired 28-45 times per draft and was
-        # wrong every time. A gate that is always wrong teaches its reader to
-        # skip the report, which costs more than the leak it was meant to catch.
+        # A rule for two-octet host pools was tried and removed: a pool written
+        # that way and a ratio are the same shape, so it fired 28-45 times per
+        # draft and was wrong every time. A gate that is always wrong teaches
+        # its reader to skip the report, which costs more than the leak it was
+        # meant to catch.
         text = "Utilisation went 0.93 to 1.05 and throughput 14.55 to 22.66."
         self.assertEqual(self._kinds(text), {})
 

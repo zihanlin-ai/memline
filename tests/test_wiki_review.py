@@ -158,7 +158,8 @@ class SensitivityQuoteTest(unittest.TestCase):
     names as published leaks. None of the six were in the article — all were in
     the evidence packets quoted alongside it, which is where internal
     identifiers are supposed to live. One finding even carried a line number
-    for a sentence that says "a colleague".
+    for a sentence that says "a colleague". The fixtures below are invented:
+    a test for a leak detector is the last place to paste a real one.
     """
 
     def setUp(self):
@@ -189,7 +190,7 @@ class SensitivityQuoteTest(unittest.TestCase):
 
     def test_a_quote_only_present_in_the_evidence_is_rejected(self):
         kinds = self._kinds({"severity": "critical", "kind": "sensitivity",
-                             "finding": "names a colleague", "article_quotes": ["DINGYiBin"]})
+                             "finding": "names a colleague", "article_quotes": ["Jordan Reyes"]})
         self.assertIn("article_quote_not_in_article", kinds)
 
     def test_a_sensitivity_finding_must_quote_something(self):
