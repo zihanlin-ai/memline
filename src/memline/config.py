@@ -1,4 +1,4 @@
-"""Configuration loading for mem0-local."""
+"""Configuration loading for memline."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def _load_toml(path: Path | None) -> dict[str, Any]:
 
 
 def find_config_path() -> Path | None:
-    env_path = os.environ.get("MEM0_LOCAL_CONFIG")
+    env_path = os.environ.get("MEMLINE_CONFIG")
     if env_path:
         return Path(env_path).expanduser().resolve()
 
@@ -35,7 +35,7 @@ def find_config_path() -> Path | None:
         if candidate.exists():
             return candidate
 
-    user_config = Path.home() / ".config" / "mem0-local" / "config.toml"
+    user_config = Path.home() / ".config" / "memline" / "config.toml"
     if user_config.exists():
         return user_config
     return None
@@ -137,7 +137,7 @@ class ConfigError(RuntimeError):
     """config.toml cannot answer a question the code must not answer for it."""
 
 
-# Fields of one endpoint spec, mirroring mem0_local.llm.Endpoint. Anything
+# Fields of one endpoint spec, mirroring memline.llm.Endpoint. Anything
 # else under [llm] (paths, provider name, per-job knobs) is config for other
 # layers and must not reach the Endpoint constructor.
 _ENDPOINT_FIELDS = (

@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from mem0_local import audit, cli, session_stats
-from mem0_local.session_stats import SessionStatsStore
+from memline import audit, cli, session_stats
+from memline.session_stats import SessionStatsStore
 
 
 ADD_RESULT = {"results": [{"id": "m-1", "memory": "fact", "event": "ADD"}]}
@@ -75,9 +75,9 @@ class HandoffBannerTests(unittest.TestCase):
         console = MagicMock()
         with (
             patch.object(cli, "detect_writer_context", return_value=context),
-            patch("mem0_local.queue.read_alerts", return_value={}),
-            patch("mem0_local.staleness.pair_store", return_value=MagicMock(open_count=MagicMock(return_value=stale_open))),
-            patch("mem0_local.config.SESSION_ADD_ALERT_THRESHOLD", threshold),
+            patch("memline.queue.read_alerts", return_value={}),
+            patch("memline.staleness.pair_store", return_value=MagicMock(open_count=MagicMock(return_value=stale_open))),
+            patch("memline.config.SESSION_ADD_ALERT_THRESHOLD", threshold),
             patch.object(session_stats, "session_stats_store", lambda path=None: store),
             patch.object(cli, "err_console", console),
         ):

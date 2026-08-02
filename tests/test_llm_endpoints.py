@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from mem0_local import config
+from memline import config
 
 
 class _FakeLLM:
@@ -33,21 +33,21 @@ class EndpointSpecTests(unittest.TestCase):
     """[llm] + [llm.fallback] -> an ordered list of endpoint specs."""
 
     def setUp(self):
-        self._orig_env = os.environ.get("MEM0_LOCAL_CONFIG")
+        self._orig_env = os.environ.get("MEMLINE_CONFIG")
         self._tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
         if self._orig_env is None:
-            os.environ.pop("MEM0_LOCAL_CONFIG", None)
+            os.environ.pop("MEMLINE_CONFIG", None)
         else:
-            os.environ["MEM0_LOCAL_CONFIG"] = self._orig_env
+            os.environ["MEMLINE_CONFIG"] = self._orig_env
         importlib.reload(config)
         self._tmp.cleanup()
 
     def _reload_with(self, toml_text: str):
         cfg_path = Path(self._tmp.name) / "config.toml"
         cfg_path.write_text(toml_text)
-        os.environ["MEM0_LOCAL_CONFIG"] = str(cfg_path)
+        os.environ["MEMLINE_CONFIG"] = str(cfg_path)
         return importlib.reload(config)
 
     def test_primary_only_when_no_fallback_configured(self):
@@ -127,7 +127,7 @@ class EndpointCredentialTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_env_credential_is_read_at_call_time(self):
-        from mem0_local.llm import Endpoint
+        from memline.llm import Endpoint
 
         endpoint = Endpoint(name="e", model="m", base_url="https://a/v1", api_key_env="TEST_KEY_X")
         os.environ.pop("TEST_KEY_X", None)
@@ -140,7 +140,7 @@ class EndpointCredentialTests(unittest.TestCase):
             os.environ.pop("TEST_KEY_X", None)
 
     def test_json_credential_follows_a_dotted_path(self):
-        from mem0_local.llm import Endpoint
+        from memline.llm import Endpoint
 
         auth = Path(self._tmp.name) / "auth.json"
         auth.write_text(json.dumps({"vendor": {"key": "sk-from-file"}}))
@@ -154,7 +154,7 @@ class EndpointCredentialTests(unittest.TestCase):
         self.assertEqual(endpoint.api_key(), "sk-from-file")
 
     def test_missing_json_path_is_a_clear_error(self):
-        from mem0_local.llm import Endpoint
+        from memline.llm import Endpoint
 
         auth = Path(self._tmp.name) / "auth.json"
         auth.write_text(json.dumps({"other": {"key": "x"}}))
@@ -171,7 +171,7 @@ class EndpointCredentialTests(unittest.TestCase):
 
 class FallbackLLMTests(unittest.TestCase):
     def _fallback(self, llms: dict[str, _FakeLLM]):
-        from mem0_local.llm import Endpoint, FallbackLLM
+        from memline.llm import Endpoint, FallbackLLM
 
         endpoints = [
             Endpoint(name="primary", model="m1", base_url="https://a/v1", api_key_env="K1"),
@@ -266,7 +266,7 @@ class FallbackLLMTests(unittest.TestCase):
         self.assertEqual(llm.model, "m1")
 
     def test_active_model_helper_falls_back_to_the_given_default(self):
-        from mem0_local.llm import active_model
+        from memline.llm import active_model
 
         self.assertEqual(active_model(object(), "configured"), "configured")
         llm = self._fallback({"primary": _FakeLLM("m1"), "fallback": _FakeLLM("m2")})
@@ -311,7 +311,7 @@ class StreamingClientTests(unittest.TestCase):
     handed back to mem0 must be indistinguishable from a non-streamed one."""
 
     def _completions(self):
-        from mem0_local.llm import _StreamingClient
+        from memline.llm import _StreamingClient
 
         fake = _FakeCompletions([_chunk("part one "), _chunk("part two", "stop")])
         client = _StreamingClient(SimpleNamespace(chat=SimpleNamespace(completions=fake)))
@@ -336,7 +336,7 @@ class StreamingClientTests(unittest.TestCase):
         self.assertEqual([c.choices[0].delta.content for c in result], ["part one ", "part two"])
 
     def test_everything_but_chat_passes_through_to_the_real_client(self):
-        from mem0_local.llm import _StreamingClient
+        from memline.llm import _StreamingClient
 
         inner = SimpleNamespace(
             chat=SimpleNamespace(completions=_FakeCompletions([])), base_url="http://relay/v1"

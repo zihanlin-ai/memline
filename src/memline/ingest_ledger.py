@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from mem0_local.config import (
+from memline.config import (
     LEDGER_IMPORT_AGENT_ID,
     LEDGER_IMPORT_SESSION_ID,
     LOCAL_TZ,
@@ -21,7 +21,7 @@ from mem0_local.config import (
     MEMORY_SCHEMA_VERSION,
     WORKSPACE_ROOT,
 )
-from mem0_local.runtime import get_client, require_llm_api_key
+from memline.runtime import get_client, require_llm_api_key
 
 
 ROOT = WORKSPACE_ROOT

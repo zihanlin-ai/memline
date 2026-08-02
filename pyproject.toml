@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mem0-local"
+name = "memline"
 version = "0.2.0"
 description = "Local-first Mem0 CLI with Qdrant path storage and audit metadata."
 readme = "README.md"
@@ -15,7 +15,7 @@ requires-python = ">=3.11"
 dependencies = [
   "click",
   "fastembed",
-  # Imported directly by mem0_local.proxy, which assembles the
+  # Imported directly by memline.proxy, which assembles the
   # CONNECT-tunnelling transport for plain-HTTP endpoints from httpcore's
   # connection classes. Both also arrive with openai; named here because this
   # package uses them in its own right.
@@ -29,9 +29,9 @@ dependencies = [
 ]
 
 [project.scripts]
-mem0-local = "mem0_local.cli:cli_main"
-mem0-local-ingest-ledger = "mem0_local.ingest_ledger:main"
-mem0-local-backfill-metadata = "mem0_local.backfill_metadata:main"
+memline = "memline.cli:cli_main"
+memline-ingest-ledger = "memline.ingest_ledger:main"
+memline-backfill-metadata = "memline.backfill_metadata:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -39,7 +39,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 # Prompts are part of the program: the schema a caller parses is defined by
 # the prompt that asked for it, so they ship together.
-mem0_local = ["prompts/*.md"]
+memline = ["prompts/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

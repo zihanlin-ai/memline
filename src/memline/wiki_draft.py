@@ -30,8 +30,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-from mem0_local.bundle import build_bundle
-from mem0_local.relay import call_json
+from memline.bundle import build_bundle
+from memline.relay import call_json
 
 REQUIRED_FIELDS = ("title", "summary", "article_markdown", "claims", "open_questions",
                    "unused_evidence_refs")

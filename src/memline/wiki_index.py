@@ -26,7 +26,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from mem0_local.wiki_check import parse_frontmatter
+from memline.wiki_check import parse_frontmatter
 
 BEGIN = "<!-- index:begin -->"
 END = "<!-- index:end -->"

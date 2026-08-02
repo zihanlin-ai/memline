@@ -11,8 +11,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from mem0_local.config import SESSION_STATS_DB
-from mem0_local.sqlite_util import SqliteStore
+from memline.config import SESSION_STATS_DB
+from memline.sqlite_util import SqliteStore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS session_add_counts (

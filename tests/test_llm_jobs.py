@@ -12,7 +12,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from mem0_local import config
+from memline import config
 
 
 def resolve(llm_section, job=None):
@@ -155,14 +155,14 @@ class FallbackVisibilityTest(unittest.TestCase):
     """A fallback that succeeds is still a primary that failed."""
 
     def test_result_carries_why_earlier_endpoints_were_skipped(self):
-        from mem0_local.relay import CallResult
+        from memline.relay import CallResult
         r = CallResult(text="{}", endpoint="fallback", model="m", attempt=1, seconds=1.0,
                        earlier_failures=["primary attempt 1: APIConnectionError"])
         self.assertEqual(r.provenance["earlier_failures"],
                          ["primary attempt 1: APIConnectionError"])
 
     def test_provenance_of_a_clean_primary_call_is_empty_not_absent(self):
-        from mem0_local.relay import CallResult
+        from memline.relay import CallResult
         r = CallResult(text="{}", endpoint="primary", model="m", attempt=1, seconds=1.0)
         self.assertEqual(r.provenance["earlier_failures"], [])
 

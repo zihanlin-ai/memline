@@ -13,8 +13,8 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from mem0_local import relay
-from mem0_local.llm import Endpoint
+from memline import relay
+from memline.llm import Endpoint
 
 
 def endpoint(name, model):

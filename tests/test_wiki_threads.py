@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from mem0_local.wiki_threads import cited_refs, normalize_evidence, thread_usage
+from memline.wiki_threads import cited_refs, normalize_evidence, thread_usage
 
 
 def thread(key, ids, **extra):

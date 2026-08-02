@@ -27,9 +27,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from mem0_local.config import STORE_DIR
-from mem0_local.llm import active_model
-from mem0_local.sqlite_util import SqliteStore
+from memline.config import STORE_DIR
+from memline.llm import active_model
+from memline.sqlite_util import SqliteStore
 
 SUPERSEDED_BY = "superseded_by"
 SUPERSEDED_AT = "superseded_at"
@@ -660,7 +660,7 @@ def run_stale_check(
             **self_report,
         }
 
-    from mem0_local.judge import judge as judge_fn
+    from memline.judge import judge as judge_fn
 
     new_entry = {
         "id": new_id,
@@ -718,7 +718,7 @@ def _run_self_checks(
     if store.has_judgment(new_id, new_id, new_text, kind=KIND_NECESSITY):
         report["necessity"] = "cached"
     else:
-        from mem0_local.judge import judge_necessity
+        from memline.judge import judge_necessity
 
         verdict = judge_necessity(llm, entry)
         row = store.record_judgment(
@@ -740,7 +740,7 @@ def _run_self_checks(
     if store.has_judgment(new_id, new_id, new_text, kind=KIND_SAFETY):
         report["safety"] = "cached"
     else:
-        from mem0_local.judge import judge_safety
+        from memline.judge import judge_safety
 
         verdict = judge_safety(llm, entry)
         row = store.record_judgment(
@@ -761,7 +761,7 @@ def _run_self_checks(
         report["correctness"] = "cached"
         return report
 
-    from mem0_local.judge import judge_correctness
+    from memline.judge import judge_correctness
 
     verdict = judge_correctness(
         llm,
@@ -1254,7 +1254,7 @@ def harvest_expired(client: Any, *, now: str | None = None, limit: int = 1000) -
     already lazy."""
     now = now or _now_iso()
     try:
-        from mem0_local.config import DEFAULT_USER_ID
+        from memline.config import DEFAULT_USER_ID
 
         # mem0's get_all requires a scope key alongside custom filters.
         raw = client.get_all(

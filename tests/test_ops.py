@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from mem0_local import ops
+from memline import ops
 
 
 class FakeClient:
@@ -37,7 +37,7 @@ class DispatchTests(unittest.TestCase):
             ops.dispatch(FakeClient(), "nope", {})
 
     def test_protection_handler_owns_the_thirty_day_default(self):
-        with patch("mem0_local.staleness.set_displacement_protection") as setter:
+        with patch("memline.staleness.set_displacement_protection") as setter:
             ops._set_displacement_protection(
                 FakeClient(),
                 {
@@ -64,9 +64,9 @@ class RegistryMetadataTests(unittest.TestCase):
         self.assertEqual(ops.op_timeout("unknown", {}), ops.DEFAULT_TIMEOUT_SECONDS)
 
     def test_timeout_env_override_wins(self):
-        with patch.dict(ops.os.environ, {"MEM0_LOCAL_DAEMON_TIMEOUT": "7.5"}, clear=False):
+        with patch.dict(ops.os.environ, {"MEMLINE_DAEMON_TIMEOUT": "7.5"}, clear=False):
             self.assertEqual(ops.op_timeout("search", {"rerank": True}), 7.5)
-        with patch.dict(ops.os.environ, {"MEM0_LOCAL_DAEMON_TIMEOUT": "bad"}, clear=False):
+        with patch.dict(ops.os.environ, {"MEMLINE_DAEMON_TIMEOUT": "bad"}, clear=False):
             self.assertEqual(ops.op_timeout("search", {"rerank": False}), 30.0)
 
     def test_set_ttl_registered(self):

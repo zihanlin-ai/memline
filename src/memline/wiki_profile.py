@@ -37,8 +37,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
-from mem0_local.bundle import Sanitizer, review_flags
-from mem0_local.relay import RefusedError, call_json
+from memline.bundle import Sanitizer, review_flags
+from memline.relay import RefusedError, call_json
 
 DEFAULT_CONCURRENCY = 2
 

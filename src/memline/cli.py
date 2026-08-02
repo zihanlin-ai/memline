@@ -18,8 +18,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from mem0_local.audit import audited
-from mem0_local.config import (
+from memline.audit import audited
+from memline.config import (
     COLLECTION,
     CONFIG_PATH,
     DEFAULT_USER_ID,
@@ -39,12 +39,12 @@ from mem0_local.config import (
     VECTOR_STORE_PORT,
     WORKSPACE_ROOT,
 )
-from mem0_local.ops import (
+from memline.ops import (
     dispatch as dispatch_op,
     dispatch_queue,
     op_timeout as daemon_operation_timeout,
 )
-from mem0_local.runtime import (
+from memline.runtime import (
     get_client,
     normalize_items,
     require_llm_api_key,
@@ -57,7 +57,7 @@ console = Console()
 err_console = Console(stderr=True)
 
 app = typer.Typer(
-    name="mem0-local",
+    name="memline",
     help="Local mem0-compatible CLI backed by .agent-memory/store",
     no_args_is_help=True,
     pretty_exceptions_enable=False,
@@ -84,12 +84,12 @@ agent_mode = False
 def memory_client():
     """Build (or reuse) the direct-path client, with CLI-side guard checks."""
     setup_env()
-    if os.environ.get("MEM0_LOCAL_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
+    if os.environ.get("MEMLINE_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
         try:
-            from mem0_local.daemon import status as daemon_status
+            from memline.daemon import status as daemon_status
 
             if daemon_status().get("running"):
-                raise click.ClickException("mem0-local daemon is running; stop it before using the direct path")
+                raise click.ClickException("memline daemon is running; stop it before using the direct path")
         except click.ClickException:
             raise
         except Exception:
@@ -116,12 +116,12 @@ def output(data: Any, *, command: str, fmt: str = "text", scope: dict[str, str] 
 
 
 def daemon_enabled() -> bool:
-    value = os.environ.get("MEM0_LOCAL_NO_DAEMON", "")
+    value = os.environ.get("MEMLINE_NO_DAEMON", "")
     return value.lower() not in {"1", "true", "yes", "on"}
 
 
 def autostart_enabled() -> bool:
-    return os.environ.get("MEM0_LOCAL_NO_AUTOSTART", "").lower() not in {"1", "true", "yes", "on"}
+    return os.environ.get("MEMLINE_NO_AUTOSTART", "").lower() not in {"1", "true", "yes", "on"}
 
 
 def daemon_spawn_safe() -> bool:
@@ -137,8 +137,8 @@ def daemon_spawn_safe() -> bool:
     import subprocess
 
     try:
-        from mem0_local.daemon import _qdrant_reachable
-        from mem0_local.config import VECTOR_STORE_MODE
+        from memline.daemon import _qdrant_reachable
+        from memline.config import VECTOR_STORE_MODE
 
         if VECTOR_STORE_MODE == "qdrant-server":
             if _qdrant_reachable():
@@ -159,7 +159,7 @@ def maybe_daemon_request(op: str, args: dict[str, Any]) -> tuple[bool, Any]:
     if not daemon_enabled():
         return False, None
     try:
-        from mem0_local.daemon import DaemonUnavailable, PID_PATH, SOCKET_PATH, request, start_daemon
+        from memline.daemon import DaemonUnavailable, PID_PATH, SOCKET_PATH, request, start_daemon
     except Exception:
         return False, None
     try:
@@ -167,18 +167,18 @@ def maybe_daemon_request(op: str, args: dict[str, Any]) -> tuple[bool, Any]:
     except DaemonUnavailable as exc:
         if SOCKET_PATH.exists() or PID_PATH.exists():
             raise click.ClickException(
-                "mem0-local daemon appears to be configured but is not reachable "
-                f"({exc}). Run `mem0-local daemon status`; if it is stale, run "
-                "`mem0-local daemon stop` and retry, or set MEM0_LOCAL_NO_DAEMON=1 "
+                "memline daemon appears to be configured but is not reachable "
+                f"({exc}). Run `memline daemon status`; if it is stale, run "
+                "`memline daemon stop` and retry, or set MEMLINE_NO_DAEMON=1 "
                 "for the direct path."
             ) from exc
         if not autostart_enabled() or _autostart_attempted:
             return False, None
         if not daemon_spawn_safe():
             err_console.print(
-                "[dim]mem0-local: daemon not running and this context cannot safely spawn it "
+                "[dim]memline: daemon not running and this context cannot safely spawn it "
                 "(isolated sandbox?); using direct path. After a reboot, run "
-                "`mem0-local daemon start` from a normal shell.[/dim]"
+                "`memline daemon start` from a normal shell.[/dim]"
             )
             return False, None
         # Lazy auto-start: bring the daemon (and, via its startup, the qdrant
@@ -186,23 +186,23 @@ def maybe_daemon_request(op: str, args: dict[str, Any]) -> tuple[bool, Any]:
         # every WSL reboot. Concurrent CLI callers serialize on the daemon
         # start lock; losers find the winner's socket via ping.
         _autostart_attempted = True
-        err_console.print("[dim]mem0-local: daemon not running; auto-starting (may take ~15s after a reboot)...[/dim]")
+        err_console.print("[dim]memline: daemon not running; auto-starting (may take ~15s after a reboot)...[/dim]")
         try:
             start_daemon(wait_seconds=90.0)
         except Exception as start_exc:  # noqa: BLE001 - degrade to direct path.
             err_console.print(
-                f"[yellow]mem0-local: daemon auto-start failed ({start_exc}); "
-                "falling back to the direct path. Set MEM0_LOCAL_NO_AUTOSTART=1 to silence.[/yellow]"
+                f"[yellow]memline: daemon auto-start failed ({start_exc}); "
+                "falling back to the direct path. Set MEMLINE_NO_AUTOSTART=1 to silence.[/yellow]"
             )
             return False, None
         try:
             return True, request({"op": op, "args": args}, timeout=daemon_operation_timeout(op, args))
         except Exception as retry_exc:
             raise click.ClickException(
-                f"mem0-local daemon {op} failed after auto-start: {retry_exc}"
+                f"memline daemon {op} failed after auto-start: {retry_exc}"
             ) from retry_exc
     except Exception as exc:
-        raise click.ClickException(f"mem0-local daemon {op} failed: {exc}") from exc
+        raise click.ClickException(f"memline daemon {op} failed: {exc}") from exc
 
 
 def read_all_memories(user_id: str = DEFAULT_USER_ID) -> tuple[list[dict[str, Any]], str]:
@@ -232,7 +232,7 @@ def read_all_memories(user_id: str = DEFAULT_USER_ID) -> tuple[list[dict[str, An
 def execute(op: str, args: dict[str, Any]) -> Any:
     """Run one store op through the daemon when available, else in-process.
 
-    Both paths run the same handler from ``mem0_local.ops``, so daemon and
+    Both paths run the same handler from ``memline.ops``, so daemon and
     direct execution cannot drift apart semantically.
     """
     used_daemon, result = maybe_daemon_request(op, args)
@@ -298,7 +298,7 @@ def output_option_was_passed() -> bool:
 
 
 def auto_agent_output() -> bool:
-    explicit = os.environ.get("MEM0_LOCAL_AUTO_JSON")
+    explicit = os.environ.get("MEMLINE_AUTO_JSON")
     if explicit is not None:
         return explicit.lower() not in {"0", "false", "no", "off"}
     return detect_writer_context().get("source") in {"codex", "claude", "opencode"}
@@ -399,7 +399,7 @@ def ancestor_exe_names(limit: int = 10) -> list[str]:
 _AGENT_IDENTITY: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     (
         # OPENCODE_SESSION_ID / OPENCODE_CALL_ID are injected per shell call by
-        # the mem0-local opencode plugin (.opencode/plugin/mem0-local.js).
+        # the memline opencode plugin (.opencode/plugin/memline.js).
         "opencode",
         ("OPENCODE_SESSION_ID", "OPENCODE_CALL_ID"),
         ("opencode",),
@@ -455,9 +455,9 @@ def detect_writer_context() -> dict[str, str]:
     overrides, per-agent identity env vars, the AI_AGENT tag, and ancestor
     executable names. The memory content being written is never inspected.
     """
-    source = first_env("MEM0_LOCAL_SOURCE", "MEM0_SOURCE", "AGENT_SOURCE", "AI_AGENT_SOURCE")
+    source = first_env("MEMLINE_SOURCE", "MEM0_SOURCE", "AGENT_SOURCE", "AI_AGENT_SOURCE")
     session_id = first_env(
-        "MEM0_LOCAL_SESSION_ID",
+        "MEMLINE_SESSION_ID",
         "MEM0_SESSION_ID",
         "AGENT_SESSION_ID",
         "OPENCODE_SESSION_ID",
@@ -710,32 +710,32 @@ def main(
     agent_mode = json_output
     if ctx.invoked_subcommand in HYGIENE_BANNER_COMMANDS:
         try:
-            from mem0_local.queue import read_alerts
+            from memline.queue import read_alerts
 
             alerts = read_alerts()
             if alerts and alerts.get("failed_unacked"):
                 err_console.print(
-                    f"[yellow]mem0-local: {alerts['failed_unacked']} queued event(s) FAILED. "
-                    "Inspect with `mem0-local event list --status failed`, then "
-                    "`mem0-local event retry <event_id>` or `mem0-local event ack --all`.[/yellow]"
+                    f"[yellow]memline: {alerts['failed_unacked']} queued event(s) FAILED. "
+                    "Inspect with `memline event list --status failed`, then "
+                    "`memline event retry <event_id>` or `memline event ack --all`.[/yellow]"
                 )
         except Exception:  # noqa: BLE001 - the banner must never break a command.
             pass
         try:
-            from mem0_local.staleness import pair_store
+            from memline.staleness import pair_store
 
             open_pairs = pair_store().open_count()
             if open_pairs:
                 err_console.print(
-                    f"[yellow]mem0-local: {open_pairs} open staleness suspicion(s) await review. "
-                    "List with `mem0-local stale list`; dispose with "
-                    "`mem0-local stale confirm|dismiss <pair_id>` or `mem0-local review`.[/yellow]"
+                    f"[yellow]memline: {open_pairs} open staleness suspicion(s) await review. "
+                    "List with `memline stale list`; dispose with "
+                    "`memline stale confirm|dismiss <pair_id>` or `memline review`.[/yellow]"
                 )
         except Exception:  # noqa: BLE001 - the banner must never break a command.
             pass
     try:
-        from mem0_local.config import SESSION_ADD_ALERT_THRESHOLD
-        from mem0_local.session_stats import session_stats_store
+        from memline.config import SESSION_ADD_ALERT_THRESHOLD
+        from memline.session_stats import session_stats_store
 
         if SESSION_ADD_ALERT_THRESHOLD > 0:
             session_id = detect_writer_context().get("session_id")
@@ -743,10 +743,10 @@ def main(
                 session_adds = session_stats_store().add_count(session_id)
                 if session_adds > SESSION_ADD_ALERT_THRESHOLD:
                     err_console.print(
-                        f"[yellow]mem0-local: this session has accumulated {session_adds} memory "
+                        f"[yellow]memline: this session has accumulated {session_adds} memory "
                         f"add(s) (threshold {SESSION_ADD_ALERT_THRESHOLD}). Consider wrapping up: "
                         "tell the user this session is due for a handoff, and run the "
-                        "end-of-session handoff review (`mem0-local review`) when they agree.[/yellow]"
+                        "end-of-session handoff review (`memline review`) when they agree.[/yellow]"
                     )
     except Exception:  # noqa: BLE001 - the banner must never break a command.
         pass
@@ -759,7 +759,7 @@ def daemon_start(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Start the optional local daemon."""
-    from mem0_local.daemon import start_daemon
+    from memline.daemon import start_daemon
 
     result = start_daemon(wait_seconds=wait_seconds)
     output(result, command="daemon-start", fmt=chosen_format(output_format, json_flag))
@@ -771,7 +771,7 @@ def daemon_stop(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Stop the optional local daemon."""
-    from mem0_local.daemon import stop_daemon
+    from memline.daemon import stop_daemon
 
     result = stop_daemon()
     output(result, command="daemon-stop", fmt=chosen_format(output_format, json_flag))
@@ -783,7 +783,7 @@ def daemon_status(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Show optional local daemon status."""
-    from mem0_local.daemon import status as daemon_status_data
+    from memline.daemon import status as daemon_status_data
 
     result = daemon_status_data()
     output(result, command="daemon-status", fmt=chosen_format(output_format, json_flag))
@@ -791,7 +791,7 @@ def daemon_status(
 
 def _llm_job_status(job: str) -> dict[str, Any]:
     """What this job resolves to, or why it does not resolve at all."""
-    from mem0_local.config import ConfigError, llm_endpoint_specs, llm_knobs
+    from memline.config import ConfigError, llm_endpoint_specs, llm_knobs
 
     try:
         specs = llm_endpoint_specs(job)
@@ -1100,7 +1100,7 @@ def _flag_suggestion(pair: dict[str, Any]) -> dict[str, Any]:
 
 def _load_open_pair(pair_id: str) -> tuple[Any, dict[str, Any]]:
     """Fetch a suspicion pair and require it to be open."""
-    from mem0_local.staleness import pair_store
+    from memline.staleness import pair_store
 
     store = pair_store()
     pair = store.get(pair_id)
@@ -1163,7 +1163,7 @@ def stale_list(
     output_format: str = typer.Option("json", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """List open staleness suspicions (advisory; dispose with confirm/dismiss)."""
-    from mem0_local.staleness import pair_store
+    from memline.staleness import pair_store
 
     pairs = pair_store().open_pairs(session_id=session, limit=limit)
     output(_enrich_pairs(pairs), command="stale-list", fmt=chosen_format(output_format, json_flag))
@@ -1279,7 +1279,7 @@ def stale_protect(
     three independent displacement suspicions for the current text
     version must all have been dismissed. The core setter enforces this rule.
     """
-    from mem0_local.staleness import (
+    from memline.staleness import (
         MAX_DISPLACEMENT_PROTECTION_DAYS,
         MAX_DISPLACEMENT_PROTECTION_REASON_CHARS,
     )
@@ -1438,7 +1438,7 @@ def review(
     `stale dismiss <pair_id>`, or correct the old memory with
     `update`. Undisposed pairs persist and surface via the CLI banner.
     """
-    from mem0_local.staleness import pair_store
+    from memline.staleness import pair_store
 
     session = session or detect_writer_context().get("session_id")
     if not session:
@@ -1521,7 +1521,7 @@ def review(
             "kind": "pending_stale_checks",
             "count": pending,
             "why": "this session's writes are still being judged; a verdict now would be premature",
-            "how": "mem0-local review --wait",
+            "how": "memline review --wait",
         })
     for flag_kind in ("safety", "correctness", "necessity"):
         flagged = [f["memory_id"] for f in self_flags if f["kind"] == flag_kind]
@@ -1677,7 +1677,7 @@ def add(
     Plain-text adds store the exact text verbatim (fast, synchronous, returns
     the memory id; exact re-fires dedup, semantic near-dups are annotated).
     Conversation input (--messages/--file) defaults to LLM extraction, which
-    is queued in the background — check with `mem0-local event status <id>`,
+    is queued in the background — check with `memline event status <id>`,
     or pass --wait for the synchronous path.
     """
     start = time.perf_counter()
@@ -1804,7 +1804,7 @@ def add(
         )
         if new_id:
             try:
-                from mem0_local.queue import EventQueue
+                from memline.queue import EventQueue
 
                 stale_event = EventQueue().enqueue(
                     "stale_check",
@@ -1944,7 +1944,7 @@ def wiki_close_run(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Advance the compile cursor. Only for a run that actually completed."""
-    from mem0_local.wiki_state import close_run
+    from memline.wiki_state import close_run
 
     memories, read_at = read_all_memories(user_id)
     new = close_run(state, started_at=started_at or read_at, memories=memories,
@@ -1971,7 +1971,7 @@ def wiki_plan(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Plan how the store is cut into batches for wiki topic profiling."""
-    from mem0_local.wiki_batch import plan_batches, plan_summary
+    from memline.wiki_batch import plan_batches, plan_summary
 
     memories, read_at = read_all_memories(user_id)
     batches = plan_batches(memories, since=since, max_memories=max_memories,
@@ -2006,7 +2006,7 @@ def wiki_profile(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Profile batches (or source documents) into raw per-batch topic profiles."""
-    from mem0_local.wiki_profile import default_prompt, profile_batches, profile_sources
+    from memline.wiki_profile import default_prompt, profile_batches, profile_sources
 
     template = (prompt.read_text(encoding="utf-8") if prompt
                 else default_prompt("wiki-profile-source" if source_dir else "wiki-profile-session"))
@@ -2046,7 +2046,7 @@ def wiki_bundle(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Resolve memories into a sanitized bundle for a call to an external model."""
-    from mem0_local.bundle import build_bundle
+    from memline.bundle import build_bundle
 
     ids = list(memory_ids or [])
     if ids_file:
@@ -2092,8 +2092,8 @@ def wiki_suggest(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Assemble reviewed associations into the suggestion list, resolving evidence."""
-    from mem0_local.wiki_check import run_check
-    from mem0_local.wiki_suggest import build_suggestions, load_threads, maintenance_suggestions
+    from memline.wiki_check import run_check
+    from memline.wiki_suggest import build_suggestions, load_threads, maintenance_suggestions
 
     def resolve(memory_id: str) -> str | None:
         try:
@@ -2161,8 +2161,8 @@ def wiki_draft(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Draft accepted topics from their evidence on the configured drafting endpoint."""
-    from mem0_local.wiki_draft import draft_topic
-    from mem0_local.wiki_profile import default_prompt
+    from memline.wiki_draft import draft_topic
+    from memline.wiki_profile import default_prompt
 
     template = prompt.read_text(encoding="utf-8") if prompt else default_prompt("wiki-draft")
     queue = [json.loads(line) for line in topics.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -2203,7 +2203,7 @@ def wiki_check_draft(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Check a draft and, optionally, bind an external review to its exact hashes."""
-    from mem0_local.wiki_verify import verify
+    from memline.wiki_verify import verify
 
     stem = draft.with_suffix("")
     bundle_path = Path(str(stem) + ".bundle.json")
@@ -2218,7 +2218,7 @@ def wiki_check_draft(
     result: dict[str, Any] = {"draft": str(draft), **report}
     gate_clean = report["clean"]
     if review:
-        from mem0_local.wiki_review import (
+        from memline.wiki_review import (
             build_review_bundle,
             validate_review_artifact,
         )
@@ -2260,7 +2260,7 @@ def _review_artifacts(
     draft: Path, topics: Path | None = None
 ) -> tuple[str, dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
     """Load a draft's sidecars and its approved topic without touching the store."""
-    from mem0_local.wiki_review import load_approved_topic
+    from memline.wiki_review import load_approved_topic
 
     stem = draft.with_suffix("")
     bundle_path = Path(str(stem) + ".bundle.json")
@@ -2290,8 +2290,8 @@ def _sanitize_review_artifacts(
     """Apply current human rulings to old sidecars before an outbound review."""
     import copy
 
-    from mem0_local.bundle import Sanitizer
-    from mem0_local.wiki_draft import BLOCKING_FLAG_KINDS, load_review
+    from memline.bundle import Sanitizer
+    from memline.wiki_draft import BLOCKING_FLAG_KINDS, load_review
 
     if sensitivity_review is None:
         candidate = draft.parent.parent / "sanitization-review.json"
@@ -2343,7 +2343,7 @@ def wiki_prepare_review(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Resolve every citation and attach its evidence in an immutable review bundle."""
-    from mem0_local.wiki_review import build_review_bundle
+    from memline.wiki_review import build_review_bundle
 
     draft_text, bundle, claims, topic = _review_artifacts(draft, topics)
     bundle, claims, topic = _sanitize_review_artifacts(
@@ -2388,8 +2388,8 @@ def wiki_review_draft(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Compile the evidence packet, audit it on the configured review endpoint, and validate the report."""
-    from mem0_local.wiki_profile import default_prompt
-    from mem0_local.wiki_review import build_review_bundle, load_prior_review, run_review_passes
+    from memline.wiki_profile import default_prompt
+    from memline.wiki_review import build_review_bundle, load_prior_review, run_review_passes
 
     draft_text, bundle, claims, topic = _review_artifacts(draft, topics)
     if bundle.get("sanitized") is not True:
@@ -2447,7 +2447,7 @@ def wiki_check_pages(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Check wiki provenance and internal links against current memory/source state (read-only)."""
-    from mem0_local.wiki_check import run_check
+    from memline.wiki_check import run_check
 
     root = wiki_root or (ROOT / ".agent-memory" / "wiki")
     report = run_check(root, execute)
@@ -2464,7 +2464,7 @@ def wiki_index(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Regenerate INDEX.md and each shelf listing from page frontmatter."""
-    from mem0_local.wiki_index import build_index
+    from memline.wiki_index import build_index
 
     root = wiki_root or (ROOT / ".agent-memory" / "wiki")
     report = build_index(root / "content")
@@ -2493,7 +2493,7 @@ def wiki_related(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Regenerate each page's related-pages block from shared evidence."""
-    from mem0_local.wiki_related import build_related
+    from memline.wiki_related import build_related
 
     root = wiki_root or (ROOT / ".agent-memory" / "wiki")
     report = build_related(root / "content", min_shared=min_shared, min_share=min_share)
@@ -2516,7 +2516,7 @@ def wiki_check_threads(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Which profiled sub-topics a draft used, and which it dropped whole."""
-    from mem0_local.wiki_threads import check_draft_threads
+    from memline.wiki_threads import check_draft_threads
 
     wiki_root = draft.resolve().parent.parent
     topics_file = topics or (wiki_root / "suggestions" / "accepted-topics.jsonl")
@@ -2578,7 +2578,7 @@ def update(
     # entry, not to re-scan its neighbors. Enqueue failure must never break the
     # update, which has already been committed and audited above.
     try:
-        from mem0_local.queue import EventQueue
+        from memline.queue import EventQueue
 
         stale_event = EventQueue().enqueue(
             "stale_check",
@@ -2685,7 +2685,7 @@ def delete(
         downgraded = isinstance(result, dict) and result.get("downgraded_to_expiry")
         if not downgraded:
             try:
-                from mem0_local.staleness import pair_store
+                from memline.staleness import pair_store
 
                 pair_store().close_for_deleted_memory(memory_id)
             except Exception:  # noqa: BLE001 - pair hygiene must never break delete.
@@ -2765,7 +2765,7 @@ def entity_delete(
 
 
 def _event_queue_direct():
-    from mem0_local.queue import EventQueue
+    from memline.queue import EventQueue
 
     return EventQueue()
 
@@ -2835,7 +2835,7 @@ def embed_test(text: str = typer.Argument(..., help="Text to embed.")) -> None:
 
 
 def cli_main() -> None:
-    app(prog_name="mem0-local")
+    app(prog_name="memline")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """Ask a configured endpoint for one JSON answer, and say what actually happened.
 
-`mem0_local.llm` exists for mem0's own judge calls, which are short and text
+`memline.llm` exists for mem0's own judge calls, which are short and text
 shaped. This module is for the other kind of call: a long structured one, where
 the answer is a JSON document, the prompt is large, and the caller needs to know
 which endpoint produced the result.
@@ -25,10 +25,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from mem0_local.config import llm_endpoint_specs, llm_knobs
-from mem0_local.llm import Endpoint
-from mem0_local.proxy import client_for_base_url
-from mem0_local.runtime import setup_env
+from memline.config import llm_endpoint_specs, llm_knobs
+from memline.llm import Endpoint
+from memline.proxy import client_for_base_url
+from memline.runtime import setup_env
 
 
 class RefusedError(RuntimeError):

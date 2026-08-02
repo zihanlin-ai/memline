@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from mem0_local import staleness
-from mem0_local.staleness import (
+from memline import staleness
+from memline.staleness import (
     PairStore,
     StalenessError,
     invalidate,

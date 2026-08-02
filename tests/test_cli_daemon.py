@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import click
 
-from mem0_local import cli
-from mem0_local.daemon import DaemonUnavailable
+from memline import cli
+from memline.daemon import DaemonUnavailable
 
 
 class FakePath:
@@ -23,9 +23,9 @@ class CliDaemonTests(unittest.TestCase):
     def test_maybe_daemon_request_falls_back_when_no_runtime_files_exist(self):
         with (
             patch.dict(cli.os.environ, {}, clear=False),
-            patch("mem0_local.daemon.SOCKET_PATH", FakePath(False)),
-            patch("mem0_local.daemon.PID_PATH", FakePath(False)),
-            patch("mem0_local.daemon.request", side_effect=DaemonUnavailable("missing socket")),
+            patch("memline.daemon.SOCKET_PATH", FakePath(False)),
+            patch("memline.daemon.PID_PATH", FakePath(False)),
+            patch("memline.daemon.request", side_effect=DaemonUnavailable("missing socket")),
         ):
             used, result = cli.maybe_daemon_request("search", {"rerank": False})
 
@@ -35,9 +35,9 @@ class CliDaemonTests(unittest.TestCase):
     def test_maybe_daemon_request_fails_fast_when_runtime_files_exist_but_daemon_unreachable(self):
         with (
             patch.dict(cli.os.environ, {}, clear=False),
-            patch("mem0_local.daemon.SOCKET_PATH", FakePath(True)),
-            patch("mem0_local.daemon.PID_PATH", FakePath(True)),
-            patch("mem0_local.daemon.request", side_effect=DaemonUnavailable("permission denied")),
+            patch("memline.daemon.SOCKET_PATH", FakePath(True)),
+            patch("memline.daemon.PID_PATH", FakePath(True)),
+            patch("memline.daemon.request", side_effect=DaemonUnavailable("permission denied")),
         ):
             with self.assertRaises(click.ClickException) as raised:
                 cli.maybe_daemon_request("search", {"rerank": False})
@@ -51,21 +51,21 @@ class CliDaemonTests(unittest.TestCase):
         self.assertEqual(cli.daemon_operation_timeout("add", {"infer": True}), 300.0)
 
     def test_daemon_timeout_can_be_overridden(self):
-        with patch.dict(cli.os.environ, {"MEM0_LOCAL_DAEMON_TIMEOUT": "7.5"}, clear=False):
+        with patch.dict(cli.os.environ, {"MEMLINE_DAEMON_TIMEOUT": "7.5"}, clear=False):
             self.assertEqual(cli.daemon_operation_timeout("search", {"rerank": True}), 7.5)
 
     def test_invalid_timeout_override_uses_default(self):
-        with patch.dict(cli.os.environ, {"MEM0_LOCAL_DAEMON_TIMEOUT": "bad"}, clear=False):
+        with patch.dict(cli.os.environ, {"MEMLINE_DAEMON_TIMEOUT": "bad"}, clear=False):
             self.assertEqual(cli.daemon_operation_timeout("search", {"rerank": False}), 30.0)
 
     def test_add_appends_live_audit_after_successful_daemon_add(self):
         result = {"results": [{"id": "memory-1", "memory": "Keep audit manifests.", "event": "ADD"}]}
-        from mem0_local import queue as queue_mod
+        from memline import queue as queue_mod
 
         with (
             patch.dict(cli.os.environ, {}, clear=False),
             patch.object(cli, "maybe_daemon_request", return_value=(True, result)),
-            patch("mem0_local.audit.append_live_audit") as append_live_audit,
+            patch("memline.audit.append_live_audit") as append_live_audit,
             patch.object(cli, "output") as output,
             patch.object(queue_mod, "EventQueue") as event_queue,
         ):

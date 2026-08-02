@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from mem0_local.judge import build_user_message, parse_judgments
+from memline.judge import build_user_message, parse_judgments
 
 
 def j(id_: str, verdict: str = "SUPERSEDED", confidence: float = 0.9, reason: str = "r") -> dict:
@@ -79,7 +79,7 @@ class ParseJudgmentsTests(unittest.TestCase):
 
 class ParseSingleJudgmentTests(unittest.TestCase):
     def test_valid_necessity_verdict(self) -> None:
-        from mem0_local.judge import NECESSITY_VERDICTS, parse_single_judgment
+        from memline.judge import NECESSITY_VERDICTS, parse_single_judgment
 
         out = parse_single_judgment(
             json.dumps({"verdict": "born_unnecessary", "confidence": 0.9, "reason": "r"}),
@@ -89,7 +89,7 @@ class ParseSingleJudgmentTests(unittest.TestCase):
         self.assertEqual(out["verdict"], "BORN_UNNECESSARY")
 
     def test_unknown_verdict_falls_back_to_default(self) -> None:
-        from mem0_local.judge import NECESSITY_VERDICTS, parse_single_judgment
+        from memline.judge import NECESSITY_VERDICTS, parse_single_judgment
 
         out = parse_single_judgment(
             json.dumps({"verdict": "BANANA", "confidence": 0.9, "reason": "r"}),
@@ -99,7 +99,7 @@ class ParseSingleJudgmentTests(unittest.TestCase):
         self.assertEqual(out["verdict"], "DURABLE")
 
     def test_truncated_output_salvages_verdict(self) -> None:
-        from mem0_local.judge import CORRECTNESS_VERDICTS, parse_single_judgment
+        from memline.judge import CORRECTNESS_VERDICTS, parse_single_judgment
 
         out = parse_single_judgment(
             '{"verdict":"TIMESTAMP_SUSPECT","confidence":0.8,"reason":"cut of',
@@ -109,7 +109,7 @@ class ParseSingleJudgmentTests(unittest.TestCase):
         self.assertEqual(out["verdict"], "TIMESTAMP_SUSPECT")
 
     def test_confidence_clamped_and_empty_raises(self) -> None:
-        from mem0_local.judge import NECESSITY_VERDICTS, parse_single_judgment
+        from memline.judge import NECESSITY_VERDICTS, parse_single_judgment
 
         out = parse_single_judgment(
             json.dumps({"verdict": "DURABLE", "confidence": 3.0, "reason": "r"}),

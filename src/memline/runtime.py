@@ -1,4 +1,4 @@
-"""Shared bootstrap for every mem0-local entry point.
+"""Shared bootstrap for every memline entry point.
 
 The CLI's direct path, the daemon, and the batch tools (ledger ingest,
 metadata backfill) all prepare the environment and build their Mem0 client
@@ -13,7 +13,7 @@ import os
 import warnings
 from typing import Any
 
-from mem0_local.config import (
+from memline.config import (
     EMBEDDING_DIMS,
     EMBEDDING_MODEL,
     EMBEDDING_PROVIDER,
@@ -73,7 +73,7 @@ def require_llm_api_key(job: str = "infer") -> None:
     block work that the primary can do, and it surfaces loudly enough as the
     second error when the primary is the one that is down.
     """
-    from mem0_local.llm import Endpoint
+    from memline.llm import Endpoint
 
     primary = Endpoint(**llm_endpoint_specs(job)[0])
     try:
@@ -154,7 +154,7 @@ def install_llm(client: Any) -> Any:
     consumers stop sharing a model: extraction and reranking have different
     shapes and different budgets, so they read different tables.
     """
-    from mem0_local.llm import build_llm
+    from memline.llm import build_llm
 
     client.llm = build_llm(CLIENT_LLM_MAX_TOKENS, job="infer")
     reranker = getattr(client, "reranker", None)
@@ -178,7 +178,7 @@ def check_vendored_mem0() -> None:
         return
     if "workspace" not in installed:
         raise RuntimeError(
-            f"mem0ai {installed} is the official package, but mem0-local requires "
+            f"mem0ai {installed} is the official package, but memline requires "
             "the vendored build. Install it first: pip install -e <repo>/vendor/mem0ai"
         )
 

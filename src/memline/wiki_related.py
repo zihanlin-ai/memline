@@ -25,8 +25,8 @@ import itertools
 from pathlib import Path
 from typing import Any
 
-from mem0_local.wiki_check import parse_frontmatter
-from mem0_local.wiki_index import NON_ENTRY, write_region
+from memline.wiki_check import parse_frontmatter
+from memline.wiki_index import NON_ENTRY, write_region
 
 BEGIN = "<!-- related:begin -->"
 END = "<!-- related:end -->"

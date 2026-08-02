@@ -6,26 +6,26 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mem0_local import config
+from memline import config
 
 
 class VectorStoreConfigTests(unittest.TestCase):
     def setUp(self):
-        self._orig_env = os.environ.get("MEM0_LOCAL_CONFIG")
+        self._orig_env = os.environ.get("MEMLINE_CONFIG")
         self._tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
         if self._orig_env is None:
-            os.environ.pop("MEM0_LOCAL_CONFIG", None)
+            os.environ.pop("MEMLINE_CONFIG", None)
         else:
-            os.environ["MEM0_LOCAL_CONFIG"] = self._orig_env
+            os.environ["MEMLINE_CONFIG"] = self._orig_env
         importlib.reload(config)
         self._tmp.cleanup()
 
     def _reload_with(self, toml_text: str):
         cfg_path = Path(self._tmp.name) / "config.toml"
         cfg_path.write_text(toml_text)
-        os.environ["MEM0_LOCAL_CONFIG"] = str(cfg_path)
+        os.environ["MEMLINE_CONFIG"] = str(cfg_path)
         return importlib.reload(config)
 
     def test_default_is_local_path_mode(self):

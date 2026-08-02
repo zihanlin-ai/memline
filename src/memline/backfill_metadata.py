@@ -11,7 +11,7 @@ from typing import Any
 
 from qdrant_client import QdrantClient
 
-from mem0_local.config import (
+from memline.config import (
     COLLECTION,
     LEDGER_IMPORT_AGENT_ID,
     LEDGER_IMPORT_SESSION_ID,
@@ -22,7 +22,7 @@ from mem0_local.config import (
     WORKSPACE_ROOT,
     vector_store_config,
 )
-from mem0_local.runtime import acquire_cli_lock, setup_env
+from memline.runtime import acquire_cli_lock, setup_env
 
 
 MANIFEST_DIR = MEMORY_ROOT / "manifests"

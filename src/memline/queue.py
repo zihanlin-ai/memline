@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mem0_local.config import STORE_DIR
-from mem0_local.sqlite_util import SqliteStore
+from memline.config import STORE_DIR
+from memline.sqlite_util import SqliteStore
 
 QUEUE_DB = STORE_DIR / "queue.db"
 ALERTS_FILE = STORE_DIR / "queue-alerts.json"

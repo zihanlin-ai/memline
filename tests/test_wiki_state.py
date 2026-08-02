@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mem0_local.wiki_state import EMPTY, boundary_ids, close_run, read_state, source_hashes
+from memline.wiki_state import EMPTY, boundary_ids, close_run, read_state, source_hashes
 
 
 def mem(mid, stamp):

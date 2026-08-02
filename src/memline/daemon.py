@@ -1,4 +1,4 @@
-"""Long-lived local daemon for mem0-local.
+"""Long-lived local daemon for memline.
 
 The CLI is intentionally still usable without this daemon.  When the daemon is
 running, commands can reuse one initialized Mem0 client instead of paying the
@@ -21,22 +21,22 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from mem0_local.audit import append_live_audit
-from mem0_local.ops import (
+from memline.audit import append_live_audit
+from memline.ops import (
     QUEUE_OPS,
     dispatch as dispatch_op,
     dispatch_queue,
     is_exclusive,
     is_llm_bound,
 )
-from mem0_local.queue import EventQueue
-from mem0_local.config import (
+from memline.queue import EventQueue
+from memline.config import (
     STORE_DIR,
     VECTOR_STORE_HOST,
     VECTOR_STORE_MODE,
     VECTOR_STORE_PORT,
 )
-from mem0_local.runtime import new_memory_client
+from memline.runtime import new_memory_client
 
 SOCKET_PATH = STORE_DIR / "daemon.sock"
 PID_PATH = STORE_DIR / "daemon.pid"
@@ -47,13 +47,13 @@ CPU_SAMPLE_SECONDS = 0.05
 # Workers are cheap (network-wait bound), so the pool is sized well above the
 # LLM semaphore: adds waiting for an LLM slot occupy workers, and reads must
 # still find a free one instead of queueing behind a write burst.
-MAX_WORKERS = int(os.environ.get("MEM0_LOCAL_DAEMON_WORKERS", "32"))
-LLM_CONCURRENCY = int(os.environ.get("MEM0_LOCAL_LLM_CONCURRENCY", "4"))
-ASYNC_WORKERS = int(os.environ.get("MEM0_LOCAL_ASYNC_WORKERS", "2"))
+MAX_WORKERS = int(os.environ.get("MEMLINE_DAEMON_WORKERS", "32"))
+LLM_CONCURRENCY = int(os.environ.get("MEMLINE_LLM_CONCURRENCY", "4"))
+ASYNC_WORKERS = int(os.environ.get("MEMLINE_ASYNC_WORKERS", "2"))
 # TTL expiry is enforced lazily by the search filter; this loop only
 # materializes it (payload stamp + history + pair closure), so a long
 # interval is fine.
-TTL_HARVEST_INTERVAL_SECONDS = float(os.environ.get("MEM0_LOCAL_TTL_HARVEST_SECONDS", str(6 * 3600)))
+TTL_HARVEST_INTERVAL_SECONDS = float(os.environ.get("MEMLINE_TTL_HARVEST_SECONDS", str(6 * 3600)))
 
 _lifetime_lock_handle = None
 _event_queue: EventQueue | None = None
@@ -328,7 +328,7 @@ def _get_judge_llm() -> Any:
     global _judge_llm
     with _judge_llm_lock:
         if _judge_llm is None:
-            from mem0_local.llm import build_llm
+            from memline.llm import build_llm
 
             _judge_llm = build_llm(4096, job="judge")
         return _judge_llm
@@ -337,7 +337,7 @@ def _get_judge_llm() -> Any:
 def _process_stale_check(client: Any, queue: EventQueue, item: dict[str, Any]) -> None:
     """Advisory judging of one new entry vs its neighbors: evidence rows only,
     never a store mutation, hence no manifest row."""
-    from mem0_local.staleness import run_stale_check
+    from memline.staleness import run_stale_check
 
     args = item["args"]
     judge_llm = _get_judge_llm()
@@ -384,7 +384,7 @@ def _worker_loop(client: Any, queue: EventQueue, stop_event: threading.Event) ->
 
 def _ttl_harvest_loop(client: Any, stop_event: threading.Event) -> None:
     """Materialize lazy TTL expiries once at startup, then periodically."""
-    from mem0_local.staleness import harvest_expired
+    from memline.staleness import harvest_expired
 
     while True:
         _store_gate.acquire_shared()
@@ -428,7 +428,7 @@ def serve() -> None:
 
         fcntl.flock(_lifetime_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        print("another mem0-local daemon is running or initializing; exiting", file=sys.stderr, flush=True)
+        print("another memline daemon is running or initializing; exiting", file=sys.stderr, flush=True)
         sys.exit(0)
     except ImportError:
         pass
@@ -577,7 +577,7 @@ def read_pid_cmdline(pid: int) -> str:
 
 
 def is_daemon_pid(pid: int) -> bool:
-    return "mem0_local.daemon" in read_pid_cmdline(pid)
+    return "memline.daemon" in read_pid_cmdline(pid)
 
 
 def process_cpu_seconds(pid: int) -> float | None:
@@ -716,7 +716,7 @@ def _start_daemon_locked(wait_seconds: float) -> dict[str, Any]:
 
     log = LOG_PATH.open("ab")
     proc = subprocess.Popen(
-        [sys.executable, "-m", "mem0_local.daemon", "--serve"],
+        [sys.executable, "-m", "memline.daemon", "--serve"],
         stdin=subprocess.DEVNULL,
         stdout=log,
         stderr=log,
@@ -756,7 +756,7 @@ def stop_daemon(wait_seconds: float = 10.0) -> dict[str, Any]:
 
     if not is_daemon_pid(pid):
         unlink_runtime_files()
-        return {"stopped": False, "pid": pid, "reason": "pid file did not point to mem0-local daemon"}
+        return {"stopped": False, "pid": pid, "reason": "pid file did not point to memline daemon"}
 
     stopped = terminate_daemon_pid(pid, wait_seconds=wait_seconds, force=False)
     if stopped:

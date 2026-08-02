@@ -16,7 +16,7 @@ import unittest
 
 import httpx
 
-from mem0_local.proxy import (
+from memline.proxy import (
     TunnellingTransport,
     bypasses_proxy,
     client_for_base_url,

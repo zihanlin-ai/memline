@@ -16,8 +16,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
-from mem0_local.relay import CallResult, call_json
-from mem0_local.wiki_verify import CITATION, verify
+from memline.relay import CallResult, call_json
+from memline.wiki_verify import CITATION, verify
 
 SCHEMA_VERSION = 1
 CLAIM_VERDICTS = {

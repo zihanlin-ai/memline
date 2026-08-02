@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mem0_local.wiki_check import run_check, sha256_text
+from memline.wiki_check import run_check, sha256_text
 
 MEM_ID = "11111111-1111-1111-1111-111111111111"
 HEAD_ID = "22222222-2222-2222-2222-222222222222"

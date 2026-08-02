@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mem0_local.bundle import Sanitizer, build_bundle, review_flags, sha256_text
+from memline.bundle import Sanitizer, build_bundle, review_flags, sha256_text
 
 MEM_A = "11111111-1111-1111-1111-111111111111"
 MEM_B = "22222222-2222-2222-2222-222222222222"

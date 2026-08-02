@@ -7,7 +7,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from mem0_local.wiki_review import (
+from memline.wiki_review import (
     _content_hash,
     build_review_bundle,
     load_prior_review,

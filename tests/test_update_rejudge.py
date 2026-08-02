@@ -13,7 +13,7 @@ import unittest
 import unittest.mock
 from typing import Any
 
-from mem0_local import cli
+from memline import cli
 
 
 class _Span:
@@ -56,7 +56,7 @@ class UpdateRejudgeTests(unittest.TestCase):
         for obj, name, new in self._patches:
             setattr(obj, name, new)
 
-        import mem0_local.queue as queue_mod
+        import memline.queue as queue_mod
 
         self._saved_queue = queue_mod.EventQueue
         queue_mod.EventQueue = lambda *a, **k: self.queue  # type: ignore[assignment]
@@ -64,7 +64,7 @@ class UpdateRejudgeTests(unittest.TestCase):
     def tearDown(self) -> None:
         for obj, name, old in self._saved:
             setattr(obj, name, old)
-        import mem0_local.queue as queue_mod
+        import memline.queue as queue_mod
 
         queue_mod.EventQueue = self._saved_queue  # type: ignore[assignment]
 
@@ -83,7 +83,7 @@ class UpdateRejudgeTests(unittest.TestCase):
     def test_enqueue_failure_never_breaks_the_update(self) -> None:
         """The write is already committed and audited by then; a judging
         hiccup must not surface as a failed update."""
-        import mem0_local.queue as queue_mod
+        import memline.queue as queue_mod
 
         def boom(*_a: Any, **_k: Any):
             raise RuntimeError("queue unavailable")

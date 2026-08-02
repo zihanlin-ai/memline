@@ -7,7 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from mem0_local import daemon
+from memline import daemon
 
 
 class FakePath:
@@ -57,7 +57,7 @@ class FakeSocket:
 class DaemonRequestTests(unittest.TestCase):
     def test_request_uses_short_connect_timeout_before_operation_timeout(self):
         fake_socket = FakeSocket()
-        fake_path = FakePath("/tmp/mem0-local.sock", exists=True)
+        fake_path = FakePath("/tmp/memline.sock", exists=True)
         with (
             patch.object(daemon, "SOCKET_PATH", fake_path),
             patch.object(daemon.socket, "socket", return_value=fake_socket),
@@ -72,7 +72,7 @@ class DaemonRequestTests(unittest.TestCase):
 
     def test_request_reports_failed_write_as_daemon_unavailable(self):
         with (
-            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/mem0-local.sock", exists=True)),
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/memline.sock", exists=True)),
             patch.object(daemon.socket, "socket", return_value=FakeSocket()),
             patch.object(daemon, "write_json_line", return_value=False),
         ):
@@ -81,7 +81,7 @@ class DaemonRequestTests(unittest.TestCase):
 
     def test_request_wraps_socket_errors_as_daemon_unavailable(self):
         with (
-            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/mem0-local.sock", exists=True)),
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/memline.sock", exists=True)),
             patch.object(
                 daemon.socket,
                 "socket",
@@ -106,8 +106,8 @@ class DaemonLifecycleTests(unittest.TestCase):
             patch.object(daemon, "is_pid_running", return_value=True),
             patch.object(daemon, "is_daemon_pid", return_value=True),
             patch.object(daemon, "sample_process_cpu_percent", return_value=0.0) as sample_process_cpu_percent,
-            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/mem0-local.sock", exists=True)),
-            patch.object(daemon, "LOG_PATH", FakePath("/tmp/mem0-local.log", exists=True)),
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/memline.sock", exists=True)),
+            patch.object(daemon, "LOG_PATH", FakePath("/tmp/memline.log", exists=True)),
         ):
             result = daemon.status()
 
@@ -124,8 +124,8 @@ class DaemonLifecycleTests(unittest.TestCase):
             patch.object(daemon, "is_pid_running", return_value=True),
             patch.object(daemon, "is_daemon_pid", return_value=True),
             patch.object(daemon, "sample_process_cpu_percent", return_value=0.0),
-            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/mem0-local.sock", exists=True)),
-            patch.object(daemon, "LOG_PATH", FakePath("/tmp/mem0-local.log", exists=True)),
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/memline.sock", exists=True)),
+            patch.object(daemon, "LOG_PATH", FakePath("/tmp/memline.log", exists=True)),
         ):
             result = daemon.status()
 
@@ -147,8 +147,8 @@ class DaemonLifecycleTests(unittest.TestCase):
     def test_start_daemon_recovers_stale_daemon_pid_and_unlinks_runtime_files(self):
         popen = SimpleNamespace(pid=42, poll=Mock(side_effect=[None, None]))
         with (
-            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/mem0-local.sock", exists=False)),
-            patch.object(daemon, "LOG_PATH", FakePath("/tmp/mem0-local.log", exists=True)),
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/memline.sock", exists=False)),
+            patch.object(daemon, "LOG_PATH", FakePath("/tmp/memline.log", exists=True)),
             # Three pings: initial probe, re-probe under the start lock, and
             # the post-spawn readiness poll that finds our own child (pid 42).
             patch.object(daemon, "ping", side_effect=[None, None, {"pid": 42, "socket": "sock"}]),
@@ -196,8 +196,8 @@ class DaemonLifecycleTests(unittest.TestCase):
             return clock.now
 
         with (
-            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/mem0-local.sock", exists=False)),
-            patch.object(daemon, "LOG_PATH", FakePath("/tmp/mem0-local.log", exists=True)),
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/memline.sock", exists=False)),
+            patch.object(daemon, "LOG_PATH", FakePath("/tmp/memline.log", exists=True)),
             patch.object(daemon, "ping", return_value=None),
             patch.object(daemon, "read_pid", side_effect=[None, 99]),
             patch.object(daemon.subprocess, "Popen", return_value=proc),
@@ -222,7 +222,7 @@ class DaemonLifecycleTests(unittest.TestCase):
         ):
             result = daemon.stop_daemon()
 
-        self.assertEqual(result["reason"], "pid file did not point to mem0-local daemon")
+        self.assertEqual(result["reason"], "pid file did not point to memline daemon")
         unlink_runtime_files.assert_called_once()
         os_kill.assert_not_called()
 

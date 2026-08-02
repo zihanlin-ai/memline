@@ -6,7 +6,7 @@ tests: `wiki review-draft` shipped calling a name its import line did not
 bring in, and the failure surfaced only as a NameError in front of a user
 whose audit had already been paid for.
 
-This walks each command's source for the names it imports from mem0_local and
+This walks each command's source for the names it imports from memline and
 the module-level names it calls, and checks they exist. It is cheap, and it
 catches the one class of break that testing modules in isolation cannot.
 """
@@ -20,7 +20,7 @@ import inspect
 import textwrap
 import unittest
 
-from mem0_local import cli
+from memline import cli
 
 
 def _commands():
@@ -39,7 +39,7 @@ class DeferredImportTest(unittest.TestCase):
         for name, func in _commands():
             tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
             for node in ast.walk(tree):
-                if not isinstance(node, ast.ImportFrom) or not (node.module or "").startswith("mem0_local"):
+                if not isinstance(node, ast.ImportFrom) or not (node.module or "").startswith("memline"):
                     continue
                 module = importlib.import_module(node.module)
                 for alias in node.names:

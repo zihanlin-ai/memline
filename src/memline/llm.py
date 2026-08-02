@@ -1,6 +1,6 @@
 """Judge LLM endpoints: one primary, one independent fallback.
 
-Every mem0-local judge (staleness, necessity, safety, correctness) and the
+Every memline judge (staleness, necessity, safety, correctness) and the
 optional LLM reranker run through here. The primary is the company internal
 relay; it is only reachable through the corporate proxy, so a laptop off the
 corporate network — or a relay hiccup — would otherwise stall the whole
@@ -23,7 +23,7 @@ The relay also constrains the transport, in two ways handled here:
 * Its ``base_url`` is plain HTTP, which the corporate proxy forwards rather
   than tunnels — and it strips the body on the way, so every call came back
   ``400 invalid JSON request body`` and every judge quietly ran on the
-  fallback. ``mem0_local.proxy`` supplies a CONNECT-tunnelling client.
+  fallback. ``memline.proxy`` supplies a CONNECT-tunnelling client.
 * That path also drops any request whose first response byte takes longer
   than about 30 seconds, regardless of size. A streaming request starts
   emitting immediately, so endpoints on such a path set ``stream = true`` and
@@ -40,8 +40,8 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-from mem0_local.config import llm_endpoint_specs
-from mem0_local.proxy import client_for_base_url
+from memline.config import llm_endpoint_specs
+from memline.proxy import client_for_base_url
 
 
 @dataclass(frozen=True)
@@ -163,7 +163,7 @@ def build_endpoint_llm(endpoint: Endpoint, max_tokens: int) -> Any:
     # Overwrite the client mem0 built: its OPENROUTER_API_KEY sniffing ignores
     # openai_base_url whenever that variable exists, which it does here. The
     # explicit http_client is what keeps a plain-HTTP base_url off the
-    # body-stripping forward-proxy path (see mem0_local.proxy).
+    # body-stripping forward-proxy path (see memline.proxy).
     client = OpenAI(
         api_key=endpoint.api_key(),
         base_url=endpoint.base_url,

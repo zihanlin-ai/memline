@@ -20,9 +20,9 @@ from pathlib import Path
 
 from test_staleness import FakeClient, RoutingFakeLlm
 
-from mem0_local import staleness
-from mem0_local.ops import dispatch as dispatch_op
-from mem0_local.staleness import (
+from memline import staleness
+from memline.ops import dispatch as dispatch_op
+from memline.staleness import (
     KIND_NECESSITY,
     KIND_TTL_EXPIRY,
     PairStore,
@@ -256,7 +256,7 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
         all 570 stored marks by SQL in the same change that introduced v5, and
         parse_single_judgment coerces any out-of-vocabulary verdict to DURABLE,
         so no row can carry one from either direction."""
-        from mem0_local.cli import _flag_suggestion
+        from memline.cli import _flag_suggestion
 
         play = _flag_suggestion({"kind": "necessity", "verdict": "EXPIRING"})
         self.assertEqual(play["verdict"], "EXPIRING")
@@ -269,7 +269,7 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
     def test_an_unknown_verdict_still_gets_usable_guidance(self) -> None:
         """The fallback is the only thing standing behind a future verdict
         added to a judge before this table learns about it."""
-        from mem0_local.cli import _flag_suggestion
+        from memline.cli import _flag_suggestion
 
         play = _flag_suggestion({"kind": "necessity", "verdict": "SOMETHING_NEW"})
         self.assertIn("SOMETHING_NEW", play["means"])
@@ -280,7 +280,7 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
         """Review must state what a finding means and the one condition under
         which dismissing it is right -- dismissal is permanent per text version,
         so 'acknowledge and move on' has to be visibly the wrong door."""
-        from mem0_local.cli import _flag_suggestion
+        from memline.cli import _flag_suggestion
 
         for kind, verdict in (
             ("correctness", "LANGUAGE_SUSPECT"),
@@ -446,7 +446,7 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
         fails, the suspicion returns to open instead of stranding."""
         from unittest.mock import patch
         import click
-        from mem0_local import cli
+        from memline import cli
 
         row = self.store.record_judgment(
             kind=KIND_NECESSITY, new_id="ghost", old_id="ghost", old_text="t",
@@ -454,7 +454,7 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
         )
         with (
             patch.object(cli, "execute", side_effect=StalenessError("memory not found: ghost")),
-            patch("mem0_local.audit.append_live_audit"),
+            patch("memline.audit.append_live_audit"),
             patch.object(cli, "detect_writer_context", return_value={"session_id": "s1", "source": "claude"}),
             patch.object(cli, "_interactive_tty", return_value=False),
         ):
@@ -467,7 +467,7 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
     def test_cross_session_confirm_is_denied_non_interactively(self) -> None:
         from unittest.mock import patch
         import click
-        from mem0_local import cli
+        from memline import cli
 
         row = self.store.record_judgment(
             kind=KIND_NECESSITY, new_id="m", old_id="m", old_text="t",
@@ -488,7 +488,7 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
         """Expiry flags are sessionless lifecycle events: a non-interactive
         session that did NOT write the entry may still accept the expiry."""
         from unittest.mock import patch
-        from mem0_local import cli
+        from memline import cli
 
         row = self.store.record_judgment(
             kind=KIND_TTL_EXPIRY, new_id="m", old_id="m", old_text="t@@deadline",
@@ -510,7 +510,7 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
         obligation if the verdict ignored them. A session that can dispose
         them must not be able to pass while leaving them piled up."""
         from unittest.mock import patch
-        from mem0_local import cli
+        from memline import cli
 
         row = self.store.record_judgment(
             kind=KIND_TTL_EXPIRY, new_id="m", old_id="m", old_text="t@@deadline",
@@ -547,7 +547,7 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
     def test_kind_guards_reject_wrong_dispositions(self) -> None:
         from unittest.mock import patch
         import click
-        from mem0_local import cli
+        from memline import cli
 
         ts = self.store.record_judgment(
             kind=staleness.KIND_CORRECTNESS, new_id="m", old_id="m", old_text="t",

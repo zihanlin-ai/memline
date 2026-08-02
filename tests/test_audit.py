@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mem0_local import audit, session_stats
-from mem0_local.session_stats import SessionStatsStore
+from memline import audit, session_stats
+from memline.session_stats import SessionStatsStore
 
 
 class LiveAuditTests(unittest.TestCase):

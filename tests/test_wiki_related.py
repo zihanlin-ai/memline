@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mem0_local.wiki_related import BEGIN, END, build_related, relations, render
+from memline.wiki_related import BEGIN, END, build_related, relations, render
 
 
 def refs(**pages):

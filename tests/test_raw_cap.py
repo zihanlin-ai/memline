@@ -11,8 +11,8 @@ import unittest
 
 import click
 
-from mem0_local import cli
-from mem0_local.config import MAX_RAW_TEXT_CHARS
+from memline import cli
+from memline.config import MAX_RAW_TEXT_CHARS
 
 
 class RawCapTests(unittest.TestCase):

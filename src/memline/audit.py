@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from mem0_local.config import MANIFEST_DIR, MANIFEST_LOCK
+from memline.config import MANIFEST_DIR, MANIFEST_LOCK
 
 
 LIVE_AUDIT_SCHEMA_VERSION = 1
@@ -113,7 +113,7 @@ def _record_session_add(
     if not session_id:
         return
     try:
-        from mem0_local.session_stats import session_stats_store
+        from memline.session_stats import session_stats_store
 
         session_stats_store().record_add(str(session_id), finished_at)
     except Exception as exc:  # noqa: BLE001 - the counter must never break a write.

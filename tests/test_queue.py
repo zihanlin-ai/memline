@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mem0_local.queue import EventQueue, MAX_ATTEMPTS
+from memline.queue import EventQueue, MAX_ATTEMPTS
 
 
 class EventQueueTests(unittest.TestCase):

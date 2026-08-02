@@ -4,16 +4,16 @@ import os
 import unittest
 from unittest.mock import patch
 
-from mem0_local import cli
+from memline import cli
 
 # Every env var the detector may consult; cleared before each simulated case so
 # the ambient (real) agent environment cannot leak into the assertions.
 _AGENT_ENV_KEYS = [
-    "MEM0_LOCAL_SOURCE",
+    "MEMLINE_SOURCE",
     "MEM0_SOURCE",
     "AGENT_SOURCE",
     "AI_AGENT_SOURCE",
-    "MEM0_LOCAL_SESSION_ID",
+    "MEMLINE_SESSION_ID",
     "MEM0_SESSION_ID",
     "AGENT_SESSION_ID",
     "OPENCODE_SESSION_ID",
@@ -87,7 +87,7 @@ class WriterDetectionTests(unittest.TestCase):
             self.assertEqual(ctx.get("session_id"), "ses_abc")
 
     def test_explicit_source_override_wins(self):
-        with _clean_env(MEM0_LOCAL_SOURCE="claude", CODEX_THREAD_ID="thread-9"):
+        with _clean_env(MEMLINE_SOURCE="claude", CODEX_THREAD_ID="thread-9"):
             self.assertEqual(cli.detect_writer_context().get("source"), "claude")
 
     def test_no_signal_returns_none(self):
@@ -111,7 +111,7 @@ class WriterDetectionTests(unittest.TestCase):
 
     def test_argv0_reader_does_not_expose_full_argv(self):
         # read_proc_argv0 must return only the executable, never later argv
-        # (which for `mem0-local add "<text>"` would be the memory content).
+        # (which for `memline add "<text>"` would be the memory content).
         argv0 = cli.read_proc_argv0(os.getpid())
         self.assertTrue(argv0)
         # This test process runs as `python -m unittest ...`; the later args

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import unittest
 
-from mem0_local.wiki_suggest import maintenance_suggestions
+from memline.wiki_suggest import maintenance_suggestions
 
 
 def report(*flags):

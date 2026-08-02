@@ -9,7 +9,7 @@ registry, so adding an op is one entry here instead of parallel edits in
 the CLI and the daemon.
 
 Queue-plane ops (event inspection/retry/ack) never touch the memory
-store; they run against an :class:`~mem0_local.queue.EventQueue` via
+store; they run against an :class:`~memline.queue.EventQueue` via
 :func:`dispatch_queue` — again shared by the daemon and the CLI's direct
 path. Async enqueue itself stays in the daemon (it needs the daemon's
 queue instance to wake its workers).
@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from mem0_local.runtime import normalize_items
+from memline.runtime import normalize_items
 
 Handler = Callable[[Any, dict[str, Any]], Any]
 
@@ -42,7 +42,7 @@ def _get(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _search(client: Any, args: dict[str, Any]) -> Any:
-    from mem0_local.staleness import search_with_staleness
+    from memline.staleness import search_with_staleness
 
     return search_with_staleness(
         client,
@@ -83,7 +83,7 @@ def _update(client: Any, args: dict[str, Any]) -> Any:
     text_changed = str(previous_payload.get("data") or "") != args["text"]
     result = client.update(args["memory_id"], args["text"], metadata=args["metadata"])
     if text_changed:
-        from mem0_local.staleness import clear_displacement_protection
+        from memline.staleness import clear_displacement_protection
 
         cleared = clear_displacement_protection(
             client,
@@ -95,7 +95,7 @@ def _update(client: Any, args: dict[str, Any]) -> Any:
             result["displacement_protection_cleared"] = cleared["changed"]
     # Open suspicions judged against the pre-update text no longer apply.
     try:
-        from mem0_local.staleness import pair_store
+        from memline.staleness import pair_store
 
         pair_store().close_for_updated_text(args["memory_id"], args["text"])
     except Exception:  # noqa: BLE001 - pair hygiene must never break update.
@@ -110,7 +110,7 @@ def _delete(client: Any, args: dict[str, Any]) -> Any:
             agent_id=args.get("agent_id"),
             run_id=args.get("run_id"),
         )
-    from mem0_local.staleness import delete_guard, set_ttl
+    from memline.staleness import delete_guard, set_ttl
 
     memory_id = args["memory_id"]
     guard = delete_guard(client, memory_id)
@@ -131,7 +131,7 @@ def _delete(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _set_ttl(client: Any, args: dict[str, Any]) -> Any:
-    from mem0_local.staleness import set_ttl
+    from memline.staleness import set_ttl
 
     return set_ttl(
         client,
@@ -145,7 +145,7 @@ def _set_ttl(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _set_displacement_protection(client: Any, args: dict[str, Any]) -> Any:
-    from mem0_local.staleness import (
+    from memline.staleness import (
         DEFAULT_DISPLACEMENT_PROTECTION_DAYS,
         set_displacement_protection,
     )
@@ -161,7 +161,7 @@ def _set_displacement_protection(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _clear_displacement_protection(client: Any, args: dict[str, Any]) -> Any:
-    from mem0_local.staleness import clear_displacement_protection
+    from memline.staleness import clear_displacement_protection
 
     return clear_displacement_protection(
         client,
@@ -172,7 +172,7 @@ def _clear_displacement_protection(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _list_displacement_protections(client: Any, args: dict[str, Any]) -> Any:
-    from mem0_local.staleness import (
+    from memline.staleness import (
         DISPLACEMENT_PROTECTED_AT,
         DISPLACEMENT_PROTECTED_BY_AGENT,
         DISPLACEMENT_PROTECTED_BY_SESSION,
@@ -215,7 +215,7 @@ def _history(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _invalidate(client: Any, args: dict[str, Any]) -> Any:
-    from mem0_local.staleness import invalidate
+    from memline.staleness import invalidate
 
     return invalidate(
         client,
@@ -228,7 +228,7 @@ def _invalidate(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _revive(client: Any, args: dict[str, Any]) -> Any:
-    from mem0_local.staleness import revive
+    from memline.staleness import revive
 
     return revive(
         client,
@@ -239,7 +239,7 @@ def _revive(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _resolve_head(client: Any, args: dict[str, Any]) -> Any:
-    from mem0_local.staleness import resolve_head
+    from memline.staleness import resolve_head
 
     def _payload(mid: str) -> dict[str, Any] | None:
         point = client.vector_store.get(mid)
@@ -250,7 +250,7 @@ def _resolve_head(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _entity_list(client: Any, args: dict[str, Any]) -> Any:
-    from mem0_local.entity_ops import list_entities
+    from memline.entity_ops import list_entities
 
     rows = list_entities(
         client.entity_store,
@@ -262,7 +262,7 @@ def _entity_list(client: Any, args: dict[str, Any]) -> Any:
 
 
 def _entity_get(client: Any, args: dict[str, Any]) -> Any:
-    from mem0_local.entity_ops import row_to_dict
+    from memline.entity_ops import row_to_dict
 
     row = client.entity_store.get(args["entity_id"])
     return row_to_dict(row) if row else None
@@ -351,7 +351,7 @@ def dispatch_queue(queue: Any, op: str, args: dict[str, Any]) -> Any:
 
 
 def op_timeout(op: str, args: dict[str, Any]) -> float:
-    raw = os.environ.get("MEM0_LOCAL_DAEMON_TIMEOUT")
+    raw = os.environ.get("MEMLINE_DAEMON_TIMEOUT")
     if raw:
         try:
             return float(raw)

@@ -1,5 +1,5 @@
-from mem0_local.backfill_metadata import desired_patch
-from mem0_local.config import LEDGER_IMPORT_AGENT_ID, LEDGER_IMPORT_SESSION_ID
+from memline.backfill_metadata import desired_patch
+from memline.config import LEDGER_IMPORT_AGENT_ID, LEDGER_IMPORT_SESSION_ID
 
 
 def test_ledger_backfill_uses_synthetic_opencode_scope() -> None:
