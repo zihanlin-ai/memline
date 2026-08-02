@@ -102,6 +102,7 @@ ONE JSON object and nothing else:
 ```json
 {
   "title": "...",
+  "summary": "one or two sentences saying what the page lets a reader learn or do, including its sharpest important limit",
   "article_markdown": "the full article body in Markdown, with ^[...] citations",
   "sections": ["ordered list of the article's section headings"],
   "claims": [{"claim": "...", "evidence_refs": ["mem:<id>"], "section": "..."}],
@@ -110,6 +111,11 @@ ONE JSON object and nothing else:
   "unused_evidence_refs": ["refs you deliberately did not use"]
 }
 ```
+
+`summary` is the page's retrieval card, not a second title and not a process
+description. Write it from the final article: name the concrete problem or task,
+the result a reader will take away, and any limit that materially changes how the
+page should be used. It must remain accurate if read without opening the article.
 
 `unused_evidence_refs` is load-bearing and must be honest and complete: it is
 how the reviewer sees what you chose to drop. Every ref in the material appears

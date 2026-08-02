@@ -35,6 +35,18 @@ class VerifyTest(unittest.TestCase):
                 "OmniCache excludes CP.^[sources/doc.md#Matrix]")
         self.assertEqual(self.kinds(body), [])
 
+    def test_a_claims_sidecar_without_a_page_summary_is_not_publishable(self):
+        body = ("cosine fell to 0.11 at K=65536."
+                "^[mem:aaaa1111-2222-3333-4444-555566667777]")
+        self.assertIn("page_summary_missing", self.kinds(body, {"claims": []}))
+
+    def test_a_claims_sidecar_with_a_page_summary_passes_the_summary_gate(self):
+        body = ("cosine fell to 0.11 at K=65536."
+                "^[mem:aaaa1111-2222-3333-4444-555566667777]")
+        self.assertNotIn("page_summary_missing",
+                         self.kinds(body, {"summary": "What the measurement establishes.",
+                                           "claims": []}))
+
     def test_an_invented_citation_is_caught(self):
         body = "a claim.^[mem:dddd0000-0000-0000-0000-000000000000]"
         self.assertIn("citation_not_in_bundle", self.kinds(body))

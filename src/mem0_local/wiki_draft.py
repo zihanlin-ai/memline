@@ -33,7 +33,7 @@ from typing import Any, Callable
 from mem0_local.bundle import build_bundle
 from mem0_local.relay import call_json
 
-REQUIRED_FIELDS = ("title", "article_markdown", "claims", "open_questions",
+REQUIRED_FIELDS = ("title", "summary", "article_markdown", "claims", "open_questions",
                    "unused_evidence_refs")
 
 # Kinds that name a person or reach one. A shape the sanitizer cannot judge
@@ -131,11 +131,14 @@ def draft_topic(
     missing = [f for f in REQUIRED_FIELDS if f not in data]
     if missing:
         raise ValueError(f"{slug}: draft is missing {missing}")
+    if not isinstance(data.get("summary"), str) or not data["summary"].strip():
+        raise ValueError(f"{slug}: draft summary is empty")
 
     (out_dir / f"{slug}.md").write_text(
         f"# {data['title']}\n\n{data['article_markdown']}\n", encoding="utf-8")
     (out_dir / f"{slug}.claims.json").write_text(json.dumps({
         "topic": topic.get("id"), "topic_key": slug,
+        "summary": data.get("summary"),
         "claims": data.get("claims"), "sections": data.get("sections"),
         "open_questions": data.get("open_questions"),
         "retraction_arcs": data.get("retraction_arcs"),
@@ -148,6 +151,7 @@ def draft_topic(
         f"{result.usage.get('completion_tokens')} tok)")
     return {
         "topic_key": slug, "chars": len(data["article_markdown"]),
+        "summary": data.get("summary"),
         "claims": len(data.get("claims") or []),
         "open_questions": len(data.get("open_questions") or []),
         "retraction_arcs": len(data.get("retraction_arcs") or []),

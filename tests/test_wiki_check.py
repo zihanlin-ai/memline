@@ -53,7 +53,8 @@ class WikiCheckTest(unittest.TestCase):
     def provenance_page(self, content_hash=None, *, name="page.md"):
         hash_line = f'    content_hash: "{content_hash}"\n' if content_hash else ""
         self.page(
-            "---\nsources:\n"
+            "---\ntitle: Test page\nsummary: What this page establishes.\n"
+            "topic_key: test-page\nsources:\n"
             + f'  - ref: "mem:{MEM_ID}"\n'
             + hash_line
             + "---\nbody\n",
@@ -88,8 +89,16 @@ class WikiCheckTest(unittest.TestCase):
         self.assertIn("missing_content_hash", self.kinds(make_execute(head=None)))
 
     def test_empty_sources_list_counts_as_missing_provenance(self):
-        self.page("---\nsources: []\n---\nbody\n")
+        self.page("---\ntitle: T\nsummary: S\ntopic_key: t\nsources: []\n---\nbody\n")
         self.assertEqual(self.kinds(make_execute(head=None)), ["missing_provenance"])
+
+    def test_missing_summary_is_a_hard_page_finding(self):
+        self.page("---\ntitle: T\ntopic_key: t\nsources: []\n---\nbody\n")
+        self.assertIn("missing_summary", self.kinds(make_execute(head=None)))
+
+    def test_missing_topic_key_is_a_hard_page_finding(self):
+        self.page("---\ntitle: T\nsummary: S\nsources: []\n---\nbody\n")
+        self.assertIn("missing_topic_key", self.kinds(make_execute(head=None)))
 
     def test_resolve_head_failure_is_reported_not_swallowed(self):
         self.provenance_page(sha256_text(MEM_TEXT))
@@ -112,7 +121,7 @@ class WikiCheckTest(unittest.TestCase):
         )
         section = "## Second\n\ntwo"
         self.page(
-            "---\nsources:\n"
+            "---\ntitle: T\nsummary: S\ntopic_key: t\nsources:\n"
             + '  - ref: "sources/runbook.md#Second"\n'
             + f'    content_hash: "{sha256_text(section)}"\n'
             + "---\nbody\n"
@@ -124,7 +133,7 @@ class WikiCheckTest(unittest.TestCase):
         sources.mkdir()
         (sources / "runbook.md").write_text("# Runbook\n", encoding="utf-8")
         self.page(
-            "---\nsources:\n"
+            "---\ntitle: T\nsummary: S\ntopic_key: t\nsources:\n"
             + '  - ref: "sources/runbook.md#Missing"\n'
             + f'    content_hash: "{sha256_text("## Missing")}"\n'
             + "---\nbody\n"
@@ -135,7 +144,7 @@ class WikiCheckTest(unittest.TestCase):
 
     def test_broken_relative_link_is_flagged(self):
         self.page(
-            "---\nsources:\n"
+            "---\ntitle: T\nsummary: S\ntopic_key: t\nsources:\n"
             + f'  - ref: "mem:{MEM_ID}"\n'
             + f'    content_hash: "{sha256_text(MEM_TEXT)}"\n'
             + "---\nsee [gone](./gone.md)\n"

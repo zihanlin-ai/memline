@@ -37,6 +37,7 @@ BUNDLE = {
 
 def full_claims():
     return {
+        "summary": "What the alpha measurement establishes.",
         "claims": [],
         "unused_evidence_refs": [
             "mem:bbbb1111-2222-3333-4444-555566667777", "sources/doc.md#Rule"
@@ -349,9 +350,12 @@ class MergedReviewValidationTest(unittest.TestCase):
 
     def test_one_contract_invalid_pass_blocks_the_merged_gate(self):
         invalid = self._pass()
+        # A warning-level leak claim with nothing to back it. An `info` note
+        # saying no sensitive strings appear used to serve here, but reporting
+        # an absence proves nothing and no longer breaks the contract.
         invalid["omission_reviews"] = [{
-            "severity": "info", "kind": "sensitivity",
-            "finding": "No sensitivity issues", "evidence_refs": [],
+            "severity": "warning", "kind": "sensitivity",
+            "finding": "leaks an internal ticket id", "evidence_refs": [],
         }]
         invalid["validation"] = validate_review_report(invalid, self.bundle)
         merged = merge_reviews([self._pass(), invalid, self._pass()])
@@ -411,3 +415,43 @@ class PriorReviewTest(unittest.TestCase):
         self.path.write_text(json.dumps({"article_sha256": "aaa", "claim_reviews": []}),
                              encoding="utf-8")
         self.assertIsNone(load_prior_review(self.path, "aaa"))
+
+
+class SensitivityAbsenceTest(unittest.TestCase):
+    """Reporting that nothing leaked is not a claim that needs proving.
+
+    The gate fired on a pass that correctly said "no sensitive strings appear
+    in article_markdown" and marked the whole report invalid for it. A gate
+    that punishes the right answer is one its reader learns to skip.
+    """
+
+    def setUp(self):
+        self.bundle = {"article_markdown": "# T\n\nStack ab93.\n",
+                       "review_bundle_sha256": "x", "article_sha256": "y",
+                       "claim_packets": [], "uncited_evidence": []}
+        self.bundle["review_bundle_sha256"] = _content_hash(self.bundle, "review_bundle_sha256")
+        self.report = {"summary": "s", "article_sha256": "y",
+                       "review_bundle_sha256": self.bundle["review_bundle_sha256"],
+                       "claim_reviews": [], "omission_reviews": [],
+                       "scope_review": {"verdict": "in_scope", "reason": "r"},
+                       "overall_verdict": "pass"}
+
+    def _kinds(self, omission):
+        report = {**self.report, "omission_reviews": [omission]}
+        return {f["kind"] for f in validate_review_report(report, self.bundle)["findings"]}
+
+    def test_an_info_clearance_note_needs_no_quotes(self):
+        self.assertNotIn("sensitivity_finding_without_quotes", self._kinds(
+            {"severity": "info", "kind": "sensitivity",
+             "finding": "No sensitive strings appear in article_markdown."}))
+
+    def test_a_warning_still_has_to_prove_itself(self):
+        self.assertIn("sensitivity_finding_without_quotes", self._kinds(
+            {"severity": "warning", "kind": "sensitivity", "finding": "leaks a ticket id"}))
+
+    def test_a_quote_that_is_close_is_still_wrong(self):
+        # "it is the..." for an article that says "the...": a paraphrase is
+        # how a finding about evidence gets dressed as one about the article.
+        self.assertIn("article_quote_not_in_article", self._kinds(
+            {"severity": "warning", "kind": "causal_strength", "finding": "overstated",
+             "article_quotes": ["it is Stack ab93"]}))

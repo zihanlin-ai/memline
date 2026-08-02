@@ -1,7 +1,10 @@
 """Provenance and link checker for the workspace wiki.
 
-Scans formal wiki pages (``content/**/*.md``) for frontmatter provenance and
+Scans formal wiki pages (``content/**/*.md``) for retrieval metadata and provenance and
 verifies every reference against current reality:
+
+- ``summary`` and ``topic_key`` must be present on every formal page, so the
+  generated index can route a reader without opening every article.
 
 - ``mem:<id>`` refs: the memory must still exist, must not be superseded, and
   its text hash must match the hash recorded at publication time.
@@ -18,6 +21,8 @@ Expected page frontmatter (YAML)::
 
     ---
     title: ...
+    summary: ...
+    topic_key: stable-page-key
     sources:
       - ref: "mem:0f39f11-..."
         content_hash: "<sha256 of the memory text at publication>"
@@ -187,9 +192,16 @@ def run_check(wiki_root: Path, execute: ExecuteFn) -> dict[str, Any]:
         # anything about the world, so they carry no provenance and are not
         # missing any. INDEX.md is generated; flagging it would produce a
         # findings list nobody reads, which is worse than no check at all.
-        if page.name not in ("README.md", "INDEX.md") and not (isinstance(sources, list) and sources):
-            flags.append({"page": rel, "kind": "missing_provenance", "detail": ""})
-            sources = sources if isinstance(sources, list) else []
+        if page.name not in ("README.md", "INDEX.md"):
+            summary = front.get("summary")
+            if not isinstance(summary, str) or not summary.strip():
+                flags.append({"page": rel, "kind": "missing_summary", "detail": ""})
+            topic_key = front.get("topic_key")
+            if not isinstance(topic_key, str) or not topic_key.strip():
+                flags.append({"page": rel, "kind": "missing_topic_key", "detail": ""})
+            if not (isinstance(sources, list) and sources):
+                flags.append({"page": rel, "kind": "missing_provenance", "detail": ""})
+                sources = sources if isinstance(sources, list) else []
         for entry in sources or []:
             if not isinstance(entry, dict) or not isinstance(entry.get("ref"), str):
                 flags.append(

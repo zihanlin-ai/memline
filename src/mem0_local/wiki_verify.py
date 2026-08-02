@@ -134,6 +134,10 @@ def verify(draft_markdown: str, bundle: dict[str, Any], claims: dict[str, Any] |
     cited = CITATION.findall(draft_markdown)
 
     findings: list[dict[str, Any]] = []
+    if claims is not None:
+        summary = claims.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            findings.append({"kind": "page_summary_missing"})
     for ref in dict.fromkeys(BARE_CITATION.findall(draft_markdown)):
         findings.append({"kind": "citation_missing_caret", "ref": ref})
     for token in dict.fromkeys(CITATION_TOKEN.findall(draft_markdown)):

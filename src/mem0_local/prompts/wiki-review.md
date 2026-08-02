@@ -38,6 +38,13 @@ missing current conclusions, incomplete retraction arcs, unsupported causal
 strength and scope drift. An omission may cite any exact ref present in the
 review bundle.
 
+The claims manifest also contains `summary`, the retrieval card that will be
+published beside the title. Audit it as part of the omission/scope pass: it must
+describe the final article rather than the drafting process, must not strengthen
+the evidence, and must retain any limit that changes whether the page is useful
+for the reader's question. Report an inaccurate or misleading card as an
+`omission`, `scope`, or `causal_strength` finding as appropriate.
+
 **For sensitivity findings only: the article is `article_markdown` and nothing else.** Every other field here
 quotes the raw material it was written from: memory text, document sections,
 the evidence inside each claim packet. That material is *expected* to be full
@@ -45,11 +52,14 @@ of internal identifiers — hostnames, ticket numbers, merge-request numbers,
 people's names — because it is what an engineer wrote while working. None of
 that is a finding. Only what survived into `article_markdown` is.
 
-So a `sensitivity` finding must carry `article_quotes`: the exact substrings,
+A `sensitivity` finding at `warning` or above must carry `article_quotes`: the exact substrings,
 copied character for character from `article_markdown`, that you believe should
 not be published. Each one is checked against the article, and a quote that is
 not in it invalidates the report. Do not paraphrase the string, do not
-reconstruct it from evidence, and do not report a name or ticket you saw in a
+reconstruct it from evidence, and do not extend it by a word — a quote that is
+close is a quote that is wrong. Reporting that the article contains *no*
+sensitive strings is an `info` finding and needs no quotes; there is nothing to
+prove. Do not report a name or ticket you saw in a
 packet without first finding it in the article itself — an article that says
 "a colleague" has not named anyone, whatever the memory behind it says.
 If no sensitive string appears in the article, emit no `sensitivity` item at

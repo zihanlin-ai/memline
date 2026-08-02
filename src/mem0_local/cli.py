@@ -2440,6 +2440,9 @@ def wiki_check_pages(
     wiki_root: Optional[Path] = typer.Argument(
         None, help="Wiki root directory (contains content/). Default: <workspace>/.agent-memory/wiki."
     ),
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero when any page or metadata gate fails."
+    ),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
@@ -2449,6 +2452,8 @@ def wiki_check_pages(
     root = wiki_root or (ROOT / ".agent-memory" / "wiki")
     report = run_check(root, execute)
     output(report, command="wiki-check", fmt=chosen_format(output_format, json_flag))
+    if strict and not report["clean"]:
+        raise typer.Exit(code=1)
 
 
 @wiki_app.command("index")
@@ -2469,6 +2474,8 @@ def wiki_index(
                       f"{len(report['written'])} file(s) rewritten")
         for path in report["pages_without_summary"]:
             console.print(f"[yellow]no summary: {path}[/yellow]")
+        for path in report["pages_without_topic_key"]:
+            console.print(f"[yellow]no topic_key: {path}[/yellow]")
         for item in report["flagged_pages"]:
             console.print(f"[yellow]{item['status']}: {item['path']}[/yellow]")
     output(report, command="wiki-index", fmt=fmt)

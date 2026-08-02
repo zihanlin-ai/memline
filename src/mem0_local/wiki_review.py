@@ -228,7 +228,16 @@ def _validate_omission_reviews(
         # numbers and people's names. A sensitivity finding therefore has to
         # quote a string that actually survived into the article.
         quotes = item.get("article_quotes")
-        if item.get("kind") == "sensitivity" and not quotes:
+        # Only a finding that *asserts* something is in the article has to
+        # prove it. A sensitivity note reporting the absence of leaks has
+        # nothing to quote, and requiring it invalidated a pass for correctly
+        # saying "no sensitive strings appear in article_markdown" — a gate
+        # that fires on the right answer teaches its reader to ignore it.
+        # `info` is the severity a clearance note carries; anything above it
+        # is a claim about published text.
+        asserts_a_leak = (item.get("kind") == "sensitivity"
+                          and item.get("severity") in ("warning", "error", "critical"))
+        if asserts_a_leak and not quotes:
             findings.append({"kind": "sensitivity_finding_without_quotes", "index": index})
         elif quotes is not None:
             if not isinstance(quotes, list) or not all(isinstance(q, str) for q in quotes):

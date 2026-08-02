@@ -25,7 +25,8 @@ class _Result:
     provenance: dict = {}
 
 
-DRAFT_JSON = {"title": "T", "article_markdown": "body", "claims": [],
+DRAFT_JSON = {"title": "T", "summary": "What this page is for.",
+              "article_markdown": "body", "claims": [],
               "open_questions": [], "unused_evidence_refs": []}
 
 NAMED = "reviewed by 何斌 on the prefill host"
@@ -81,6 +82,11 @@ class GateTest(unittest.TestCase):
         self.draft(review={"redact": {}, "cleared": ["何斌"]})
         bundle = json.loads((self.dir / "t.bundle.json").read_text(encoding="utf-8"))
         self.assertIn("何斌", bundle["memories"][0]["text"])
+
+    def test_the_retrieval_summary_is_saved_for_review_and_publication(self):
+        self.draft(review={"redact": {}, "cleared": ["何斌"]})
+        claims = json.loads((self.dir / "t.claims.json").read_text(encoding="utf-8"))
+        self.assertEqual(claims["summary"], "What this page is for.")
 
     def test_rulings_are_read_from_the_file(self):
         path = self.dir / "r.json"

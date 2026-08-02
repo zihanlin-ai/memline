@@ -126,6 +126,12 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(build_index(self.content)["pages_without_summary"],
                          ["docs/serving/a.md"])
 
+    def test_pages_without_a_topic_key_are_named(self):
+        self._write("docs/serving/a.md", title="A", summary="has one")
+        self._write("docs/serving/b.md", title="B", summary="has one", topic_key="b")
+        self.assertEqual(build_index(self.content)["pages_without_topic_key"],
+                         ["docs/serving/a.md"])
+
     def test_an_empty_wiki_produces_an_index_that_says_so(self):
         report = build_index(self.content)
         self.assertEqual(report["pages"], 0)
