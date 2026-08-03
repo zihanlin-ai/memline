@@ -42,7 +42,10 @@ from memline.relay import RefusedError, call_json
 
 DEFAULT_CONCURRENCY = 2
 
-PROMPT_DIR = Path(__file__).parent / "prompts"
+PROMPT_DIR = Path(__file__).parent.parent / "prompts"
+
+# Marker in shipped prompts where the deployment's domain description goes.
+DOMAIN_MARKER = "[[DOMAIN]]"
 
 
 def default_prompt(name: str) -> str:
@@ -51,8 +54,19 @@ def default_prompt(name: str) -> str:
     Prompts live here rather than with the skill because they are part of the
     program's contract: the profile schema the caller parses is defined by the
     prompt that asked for it, and the two have to change together.
+
+    What the prompts deliberately do NOT carry is the deployment's domain:
+    that text comes from ``[wiki] domain`` in config. Without it the Domain
+    section is dropped whole, so the prompt still reads as complete prose.
     """
-    return (PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8")
+    text = (PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8")
+    if DOMAIN_MARKER not in text:
+        return text
+    from memline import config
+
+    if config.WIKI_DOMAIN_PROFILE:
+        return text.replace(DOMAIN_MARKER, config.WIKI_DOMAIN_PROFILE)
+    return text.replace(f"## Domain\n\n{DOMAIN_MARKER}\n\n", "")
 
 
 def coverage_digest(batch: dict[str, Any]) -> str:

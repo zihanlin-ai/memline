@@ -25,6 +25,15 @@ def knobs(llm_section, job=None):
         return config.llm_knobs(job)
 
 
+def _example_llm_section():
+    import tomllib
+    from pathlib import Path
+
+    template = Path(__file__).resolve().parent.parent / "examples" / "config.toml"
+    with template.open("rb") as fh:
+        return tomllib.load(fh).get("llm", {})
+
+
 BASE = {
     "base_url": "https://gateway.example/v1",
     "api_key_env": "KEY",
@@ -124,16 +133,20 @@ class JobTest(unittest.TestCase):
             resolve(BASE, "wiki")
         self.assertIn("known jobs", str(caught.exception))
 
-    def test_every_declared_job_is_resolvable_from_the_shipped_config(self):
-        # Guards the rename that adds a job to LLM_JOBS and forgets the table.
+    def test_every_declared_job_is_resolvable_from_the_shipped_template(self):
+        # Guards the rename that adds a job to LLM_JOBS and forgets the table —
+        # against examples/config.toml, so the template a new workspace copies
+        # can never ship with an unresolvable job.
+        section = _example_llm_section()
         for job in config.LLM_JOBS:
             with self.subTest(job=job):
-                self.assertTrue(config.llm_endpoint_specs(job)[0]["model"])
+                self.assertTrue(resolve(section, job)[0]["model"])
 
-    def test_draft_and_review_do_not_share_a_model(self):
+    def test_draft_and_review_do_not_share_a_model_in_the_template(self):
         # An audit that runs on the writer's own model shares its blind spots.
-        self.assertNotEqual(config.llm_endpoint_specs("draft")[0]["model"],
-                            config.llm_endpoint_specs("review")[0]["model"])
+        section = _example_llm_section()
+        self.assertNotEqual(resolve(section, "draft")[0]["model"],
+                            resolve(section, "review")[0]["model"])
 
 
 class KnobTest(unittest.TestCase):

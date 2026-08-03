@@ -30,20 +30,56 @@ from typing import Any, Callable
 
 ExecuteFn = Callable[[str, dict[str, Any]], Any]
 
-# Ordered: earlier patterns win, so a path's account id is replaced by the
-# account rule before the generic path rule can swallow the whole path.
-SANITIZE_RULES: tuple[tuple[str, str], ...] = (
-    # Internal IPv4. Loopback and unroutable documentation addresses stay:
-    # they carry no location and appear in commands a reader must retype.
-    ("HOST", r"\b(?!127\.0\.0\.1\b)(?:\d{1,3}\.){3}\d{1,3}\b"),
-    # Account ids of the l00000000 shape, including inside paths and URLs.
-    ("USER", r"\b[a-zA-Z]\d{8}\b"),
-    # Internal hostnames and the URLs built on them.
-    ("INTERNAL_HOST", r"\b[\w.-]+\.(?:huawei\.com|inhuawei\.com|hisilicon\.cn|athuawei\.com)\b"),
-    ("INTERNAL_REPO", r"\bhttps?://(?:gitee\.com|gitcode\.com|codehub[\w.-]*)/[\w./-]+"),
+class SanitizeUnconfiguredError(RuntimeError):
+    """The deployment has not declared its internal domains.
+
+    Sanitization must fail closed: guessing an empty domain list would let
+    internal hostnames leave the machine on the first wiki call of a fresh
+    workspace. Raised before anything is assembled, so nothing partial exists
+    when it fires.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "sanitize.internal_domains / sanitize.internal_repo_hosts are not "
+            "configured. Add them to config.toml ([sanitize] section) before "
+            "any wiki flow sends memory text to an external model; an explicit "
+            "empty list declares the deployment has none."
+        )
+
+
+def sanitize_rules() -> tuple[tuple[str, str], ...]:
+    """The active substitution rules, ordered: earlier patterns win, so a
+    path's account id is replaced by the account rule before the generic path
+    rule can swallow the whole path.
+
+    Shape rules are built in; the internal domain and code-host names come
+    from configuration and are required (see SanitizeUnconfiguredError).
+    """
+    from memline import config
+
+    domains = config.SANITIZE_INTERNAL_DOMAINS
+    repo_hosts = config.SANITIZE_INTERNAL_REPO_HOSTS
+    if domains is None or repo_hosts is None:
+        raise SanitizeUnconfiguredError()
+
+    rules: list[tuple[str, str]] = [
+        # Internal IPv4. Loopback stays: it carries no location and appears
+        # in commands a reader must retype.
+        ("HOST", r"\b(?!127\.0\.0\.1\b)(?:\d{1,3}\.){3}\d{1,3}\b"),
+        # Account ids of the x00000000 shape, including inside paths and URLs.
+        ("USER", r"\b[a-zA-Z]\d{8}\b"),
+    ]
+    if domains:
+        joined = "|".join(re.escape(str(d)) for d in domains)
+        # Internal hostnames and the URLs built on them.
+        rules.append(("INTERNAL_HOST", rf"\b[\w.-]+\.(?:{joined})\b"))
+    if repo_hosts:
+        joined = "|".join(re.escape(str(h)) for h in repo_hosts)
+        rules.append(("INTERNAL_REPO", rf"\bhttps?://(?:{joined})/[\w./-]+"))
     # Container and job identifiers that name a specific run on a specific fleet.
-    ("JOB", r"\bmodelarts-job-[\w-]+\b"),
-)
+    rules.append(("JOB", r"\bmodelarts-job-[\w-]+\b"))
+    return tuple(rules)
 
 # Shapes that are probably sensitive but cannot be replaced safely: a wrong
 # guess here corrupts technical meaning, so they are surfaced, not touched.
@@ -67,10 +103,14 @@ class Sanitizer:
     decides what is left.
     """
 
-    def __init__(self, extra: dict[str, str] | None = None) -> None:
+    def __init__(self, extra: dict[str, str] | None = None,
+                 rules: tuple[tuple[str, str], ...] | None = None) -> None:
         self._assigned: dict[tuple[str, str], str] = {}
         self._counters: dict[str, int] = {}
         self._extra = dict(extra or {})
+        # Resolved eagerly so an unconfigured deployment fails at
+        # construction, before any text has been half-scrubbed.
+        self._rules = rules if rules is not None else sanitize_rules()
 
     def _placeholder(self, category: str, value: str) -> str:
         key = (category, value)
@@ -83,7 +123,7 @@ class Sanitizer:
         for value, category in self._extra.items():
             if value in text:
                 text = text.replace(value, self._placeholder(category, value))
-        for category, pattern in SANITIZE_RULES:
+        for category, pattern in self._rules:
             text = re.sub(pattern, lambda m: self._placeholder(category, m.group(0)), text)
         return text
 
@@ -241,8 +281,11 @@ def build_bundle(
     reviewed = set(cleared or ()) | set(redactions or {})
     flags = review_flags({entry["id"]: entry["text"] for entry in ok}
                          | {s["ref"]: s["text"] for s in sources_ok}, reviewed)
-    sanitizer = Sanitizer(redactions)
-    if sanitize:
+    # Constructed only when scrubbing happens: construction is where an
+    # unconfigured deployment fails closed, and a sanitize=False bundle
+    # (explicitly local/debug) must not trip that gate.
+    sanitizer = Sanitizer(redactions) if sanitize else None
+    if sanitizer is not None:
         for entry in ok:
             entry["text"] = sanitizer.scrub(entry["text"])
         for section in sources_ok:
@@ -253,10 +296,10 @@ def build_bundle(
         "unresolved": [e for e in resolved if "error" in e] + [s for s in sources if "error" in s],
         "sanitized": sanitize,
         "sanitization": {
-            "placeholder_counts": sanitizer.counts,
+            "placeholder_counts": sanitizer.counts if sanitizer else {},
             "review_flags": flags,
         },
         "memories": ok,
         "source_sections": sources_ok,
     }
-    return bundle, sanitizer.mapping
+    return bundle, (sanitizer.mapping if sanitizer else {})

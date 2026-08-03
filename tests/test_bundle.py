@@ -4,20 +4,49 @@ The properties that matter are: distinct sensitive values stay distinct after
 substitution, the mapping never rides along inside the bundle, recorded
 hashes describe the ORIGINAL text, and unrecognizable-but-suspicious shapes
 are reported rather than dropped.
+
+The internal-domain lists are deployment configuration; these tests declare
+their own so they are hermetic against whatever workspace they run in.
 """
 
 from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from memline.bundle import Sanitizer, build_bundle, review_flags, sha256_text
+from memline import config
+from memline.bundle import (
+    SanitizeUnconfiguredError,
+    Sanitizer,
+    build_bundle,
+    review_flags,
+    sanitize_rules,
+    sha256_text,
+)
 
 MEM_A = "11111111-1111-1111-1111-111111111111"
 MEM_B = "22222222-2222-2222-2222-222222222222"
-TEXT_A = "KV link from 7.150.10.239 to 7.150.12.255 failed; logs under /data/l00959355/run1"
-TEXT_B = "Retried on 7.150.10.239 with image from https://gitee.com/org/repo after 127.0.0.1 check"
+TEXT_A = "KV link from 192.0.2.39 to 192.0.2.55 failed; logs under /data/u01234567/run1"
+TEXT_B = "Retried on 192.0.2.39 with image from https://git.example.internal/org/repo after 127.0.0.1 check"
+TEXT_C = "Registry mirror lives at mirror.corp.example.com behind the gateway"
+
+_patchers: list = []
+
+
+def setUpModule() -> None:
+    _patchers[:] = [
+        mock.patch.object(config, "SANITIZE_INTERNAL_DOMAINS", ["corp.example.com"]),
+        mock.patch.object(config, "SANITIZE_INTERNAL_REPO_HOSTS", ["git.example.internal"]),
+    ]
+    for p in _patchers:
+        p.start()
+
+
+def tearDownModule() -> None:
+    for p in _patchers:
+        p.stop()
 
 
 def make_execute(texts, head=None):
@@ -34,13 +63,33 @@ def make_execute(texts, head=None):
     return execute
 
 
+class SanitizeConfigTest(unittest.TestCase):
+    def test_unconfigured_domains_fail_closed(self):
+        with mock.patch.object(config, "SANITIZE_INTERNAL_DOMAINS", None):
+            with self.assertRaises(SanitizeUnconfiguredError):
+                sanitize_rules()
+
+    def test_unconfigured_repo_hosts_fail_closed(self):
+        with mock.patch.object(config, "SANITIZE_INTERNAL_REPO_HOSTS", None):
+            with self.assertRaises(SanitizeUnconfiguredError):
+                Sanitizer()
+
+    def test_empty_lists_are_a_valid_declaration(self):
+        with mock.patch.object(config, "SANITIZE_INTERNAL_DOMAINS", []), \
+             mock.patch.object(config, "SANITIZE_INTERNAL_REPO_HOSTS", []):
+            categories = [c for c, _ in sanitize_rules()]
+        self.assertNotIn("INTERNAL_HOST", categories)
+        self.assertNotIn("INTERNAL_REPO", categories)
+        self.assertIn("HOST", categories)
+
+
 class SanitizerTest(unittest.TestCase):
     def test_distinct_hosts_get_distinct_placeholders(self):
         s = Sanitizer()
         out = s.scrub(TEXT_A)
         self.assertIn("<HOST-1>", out)
         self.assertIn("<HOST-2>", out)
-        self.assertNotIn("7.150.10.239", out)
+        self.assertNotIn("192.0.2.39", out)
 
     def test_same_value_is_stable_across_texts(self):
         s = Sanitizer()
@@ -57,12 +106,17 @@ class SanitizerTest(unittest.TestCase):
         self.assertIn("127.0.0.1", Sanitizer().scrub(TEXT_B))
 
     def test_internal_repo_url_is_replaced(self):
-        self.assertNotIn("gitee.com", Sanitizer().scrub(TEXT_B))
+        self.assertNotIn("git.example.internal", Sanitizer().scrub(TEXT_B))
+
+    def test_configured_internal_domain_is_replaced(self):
+        out = Sanitizer().scrub(TEXT_C)
+        self.assertNotIn("corp.example.com", out)
+        self.assertIn("<INTERNAL_HOST-1>", out)
 
     def test_mapping_restores_originals(self):
         s = Sanitizer()
         s.scrub(TEXT_A)
-        self.assertIn("7.150.10.239", s.mapping.values())
+        self.assertIn("192.0.2.39", s.mapping.values())
 
 
 class ReviewFlagTest(unittest.TestCase):
@@ -115,7 +169,7 @@ class SourceSectionTest(unittest.TestCase):
         self.assertEqual(b["unresolved"][0]["error"], "path escapes the wiki root")
 
     def test_sections_are_sanitized_like_memories(self):
-        (self.root / "sources" / "hosts.md").write_text("reach 7.150.10.239 to start\n")
+        (self.root / "sources" / "hosts.md").write_text("reach 192.0.2.39 to start\n")
         b = self.bundle("sources/hosts.md")
         self.assertIn("<HOST-1>", b["source_sections"][0]["text"])
 
@@ -135,8 +189,8 @@ class BuildBundleTest(unittest.TestCase):
 
     def test_mapping_is_not_inside_the_bundle(self):
         bundle, mapping = build_bundle([MEM_A], make_execute(self.texts))
-        self.assertNotIn("7.150.10.239", str(bundle))
-        self.assertIn("7.150.10.239", str(mapping))
+        self.assertNotIn("192.0.2.39", str(bundle))
+        self.assertIn("192.0.2.39", str(mapping))
 
     def test_unresolved_ids_are_reported_not_raised(self):
         bundle, _ = build_bundle([MEM_A, "missing"], make_execute(self.texts))
@@ -154,7 +208,15 @@ class BuildBundleTest(unittest.TestCase):
 
     def test_no_sanitize_leaves_text_intact(self):
         bundle, _ = build_bundle([MEM_A], make_execute(self.texts), sanitize=False)
-        self.assertIn("7.150.10.239", bundle["memories"][0]["text"])
+        self.assertIn("192.0.2.39", bundle["memories"][0]["text"])
+
+    def test_no_sanitize_works_even_unconfigured(self):
+        # sanitize=False is an explicitly local bundle; the fail-closed gate
+        # guards outbound flows and must not block it.
+        with mock.patch.object(config, "SANITIZE_INTERNAL_DOMAINS", None):
+            bundle, mapping = build_bundle([MEM_A], make_execute(self.texts), sanitize=False)
+        self.assertIn("192.0.2.39", bundle["memories"][0]["text"])
+        self.assertEqual(mapping, {})
 
 
 if __name__ == "__main__":

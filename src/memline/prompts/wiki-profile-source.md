@@ -13,11 +13,7 @@ session structure — its own headings are the structure.
 
 ## Domain
 
-OmniInfer P/D disaggregated inference on an Ascend NPU fleet: model bring-up
-(Pangu, openPangu, DeepSeek-V4, MiniMax), speculative decoding (DSpark, DFlash,
-MTP), feature switches (OmniCache, EPLB, APC, KV quantization, DSA), capacity
-benchmarking and sweeps, accuracy and correctness investigations, and the fleet
-operations underneath all of it.
+[[DOMAIN]]
 
 ## The material
 

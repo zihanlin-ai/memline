@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +11,6 @@ try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     import tomli as tomllib  # type: ignore[no-redef]
-
-
-LOCAL_TZ_OFFSET_HOURS = 8
-LOCAL_TZ = timezone(timedelta(hours=LOCAL_TZ_OFFSET_HOURS))
 
 
 def _load_toml(path: Path | None) -> dict[str, Any]:
@@ -83,6 +79,15 @@ MANIFEST_LOCK = path_value("paths", "manifest_lock", STORE_DIR / "manifest.lock"
 ENV_FILE = path_value("llm", "env_file", STORE_DIR / ".env")
 LOCK_FILE = path_value("paths", "lock_file", STORE_DIR / "cli.lock")
 
+# Timezone used to interpret naive timestamps (filters, ledger imports).
+# Configured as a fixed UTC offset in hours; without configuration the
+# system's local timezone applies.
+_TZ_OFFSET = value("memory", "local_tz_offset_hours", None)
+if _TZ_OFFSET is None:
+    LOCAL_TZ = datetime.now().astimezone().tzinfo or timezone.utc
+else:
+    LOCAL_TZ = timezone(timedelta(hours=float(_TZ_OFFSET)))
+
 COLLECTION = str(value("memory", "collection", "workspace_agent_memory"))
 DEFAULT_USER_ID = str(value("memory", "user_id", "workspace"))
 MEMORY_SCHEMA_VERSION = int(value("memory", "schema_version", 2))
@@ -99,6 +104,24 @@ SESSION_ADD_ALERT_THRESHOLD = int(value("memory", "session_add_alert_threshold",
 EMBEDDING_PROVIDER = str(value("embedder", "provider", "fastembed"))
 EMBEDDING_MODEL = str(value("embedder", "model", "jinaai/jina-embeddings-v2-base-zh"))
 EMBEDDING_DIMS = int(value("embedder", "dims", 768))
+
+# ---------------------------------------------------------------------------
+# Sanitization boundary
+#
+# The shape rules (IP addresses, account-id shapes, job ids) are generic and
+# live in code; the NAMES that mark something as internal -- domain suffixes,
+# code-host domains -- are facts about one deployment and must come from
+# configuration. The distinction between absent and empty is load-bearing:
+# `None` (key not present) means unconfigured, and the wiki's outbound flows
+# refuse to run rather than guess; an explicit `[]` is a deliberate
+# declaration that this deployment has no such domains.
+SANITIZE_INTERNAL_DOMAINS = value("sanitize", "internal_domains", None)
+SANITIZE_INTERNAL_REPO_HOSTS = value("sanitize", "internal_repo_hosts", None)
+
+# Free-text description of the workspace's domain, injected into the wiki
+# profiling prompts so topic extraction knows what world the memories live
+# in. Empty means the prompts' Domain section is omitted entirely.
+WIKI_DOMAIN_PROFILE = str(value("wiki", "domain", "")).strip()
 
 # ---------------------------------------------------------------------------
 # LLM endpoints

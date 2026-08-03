@@ -1,3 +1,6 @@
+# memline workspace profile template. Copy to <workspace>/.agent-memory/config.toml
+# and replace every /path/to/workspace with the real workspace root.
+
 [memory]
 workspace_root = "/path/to/workspace"
 memory_root = "/path/to/workspace/.agent-memory"
@@ -5,6 +8,9 @@ store_dir = "/path/to/workspace/.agent-memory/store"
 collection = "workspace_agent_memory"
 user_id = "workspace"
 schema_version = 2
+# Fixed UTC offset (hours) for interpreting naive timestamps in filters and
+# imports. Omit to use the system's local timezone.
+# local_tz_offset_hours = 8
 
 [paths]
 qdrant_dir = "/path/to/workspace/.agent-memory/store/qdrant"
@@ -21,14 +27,70 @@ provider = "fastembed"
 model = "jinaai/jina-embeddings-v2-base-zh"
 dims = 768
 
+# ---------------------------------------------------------------------------
+# Sanitization boundary — REQUIRED before any wiki flow may send memory text
+# to an external model. The shape rules (IPs, account ids) are built in; the
+# names that mark a hostname or code host as internal are deployment facts and
+# have no default. An explicit empty list declares the deployment has none;
+# leaving the keys out makes every outbound wiki flow refuse to run.
+[sanitize]
+internal_domains = []          # e.g. ["corp.example.com", "internal.example"]
+internal_repo_hosts = []       # e.g. ["git.corp.example.com"]
+
+# Free-text description of what this workspace works on, injected into the
+# wiki profiling prompts ("## Domain" section). Omit to drop the section.
+# [wiki]
+# domain = """
+# Backend services for ExampleCorp's build farm: CI orchestration, artifact
+# caching, capacity benchmarking, and the fleet operations underneath.
+# """
+
+# ---------------------------------------------------------------------------
+# LLM endpoints, one table per job. The code owns the job names and knobs;
+# this file owns every identity — vendor, model, base_url, credential. A job
+# whose identity cannot be resolved fails at startup naming the missing key.
+#
+# Jobs: infer (add --infer extraction), rerank (search --rerank), judge
+# (staleness/necessity/safety/correctness), profile / draft / review (wiki).
+# [llm] holds only what every job shares and names no model.
 [llm]
-provider = "openrouter"
-model = "@preset/work"
 base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
 site_url = "http://localhost"
 app_name = "memline"
-api_key_env = "OPENROUTER_API_KEY"
 env_file = "/path/to/workspace/.agent-memory/store/.env"
+
+[llm.infer]
+model = "deepseek/deepseek-v4-flash"
+
+[llm.rerank]
+model = "deepseek/deepseek-v4-flash"
+
+[llm.judge]
+model = "deepseek/deepseek-v4-flash"
+
+# A fallback states its whole identity (never inherits a credential).
+# [llm.judge.fallback]
+# model = "deepseek/deepseek-v4-pro"
+# base_url = "https://openrouter.ai/api/v1"
+# api_key_env = "OPENROUTER_API_KEY"
+
+[llm.profile]
+model = "moonshotai/kimi-k3"
+stream = true
+timeout = 900.0
+
+[llm.draft]
+model = "moonshotai/kimi-k3"
+stream = true
+timeout = 900.0
+
+# Deliberately a different vendor from [llm.draft]: an audit is only
+# independent if it can run on a different model from the writing it audits.
+[llm.review]
+model = "z-ai/glm-5.2"
+stream = true
+timeout = 600.0
 
 [metadata]
 manual_source = "manual"

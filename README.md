@@ -216,6 +216,28 @@ template for running the official Qdrant binary next to the store. When
 
 Runtime data stays under `.agent-memory/store/` and remains excluded from git.
 
+### Deployment facts the code refuses to guess
+
+Three things are facts about one deployment and have no default in code:
+
+```toml
+[memory]
+local_tz_offset_hours = 8      # naive-timestamp timezone; omit = system local
+
+[sanitize]                     # REQUIRED before any outbound wiki flow
+internal_domains = ["corp.example.com"]
+internal_repo_hosts = ["git.corp.example.com"]
+
+[wiki]
+domain = """What this workspace works on, for the profiling prompts."""
+```
+
+`[sanitize]` fails closed: with the keys absent, `wiki bundle`, drafting and
+the draft leak check refuse to run rather than let internal hostnames leave
+the machine on a guess. An explicit empty list is a deliberate declaration
+that the deployment has none. The generic shape rules (IP addresses, account
+ids, job ids) are built in and always active.
+
 ## Audit Manifests
 
 Live mutations append external audit rows under the configured manifest

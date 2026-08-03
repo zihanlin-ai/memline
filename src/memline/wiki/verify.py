@@ -46,10 +46,29 @@ PLACEHOLDER = re.compile(r"<(?:HOST|USER|INTERNAL_HOST|INTERNAL_REPO|JOB)-\d+>")
 # They are heuristics over one organisation's conventions and they produce
 # findings for a human, never a block: the cost of a false positive here is one
 # glance, and the cost of a miss is a published leak.
+def leak_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """LEAKS plus the config-declared internal-domain pattern.
+
+    The domain names that mark a hostname as internal are deployment facts,
+    read from ``[sanitize] internal_domains``. Unconfigured means this check
+    cannot run honestly, and it fails closed like the bundle sanitizer.
+    """
+    from memline import config
+    from memline.bundle import SanitizeUnconfiguredError
+
+    domains = config.SANITIZE_INTERNAL_DOMAINS
+    if domains is None:
+        raise SanitizeUnconfiguredError()
+    if not domains:
+        return LEAKS
+    joined = "|".join(re.escape(str(d)) for d in domains)
+    host = ("internal_host", re.compile(rf"\b[\w.-]+\.(?:{joined})\b"))
+    return LEAKS + (host,)
+
+
 LEAKS = (
     ("ipv4", re.compile(r"\b(?!127\.0\.0\.1\b)(?:\d{1,3}\.){3}\d{1,3}\b")),
     ("account_id", re.compile(r"\b[a-zA-Z]\d{8}\b")),
-    ("internal_host", re.compile(r"\b[\w.-]+\.(?:huawei\.com|inhuawei\.com|hisilicon\.cn)\b")),
     # A host pool written as its last two octets has no rule here on purpose.
     # It is the same shape as a ratio or a version number, and an article of
     # measurements is nothing but that shape: the pattern matched 28 to 45
@@ -166,7 +185,7 @@ def verify(draft_markdown: str, bundle: dict[str, Any], claims: dict[str, Any] |
         if heading.startswith("#") and body and not CITATION.search(body):
             findings.append({"kind": "section_without_citation", "detail": heading[:80]})
 
-    for kind, pattern in LEAKS:
+    for kind, pattern in leak_patterns():
         for value in dict.fromkeys(pattern.findall(draft_markdown)):
             findings.append({"kind": f"redaction_lost_{kind}", "detail": value})
 

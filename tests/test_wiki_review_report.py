@@ -319,5 +319,29 @@ class SensitivityAbsenceTest(unittest.TestCase):
              "article_quotes": ["it is Stack ab93"]}))
 
 
+# --- deployment-config stub -------------------------------------------------
+# The sanitizer's internal-domain lists are deployment configuration; these
+# tests declare their own so they run identically with or without a workspace
+# config.toml on the search path.
+from unittest import mock as _mock  # noqa: E402
+
+from memline import config as _config  # noqa: E402
+
+_sanitize_patchers = [
+    _mock.patch.object(_config, "SANITIZE_INTERNAL_DOMAINS", ["corp.example.com"]),
+    _mock.patch.object(_config, "SANITIZE_INTERNAL_REPO_HOSTS", ["git.example.internal"]),
+]
+
+
+def setUpModule():
+    for _p in _sanitize_patchers:
+        _p.start()
+
+
+def tearDownModule():
+    for _p in _sanitize_patchers:
+        _p.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -431,7 +431,7 @@ unmistakable case.
     * "On 2026-07-15 Codex corrected the attribution under the user instruction
       '清理这些机器上妨碍拉起服务的进程'." -> CONSISTENT (English narration; the
       Chinese is a verbatim quote).
-    * "superpod_30 hosts are from the bare-metal pool (裸机资源分配群); NPU-idle
+    * "pool_30 hosts are from the bare-metal pool (资源分配群); accelerator-idle
       does not mean free." -> CONSISTENT (English narration; Chinese gloss).
     * "The designated files for agent operations (运维) are AGENTS.md and
       KLAUD_DEBUG.md." -> CONSISTENT (English sentence, one Chinese word).

@@ -111,8 +111,8 @@ For Chinese user questions, translate the core intent into English and keep
 important literals unchanged:
 
 ```bash
-memline search "service fully ready proxy 7.246.46.187:7000 P 9000 D ports 9100 9101 9102 9103 /v1/models"
-memline search "ACS Bench provider endpoint 7.246.46.187:9000 pangu_ultra_moe"
+memline search "service fully ready proxy <host>:<port> P and D ports /v1/models"
+memline search "benchmark provider endpoint <host>:<port> <model_name>"
 memline search "baseline_all_features VLLM_TORCH_PROFILER_DIR VLLM_TORCH_PROFILER_RECORD_SHAPES"
 ```
 
