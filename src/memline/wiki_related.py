@@ -25,11 +25,13 @@ import itertools
 from pathlib import Path
 from typing import Any
 
-from memline.wiki_check import parse_frontmatter
-from memline.wiki_index import NON_ENTRY, write_region
-
-BEGIN = "<!-- related:begin -->"
-END = "<!-- related:end -->"
+from memline.wiki_page import (
+    NON_ENTRY,
+    RELATED_BEGIN as BEGIN,
+    RELATED_END as END,
+    parse_frontmatter,
+    write_region,
+)
 
 # Both thresholds, not either. A single shared memory is what unrelated pages
 # look like — every overlapping pair among the 73 Docs candidates shared

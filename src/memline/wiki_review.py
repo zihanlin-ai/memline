@@ -28,7 +28,8 @@ from memline.wiki_review_report import (
     validate_merged_review_report,
     validate_review_report,
 )
-from memline.wiki_verify import CITATION, verify
+from memline.wiki_page import CITATION
+from memline.wiki_verify import verify
 
 SCHEMA_VERSION = 1
 

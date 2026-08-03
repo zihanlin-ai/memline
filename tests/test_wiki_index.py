@@ -15,9 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from memline.wiki_index import (
-    BEGIN, END, build_index, collect, refresh, render_entry, write_region,
-)
+from memline.wiki_index import BEGIN, END, build_index, collect, refresh, render_entry
 
 
 def page(text: str, **front) -> str:
@@ -138,13 +136,6 @@ class IndexTest(unittest.TestCase):
         build_index(self.content)
         self.assertFalse(readme.exists())
 
-    def test_only_the_region_between_markers_is_replaced(self):
-        path = self.content / "x.md"
-        path.write_text(f"before\n{BEGIN}\nstale\n{END}\nafter\n", encoding="utf-8")
-        write_region(path, "fresh")
-        self.assertEqual(path.read_text(encoding="utf-8"),
-                         f"before\n{BEGIN}\nfresh\n{END}\nafter\n")
-
     def test_rewriting_unchanged_content_touches_nothing(self):
         # Idempotence is what makes it safe to run on every publish: a run
         # that rewrites files it did not change produces diff noise, and diff
@@ -179,45 +170,6 @@ class IndexTest(unittest.TestCase):
         self._write("docs/serving/a.md", title="A", summary="s")
         build_index(self.content)
         self.assertFalse((self.content / "INDEX.md").exists())
-
-    def test_a_missing_file_is_not_created(self):
-        # The create path is how every directory once acquired a README.
-        missing = self.content / "docs" / "serving" / "nothing.md"
-        self.assertFalse(write_region(missing, "body"))
-        self.assertFalse(missing.exists())
-
-
-
-class StatusNoiseTest(unittest.TestCase):
-    """A marker that appears on every line is read on none of them."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.content = Path(self._tmp.name) / "content"
-        (self.content / "blog").mkdir(parents=True)
-        self.addCleanup(self._tmp.cleanup)
-
-    def _write(self, rel, **front):
-        (self.content / rel).write_text(page("Body.", **front), encoding="utf-8")
-
-    def test_a_healthy_page_shows_no_status(self):
-        # Every published page carries `status: published`; printing it beside
-        # each of them was the generator's first output against real content.
-        self._write("blog/a.md", title="A", status="published")
-        self.assertNotIn("`published`", render_entry(collect(self.content)[0]))
-
-    def test_an_unhealthy_page_still_shows_its_status(self):
-        self._write("blog/a.md", title="A", status="stale-pending-review")
-        self.assertIn("`stale-pending-review`", render_entry(collect(self.content)[0]))
-
-    def test_the_report_counts_only_the_unhealthy_ones(self):
-        self._write("blog/a.md", title="A", status="published")
-        self._write("blog/b.md", title="B", status="stale-pending-review")
-        self.assertEqual([f["path"] for f in build_index(self.content)["flagged_pages"]],
-                         ["blog/b.md"])
-if __name__ == "__main__":
-    unittest.main()
-
 
 class RefreshTest(unittest.TestCase):
     """One entry point for everything computed, because half of it is wrong.

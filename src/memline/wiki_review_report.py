@@ -19,14 +19,13 @@ one that actually read the evidence.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from memline.wiki_verify import CITATION
+from memline.wiki_page import CITATION, sha256_text as _sha256_text
 
 CLAIM_VERDICTS = {
     "supported", "partially_supported", "contradicted", "unverifiable",
@@ -44,10 +43,6 @@ SEVERITIES = {"info", "warning", "error", "critical"}
 # check must not depend on the stamping code agreeing about what it computed.
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _content_hash(value: dict[str, Any], field: str) -> str:

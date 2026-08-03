@@ -40,21 +40,18 @@ asked for one by leaving the markers in place.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
-from memline.wiki_check import parse_frontmatter
+from memline.wiki_page import (
+    INDEX_BEGIN as BEGIN,
+    INDEX_END as END,
+    NON_ENTRY,
+    parse_frontmatter,
+    write_region,
+)
+from memline.wiki_related import build_related
 
-BEGIN = "<!-- index:begin -->"
-END = "<!-- index:end -->"
-def region_pattern(begin: str, end: str) -> re.Pattern[str]:
-    return re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
-
-
-GENERATED_REGION = region_pattern(BEGIN, END)
-# A README describes the shelf that holds it rather than belonging to it.
-NON_ENTRY = {"README.md"}
 # States that mean "this page is fine". Anything else is worth a reader's
 # attention and is surfaced in the listing.
 NORMAL_STATUS = {"published", "current", None, ""}
@@ -124,37 +121,6 @@ def opts_in(readme: Path, *, begin: str = BEGIN) -> bool:
     return readme.is_file() and begin in readme.read_text(encoding="utf-8")
 
 
-def write_region(path: Path, body: str, *, begin: str = BEGIN, end: str = END) -> bool:
-    """Replace the marked region in ``path``. Returns whether anything changed.
-
-    Everything outside the markers is preserved exactly. A file without markers
-    gains the block at the end — appended, never merged into what is there.
-
-    A file that does not exist is left that way and the call reports no change.
-    This module writes into approved, published work; creating a file there is
-    a publishing decision, and it is not one a generator gets to make. The
-    directory-wide READMEs this wiki had to delete all came from a create path
-    exactly like the one that used to live here.
-
-    The marker pair is a parameter because one page can carry more than one
-    generated region, and each must be able to be rewritten without disturbing
-    the other.
-    """
-    if not path.is_file():
-        return False
-    pattern = region_pattern(begin, end)
-    block = f"{begin}\n{body.rstrip()}\n{end}"
-    current = path.read_text(encoding="utf-8")
-    if pattern.search(current):
-        updated = pattern.sub(lambda _: block, current, count=1)
-    else:
-        updated = current.rstrip("\n") + "\n\n" + block + "\n"
-    if updated == current:
-        return False
-    path.write_text(updated, encoding="utf-8")
-    return True
-
-
 def refresh(content_dir: Path, **related_kwargs: Any) -> dict[str, Any]:
     """Recompute every generated block in ``content/``: listings and relations.
 
@@ -165,8 +131,6 @@ def refresh(content_dir: Path, **related_kwargs: Any) -> dict[str, Any]:
     A single entry point is what makes "regenerate what is computed" something
     a publisher can do without remembering a list.
     """
-    from memline.wiki_related import build_related
-
     listings = build_index(content_dir)
     relations = build_related(content_dir, **related_kwargs)
     return {
@@ -185,7 +149,7 @@ def build_index(content_dir: Path) -> dict[str, Any]:
     listed = [s for s in shelves if opts_in(content_dir / s / "README.md")]
     for shelf in listed:
         readme = content_dir / shelf / "README.md"
-        if write_region(readme, render_shelf(entries, shelf)):
+        if write_region(readme, render_shelf(entries, shelf), begin=BEGIN, end=END):
             written.append(f"{shelf}/README.md")
     return {
         "pages": len(entries),

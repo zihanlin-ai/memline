@@ -27,7 +27,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-CITATION = re.compile(r"\^\[(mem:[0-9a-fA-F-]{8,}|sources/[^\]]+)\]")
+from memline.wiki_page import CITATION
+
 CITATION_TOKEN = re.compile(r"\^\[([^\]]+)\]")
 BARE_CITATION = re.compile(r"(?<!\^)\[(mem:[0-9a-fA-F-]{8,}|sources/[^\]]+)\]")
 PLACEHOLDER = re.compile(r"<(?:HOST|USER|INTERNAL_HOST|INTERNAL_REPO|JOB)-\d+>")

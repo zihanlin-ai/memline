@@ -36,14 +36,13 @@ provenance) but body-link checking still runs.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
 
 from .bundle import read_section
+from .wiki_page import parse_frontmatter, sha256_text
 
 FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 # [text](target) — capture the target; ignore images ![...](...) too? Images
@@ -52,21 +51,6 @@ MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "#")
 
 ExecuteFn = Callable[[str, dict[str, Any]], Any]
-
-
-def sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def parse_frontmatter(markdown: str) -> dict[str, Any]:
-    match = FRONTMATTER_RE.match(markdown)
-    if not match:
-        return {}
-    try:
-        data = yaml.safe_load(match.group(1))
-    except yaml.YAMLError:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _memory_text(record: Any) -> str | None:
