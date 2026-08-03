@@ -256,7 +256,7 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
         all 570 stored marks by SQL in the same change that introduced v5, and
         parse_single_judgment coerces any out-of-vocabulary verdict to DURABLE,
         so no row can carry one from either direction."""
-        from memline.cli import _flag_suggestion
+        from memline.review import flag_suggestion as _flag_suggestion
 
         play = _flag_suggestion({"kind": "necessity", "verdict": "EXPIRING"})
         self.assertEqual(play["verdict"], "EXPIRING")
@@ -269,7 +269,7 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
     def test_an_unknown_verdict_still_gets_usable_guidance(self) -> None:
         """The fallback is the only thing standing behind a future verdict
         added to a judge before this table learns about it."""
-        from memline.cli import _flag_suggestion
+        from memline.review import flag_suggestion as _flag_suggestion
 
         play = _flag_suggestion({"kind": "necessity", "verdict": "SOMETHING_NEW"})
         self.assertIn("SOMETHING_NEW", play["means"])
@@ -280,7 +280,7 @@ class DispositionBoundaryTests(ScratchPairStoreCase):
         """Review must state what a finding means and the one condition under
         which dismissing it is right -- dismissal is permanent per text version,
         so 'acknowledge and move on' has to be visibly the wrong door."""
-        from memline.cli import _flag_suggestion
+        from memline.review import flag_suggestion as _flag_suggestion
 
         for kind, verdict in (
             ("correctness", "LANGUAGE_SUSPECT"),
@@ -523,7 +523,8 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
                 patch.object(cli, "detect_writer_context", return_value={"session_id": "s", "source": "claude"}),
                 patch.object(cli, "execute", return_value=[]),
                 patch.object(cli, "_event_queue_direct", return_value=_EmptyQueue()),
-                patch.object(cli, "_fetch_memory", return_value={"memory": "t"}),
+                # memory previews flow through the patched execute now; the
+                # verdict under test never depended on their content
                 patch.object(cli, "output", side_effect=lambda payload, **kw: captured.update(payload)),
             ):
                 cli.review(session=None, wait=False, check=False, json_flag=True, output_format="json")

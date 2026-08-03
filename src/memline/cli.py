@@ -19,6 +19,8 @@ from rich.console import Console
 from rich.table import Table
 
 from memline.audit import audited
+from memline.review import enrich_pairs
+from memline.writer_context import detect_writer_context
 from memline.config import (
     COLLECTION,
     CONFIG_PATH,
@@ -325,157 +327,6 @@ def normalize_timestamp(value: str | None) -> str | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=LOCAL_TZ)
     return parsed.isoformat()
-
-
-def first_env(*names: str) -> str | None:
-    for name in names:
-        value = os.environ.get(name)
-        if value:
-            return value
-    return None
-
-
-def read_proc_cmdline(pid: int) -> str:
-    try:
-        raw = (Path("/proc") / str(pid) / "cmdline").read_bytes()
-    except OSError:
-        return ""
-    return raw.replace(b"\x00", b" ").decode(errors="replace").strip()
-
-
-def read_proc_ppid(pid: int) -> int | None:
-    try:
-        status = (Path("/proc") / str(pid) / "status").read_text()
-    except OSError:
-        return None
-    for line in status.splitlines():
-        if line.startswith("PPid:"):
-            try:
-                return int(line.split()[1])
-            except (IndexError, ValueError):
-                return None
-    return None
-
-
-def read_proc_argv0(pid: int) -> str:
-    """Return only argv[0] (the executable path) for a pid.
-
-    Reads just the first NUL-delimited field of /proc/<pid>/cmdline, so
-    process-based agent detection can never see user-supplied argv content
-    such as the memory text being written.
-    """
-    try:
-        raw = (Path("/proc") / str(pid) / "cmdline").read_bytes()
-    except OSError:
-        return ""
-    first = raw.split(b"\x00", 1)[0]
-    return first.decode(errors="replace").strip()
-
-
-def ancestor_exe_names(limit: int = 10) -> list[str]:
-    """Basenames of ancestor process executables (argv[0] only).
-
-    Excludes the current process and never inspects full command lines, so the
-    memory content being written cannot be mistaken for an agent identity.
-    """
-    names: list[str] = []
-    pid = os.getpid()
-    for _ in range(limit):
-        ppid = read_proc_ppid(pid)
-        if not ppid or ppid <= 1 or ppid == pid:
-            break
-        pid = ppid
-        argv0 = read_proc_argv0(pid)
-        if argv0:
-            names.append(os.path.basename(argv0).lower())
-    return names
-
-
-# Ordered agent identity table: (source, hard identity env vars, argv0 markers).
-# Detection uses these signals only -- never the memory content being written.
-# Order matters when agents are nested (e.g. `opencode` started from a claude
-# shell inherits CLAUDECODE): the innermost agent must win, so sources whose
-# identity vars are injected per shell invocation come first.
-_AGENT_IDENTITY: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-    (
-        # OPENCODE_SESSION_ID / OPENCODE_CALL_ID are injected per shell call by
-        # the memline opencode plugin (.opencode/plugin/memline.js).
-        "opencode",
-        ("OPENCODE_SESSION_ID", "OPENCODE_CALL_ID"),
-        ("opencode",),
-    ),
-    (
-        "codex",
-        ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_MANAGED_PACKAGE_ROOT"),
-        ("codex",),
-    ),
-    (
-        "claude",
-        (
-            "CLAUDE_CODE_SESSION_ID",
-            "CLAUDECODE_SESSION_ID",
-            "CLAUDE_SESSION_ID",
-            "CLAUDE_CODE_ENTRYPOINT",
-            "CLAUDECODE",
-        ),
-        ("claude",),
-    ),
-)
-
-
-def detect_agent_source() -> str | None:
-    """Identify the writing agent from hard signals only.
-
-    Priority: per-agent identity env vars, then the generic AI_AGENT/AGENT tag,
-    then ancestor executable names. Never inspects the memory content or the
-    full command line, so what is being written cannot change the attribution.
-    """
-    # 1. Dedicated per-agent identity env vars (hardest signal).
-    for source, env_names, _markers in _AGENT_IDENTITY:
-        if first_env(*env_names):
-            return source
-    # 2. Generic agent tag, e.g. AI_AGENT="claude-code_2-1-205_agent" -> "claude".
-    tag = first_env("AI_AGENT", "AGENT")
-    if tag:
-        token = re.split(r"[^A-Za-z0-9]+", tag.strip().lower(), maxsplit=1)[0]
-        if token:
-            return token
-    # 3. Last resort: ancestor executable basenames (content-safe, argv[0] only).
-    names = ancestor_exe_names()
-    for source, _env_names, markers in _AGENT_IDENTITY:
-        if any(marker in name for name in names for marker in markers):
-            return source
-    return None
-
-
-def detect_writer_context() -> dict[str, str]:
-    """Best-effort local caller detection for audit metadata.
-
-    Both source and session_id come from hard signals only -- explicit MEM0_*
-    overrides, per-agent identity env vars, the AI_AGENT tag, and ancestor
-    executable names. The memory content being written is never inspected.
-    """
-    source = first_env("MEMLINE_SOURCE", "MEM0_SOURCE", "AGENT_SOURCE", "AI_AGENT_SOURCE")
-    session_id = first_env(
-        "MEMLINE_SESSION_ID",
-        "MEM0_SESSION_ID",
-        "AGENT_SESSION_ID",
-        "OPENCODE_SESSION_ID",
-        "CODEX_THREAD_ID",
-        "CODEX_SESSION_ID",
-        "CLAUDE_SESSION_ID",
-        "CLAUDE_CODE_SESSION_ID",
-        "CLAUDECODE_SESSION_ID",
-    )
-    if not source:
-        source = detect_agent_source()
-
-    context: dict[str, str] = {}
-    if source:
-        context["source"] = source
-    if session_id:
-        context["session_id"] = session_id
-    return context
 
 
 def render_text(command: str, data: Any) -> None:
@@ -918,28 +769,6 @@ def _interactive_tty() -> bool:
     return sys.stdin.isatty() and sys.stderr.isatty()
 
 
-def _fetch_memory(memory_id: str) -> dict[str, Any] | None:
-    try:
-        row = execute("get", {"memory_id": memory_id})
-        return row if isinstance(row, dict) else None
-    except Exception:  # noqa: BLE001 - preview only.
-        return None
-
-
-def _enrich_pairs(pairs: list[dict[str, Any]], *, preview_chars: int = 160) -> list[dict[str, Any]]:
-    enriched = []
-    for pair in pairs:
-        item = dict(pair)
-        for side in ("old", "new"):
-            row = _fetch_memory(pair[f"{side}_id"])
-            item[f"{side}_memory"] = (
-                str(row.get("memory") or "")[:preview_chars] if row else "<deleted>"
-            )
-        item["suggested"] = _flag_suggestion(pair)
-        enriched.append(item)
-    return enriched
-
-
 def updated_memory_metadata(
     existing: dict[str, Any], extra: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -1005,99 +834,6 @@ def ttl(
 # for the judged text version: a flag closed on the wrong grounds can never be
 # raised again. Added 2026-07-28 after an audit found a batch of LANGUAGE_SUSPECT
 # flags dismissed without the entries being rewritten.
-_VERDICT_PLAYBOOK: dict[str, dict[str, str]] = {
-    "LANGUAGE_SUSPECT": {
-        "means": "the entry's own narration is Chinese; the store embeds with an "
-                 "English-only model, so this text retrieves poorly",
-        "fix": "update <memory_id> '<same facts, narration rewritten in English>'",
-        "keep": "preserve verbatim: paths, commands, flags, hosts, model/artifact "
-                "names, numbers, memory-id references, Chinese proper nouns "
-                "(people, products, filenames), and quoted Chinese source material",
-        "dismiss_only_if": "the Chinese is CONFINED to quotes, identifiers, proper "
-                           "nouns or a one-word gloss and the author's own sentences "
-                           "are already English — not merely because the facts are correct",
-    },
-    "TIMESTAMP_SUSPECT": {
-        "means": "the narrated date contradicts the CLI's authoritative ingestion time",
-        "fix": "update <memory_id> '<same facts, date corrected>'",
-        "dismiss_only_if": "the entry narrates a historical event under its own past "
-                           "date, or carries an 'As of/REVISED <date>' status marker",
-    },
-    "ATTRIBUTION_SUSPECT": {
-        "means": "the entry credits an actor that contradicts the recorded writer identity",
-        "fix": "update <memory_id> '<same facts, actor corrected>'",
-        "dismiss_only_if": "the entry legitimately records the user's decision or "
-                           "another agent's action",
-    },
-    "SECRET_SUSPECT": {
-        "means": "PRIORITY — the entry looks like it embeds a live credential VALUE",
-        "fix": "update <memory_id> '<same text, secret replaced by a pointer to its "
-               "file or secret location>' (keeps id, links and history), then verify "
-               "`search '<secret literal>' --include-superseded` returns nothing",
-        "dismiss_only_if": "the string is not a credential value (e.g. a public "
-                           "identifier, a placeholder, or a path to where a secret lives)",
-    },
-    "BORN_UNNECESSARY": {
-        "means": "the entry may never have deserved long-term memory — activity "
-                 "narration, a commit restatement, or a repo-readable fact",
-        "fix": "stale confirm <pair_id> (expires it now, reversible via "
-               "`ttl <memory_id> --clear`), or `delete <memory_id>` for your own fresh entry",
-        "partial": "keep only the non-derivable part -> update <memory_id> '<rewritten>'",
-        "dismiss_only_if": "the entry records a durable decision, constraint or "
-                           "hard-won conclusion that is not recoverable from the repo",
-    },
-    "EXPIRING": {
-        "means": "the entry is time-scoped — a progress tick or event-scoped coordination",
-        "fix": "settled/closed -> stale confirm <pair_id> (expires now); still alive -> "
-               "stale ttl <pair_id> [--days 7]",
-        "dismiss_only_if": "the fact turned out to be durable rather than event-scoped",
-    },
-    "SUPERSEDED": {
-        "means": "a newer entry appears to replace this one's answer",
-        "fix": "stale confirm <pair_id> (retires the old entry, pointing at the new one)",
-        "partial": "the new entry ADDS detail rather than replacing -> "
-                   "stale merge <pair_id> '<consolidated text>'",
-        "dismiss_only_if": "both entries remain independently true (different scope, "
-                           "config or time window)",
-    },
-    "DUPLICATE": {
-        "means": "a newer entry states the same fact as this one",
-        "fix": "stale confirm <pair_id> (retires the redundant older entry)",
-        "dismiss_only_if": "the entries differ in a way that matters for retrieval",
-    },
-    "TTL_EXPIRED": {
-        "means": "this entry's TTL deadline fired and it has already left the search pool",
-        "fix": "accept the expiry -> stale confirm <pair_id>",
-        "partial": "still needed -> stale ttl <pair_id> [--days 7] (renews, re-enters the pool)",
-        "dismiss_only_if": "never — a fired TTL is a fact, not a judgment; confirm or renew it",
-    },
-}
-
-
-def _flag_suggestion(pair: dict[str, Any]) -> dict[str, Any]:
-    """Reviewer guidance for one suspicion, keyed by its verdict.
-
-    Returns the judged finding plus the disposition that resolves it, so a
-    reviewer never has to reconstruct the handling rule from the kind alone.
-    """
-    kind = pair.get("kind") or "displacement"
-    verdict = str(pair.get("verdict") or "")
-    play = _VERDICT_PLAYBOOK.get(verdict)
-    if play is None:
-        play = {
-            "means": f"{kind} suspicion ({verdict or 'unknown verdict'})",
-            "fix": "update <memory_id> '<corrected>' | stale confirm <pair_id>",
-            "dismiss_only_if": "the finding is a false positive",
-        }
-    out: dict[str, Any] = {"verdict": verdict, **play}
-    out["dismiss"] = "stale dismiss <pair_id>"
-    out["warning"] = (
-        "dismissal is PERMANENT for this exact text version — a dismissed flag "
-        "cannot be reopened unless the memory's text changes"
-    )
-    return out
-
-
 def _load_open_pair(pair_id: str) -> tuple[Any, dict[str, Any]]:
     """Fetch a suspicion pair and require it to be open."""
     from memline.staleness import pair_store
@@ -1166,7 +902,7 @@ def stale_list(
     from memline.staleness import pair_store
 
     pairs = pair_store().open_pairs(session_id=session, limit=limit)
-    output(_enrich_pairs(pairs), command="stale-list", fmt=chosen_format(output_format, json_flag))
+    output(enrich_pairs(execute, pairs), command="stale-list", fmt=chosen_format(output_format, json_flag))
 
 
 @stale_app.command("confirm")
@@ -1438,165 +1174,23 @@ def review(
     `stale dismiss <pair_id>`, or correct the old memory with
     `update`. Undisposed pairs persist and surface via the CLI banner.
     """
+    from memline.review import session_review
     from memline.staleness import pair_store
 
     session = session or detect_writer_context().get("session_id")
     if not session:
         raise typer.BadParameter("No session id detected; pass --session explicitly.")
-
-    def pending_stale_checks() -> int:
-        queue = _event_queue_direct()
-        count = 0
-        for row in queue.list(limit=500):
-            if row["op"] == "stale_check" and row["status"] in {"queued", "processing"}:
-                args = queue.get_args(row["event_id"]) or {}
-                if args.get("session_id") == session:
-                    count += 1
-        return count
-
-    pending = pending_stale_checks()
-    if wait:
-        deadline = time.time() + 120
-        while pending and time.time() < deadline:
-            time.sleep(3)
-            pending = pending_stale_checks()
-
-    filters = {"user_id": DEFAULT_USER_ID, "run_id": session}
-    writes = execute("list", {"filters": filters, "top_k": 500, "start": 0, "end": 500})
-    write_items = normalize_items(writes) or (writes if isinstance(writes, list) else [])
-
-    all_pairs = pair_store().open_pairs(session_id=session)
-    displacement = [p for p in all_pairs if (p.get("kind") or "displacement") == "displacement"]
-
-    def flag_view(p: dict[str, Any]) -> dict[str, Any]:
-        row = _fetch_memory(p["old_id"])
-        return {
-            "pair_id": p["pair_id"],
-            "kind": p["kind"],
-            "memory_id": p["old_id"],
-            "verdict": p["verdict"],
-            "confidence": p["confidence"],
-            "reason": p["reason"],
-            "memory": str(row.get("memory") or "")[:160] if row else "<deleted>",
-            "suggested": _flag_suggestion(p),
-        }
-
-    # Disposition order (design 2026-07-21): safety first (redact before
-    # anything else can invalidate and strand the plaintext), then correctness
-    # (fix the fact), then necessity (may then invalidate). Displacement is
-    # handled last, from `open_pairs`.
-    _SELF_FLAG_ORDER = {"safety": 0, "correctness": 1, "necessity": 2}
-    self_flags = sorted(
-        (
-            flag_view(p)
-            for p in all_pairs
-            if (p.get("kind") or "displacement") not in {"displacement", "ttl_expiry"}
-        ),
-        key=lambda f: _SELF_FLAG_ORDER.get(f["kind"], 9),
+    payload = session_review(
+        session,
+        execute=execute,
+        queue_factory=_event_queue_direct,
+        pairs=pair_store(),
+        wait=wait,
+        user_id=DEFAULT_USER_ID,
     )
-    # TTL expiries are lifecycle events, not this session's writes: any
-    # session running review may dispose them (accept or renew).
-    ttl_expired = [flag_view(p) for p in pair_store().open_pairs(kind="ttl_expiry")]
-
-    # --- acceptance verdict -------------------------------------------------
-    # Hard-coded so a session never has to infer "am I done?" from four lists.
-    # Pairs raised by another session stay out: disposing those is not this
-    # session's job and waiting on them would make the verdict unreachable in a
-    # shared store. TTL expiries are in, because neither reason applies to them
-    # — every session may dispose them, so the backlog is drainable by whoever
-    # reaches handoff, and leaving it out lets a session pass while expired
-    # entries pile up unreviewed with nobody obliged to look.
-    def failed_own_adds() -> list[str]:
-        queue = _event_queue_direct()
-        out: list[str] = []
-        for row in queue.list(status="failed", limit=500):
-            args = queue.get_args(row["event_id"]) or {}
-            if args.get("session_id") == session:
-                out.append(row["event_id"])
-        return out
-
-    blocking: list[dict[str, Any]] = []
-    if pending:
-        blocking.append({
-            "kind": "pending_stale_checks",
-            "count": pending,
-            "why": "this session's writes are still being judged; a verdict now would be premature",
-            "how": "memline review --wait",
-        })
-    for flag_kind in ("safety", "correctness", "necessity"):
-        flagged = [f["memory_id"] for f in self_flags if f["kind"] == flag_kind]
-        if flagged:
-            blocking.append({
-                "kind": f"self_flag:{flag_kind}",
-                "count": len(flagged),
-                "memory_ids": flagged,
-                "why": f"this session's own writes carry unresolved {flag_kind} flags",
-                "how": "see how_to_dispose",
-            })
-    if displacement:
-        blocking.append({
-            "kind": "displacement_raised_by_me",
-            "count": len(displacement),
-            "pair_ids": [p["pair_id"] for p in displacement],
-            "why": "retirements that this session's writes raised are still undisposed",
-            "how": "stale confirm|dismiss|merge <pair_id>, or update <old_id>",
-        })
-    if ttl_expired:
-        blocking.append({
-            "kind": "ttl_expired",
-            "count": len(ttl_expired),
-            "pair_ids": [p["pair_id"] for p in ttl_expired],
-            "why": "entries whose TTL fired are unreviewed; any session may dispose them, "
-                   "so this one is obliged to",
-            "how": "stale confirm <pair_id> (accept the expiry) | stale ttl <pair_id> --days N (renew)",
-        })
-    failed_adds = failed_own_adds()
-    if failed_adds:
-        blocking.append({
-            "kind": "failed_adds",
-            "count": len(failed_adds),
-            "event_ids": failed_adds,
-            "why": "this session queued writes that never landed in the store",
-            "how": "event retry <event_id> | event ack <event_id>",
-        })
-    verdict = "pass" if not blocking else "blocked"
-
-    output(
-        {
-            "session": session,
-            "verdict": verdict,
-            "blocking": blocking,
-            "writes_count": len(write_items),
-            "writes": [
-                {"id": w.get("id"), "memory": str(w.get("memory") or "")[:160]}
-                for w in write_items
-            ],
-            "pending_stale_checks": pending,
-            "open_pairs": _enrich_pairs(displacement),
-            "self_flags": self_flags,
-            "ttl_expired": ttl_expired,
-            "how_to_dispose": (
-                "every listed pair carries a `suggested` block: what the verdict "
-                "means, the `fix` that resolves it, and `dismiss_only_if` — the "
-                "one condition under which dismissing is right. Read it per pair; "
-                "the summary below is only the ordering. "
-                "self_flags are ordered by disposition priority: safety -> "
-                "correctness -> necessity. "
-                "safety: update <memory_id> '<secret replaced by its location pointer>' "
-                "(redact in place, then verify search '<secret>' --include-superseded is empty) | stale dismiss <pair_id>. "
-                "correctness: update <memory_id> '<corrected>' | stale dismiss <pair_id>. "
-                "necessity: stale confirm (expire now) | stale ttl <pair_id> [--days 7] | "
-                "delete <memory_id> (own fresh born-unnecessary entry) | stale dismiss. "
-                "displacement (handle last): stale confirm <pair_id> | stale dismiss <pair_id> | "
-                "stale merge <pair_id> '<consolidated text>' | update <old_id> '<corrected text>'. "
-                "ttl_expiry: stale confirm (accept) | stale ttl <pair_id> (renew, re-enters pool)."
-            ),
-        },
-        command="review",
-        fmt=chosen_format(output_format, json_flag),
-    )
+    output(payload, command="review", fmt=chosen_format(output_format, json_flag))
     # Opt-in so existing callers that ignore the exit code keep working.
-    if check and blocking:
+    if check and payload["blocking"]:
         raise typer.Exit(code=2)
 
 
