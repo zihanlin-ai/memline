@@ -158,3 +158,50 @@ class WikiCheckTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NavDriftTest(WikiCheckTest):
+    """Routing drift belongs in the same report as provenance drift.
+
+    A page whose citations all resolve is still lost if nothing routes to it,
+    and both go wrong for the same reason: something moved and only half the
+    wiki followed. One command has to answer "is this wiki healthy".
+    """
+
+    def nav(self, body):
+        (self.root / "content" / "docs").mkdir(parents=True, exist_ok=True)
+        (self.root / "content" / "docs" / ".nav.yml").write_text(body, encoding="utf-8")
+
+    def test_a_wiki_without_a_skeleton_is_not_asked_about_routing(self):
+        # Presence is the request to check, exactly as a README's markers are
+        # the request to maintain its listing.
+        self.provenance_page(sha256_text(MEM_TEXT), name="docs/page.md")
+        self.assertEqual(self.kinds(make_execute(head={"heads": [MEM_ID]})), [])
+
+    def test_a_page_no_entry_reaches_is_flagged(self):
+        self.provenance_page(sha256_text(MEM_TEXT), name="docs/page.md")
+        self.nav("nav:\n  - Other: other.md\n")
+        (self.root / "content" / "docs" / "other.md").write_text("# Other\n", encoding="utf-8")
+        flags = self.flags(make_execute(head={"heads": [MEM_ID]}))
+        unrouted = [f for f in flags if f["kind"] == "page_unrouted"]
+        self.assertEqual([f["page"] for f in unrouted], ["content/docs/page.md"])
+
+    def test_an_entry_pointing_nowhere_is_flagged(self):
+        self.provenance_page(sha256_text(MEM_TEXT), name="docs/page.md")
+        self.nav("nav:\n  - Page: page.md\n  - Gone: moved/away.md\n")
+        flags = self.flags(make_execute(head={"heads": [MEM_ID]}))
+        dangling = [f for f in flags if f["kind"] == "nav_entry_dangling"]
+        self.assertEqual([f["detail"] for f in dangling], ["moved/away.md"])
+
+    def test_a_fully_routed_wiki_stays_clean(self):
+        self.provenance_page(sha256_text(MEM_TEXT), name="docs/page.md")
+        self.nav("nav:\n  - Page: page.md\n")
+        self.assertEqual(self.kinds(make_execute(head={"heads": [MEM_ID]})), [])
+
+    def test_the_check_still_writes_nothing(self):
+        self.provenance_page(sha256_text(MEM_TEXT), name="docs/page.md")
+        self.nav("nav:\n  - Page: page.md\n")
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        run_check(self.root, make_execute(head={"heads": [MEM_ID]}))
+        after = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        self.assertEqual(before, after)

@@ -15,7 +15,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from memline.wiki_index import BEGIN, END, build_index, collect, render_entry, write_region
+from memline.wiki_index import (
+    BEGIN, END, build_index, collect, refresh, render_entry, write_region,
+)
 
 
 def page(text: str, **front) -> str:
@@ -74,9 +76,8 @@ class IndexTest(unittest.TestCase):
         self._write("docs/serving/orphan.md")
         self.assertEqual([e["title"] for e in collect(self.content)], ["orphan"])
 
-    def test_readme_and_index_are_not_listed_as_pages(self):
+    def test_a_readme_is_not_listed_as_a_page(self):
         self._write("docs/serving/README.md", title="Serving")
-        self._write("INDEX.md", title="Index")
         self._write("docs/serving/a.md", title="A")
         self.assertEqual([e["title"] for e in collect(self.content)], ["A"])
 
@@ -92,7 +93,10 @@ class IndexTest(unittest.TestCase):
         self.assertTrue(after.startswith(prose), "the paragraph above the markers changed")
         self.assertNotIn("old", after)
 
-    def test_a_file_without_markers_is_only_appended_to(self):
+    def test_a_hand_written_readme_without_markers_is_left_alone(self):
+        # Someone wrote a landing page and did not ask for a list of children
+        # under it. Appending one anyway is how every directory ended up with a
+        # generated link table nobody chose.
         readme = self.content / "docs" / "serving" / "README.md"
         prose = "# Serving\n\nWhat this shelf is for.\n"
         readme.write_text(prose, encoding="utf-8")
@@ -100,8 +104,39 @@ class IndexTest(unittest.TestCase):
         self._write("docs/serving/a.md", title="A")
         build_index(self.content)
         after = readme.read_text(encoding="utf-8")
-        self.assertTrue(after.startswith(prose))
-        self.assertEqual(hashlib.sha256(after[:len(prose)].encode()).hexdigest(), before)
+        self.assertEqual(hashlib.sha256(after.encode()).hexdigest(), before)
+
+    # --- the listing is opt-in --------------------------------------------
+
+    def test_a_shelf_without_a_readme_does_not_get_one(self):
+        # Most directories should have no landing page at all. The generator
+        # cannot judge which ones deserve it, so it never decides.
+        self._write("docs/serving/a.md", title="A")
+        report = build_index(self.content)
+        self.assertFalse((self.content / "docs" / "serving" / "README.md").exists())
+        self.assertEqual(report["shelves_listed"], [])
+
+    def test_a_readme_with_markers_still_gets_its_listing(self):
+        readme = self.content / "docs" / "serving" / "README.md"
+        readme.write_text(f"# Serving\n\nOrientation.\n\n{BEGIN}\nstale\n{END}\n",
+                          encoding="utf-8")
+        self._write("docs/serving/a.md", title="A", summary="what it is for")
+        report = build_index(self.content)
+        body = readme.read_text(encoding="utf-8")
+        self.assertIn("[A](a.md) — what it is for", body)
+        self.assertNotIn("stale", body)
+        self.assertEqual(report["shelves_listed"], ["docs/serving"])
+
+    def test_removing_the_markers_retires_the_listing_for_good(self):
+        # The reason deletion sticks: a shelf that opts out stays opted out,
+        # so cleaning up a generated README is not undone by the next publish.
+        readme = self.content / "docs" / "serving" / "README.md"
+        readme.write_text(f"{BEGIN}\nold\n{END}\n", encoding="utf-8")
+        self._write("docs/serving/a.md", title="A")
+        build_index(self.content)
+        readme.unlink()
+        build_index(self.content)
+        self.assertFalse(readme.exists())
 
     def test_only_the_region_between_markers_is_replaced(self):
         path = self.content / "x.md"
@@ -132,10 +167,24 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(build_index(self.content)["pages_without_topic_key"],
                          ["docs/serving/a.md"])
 
-    def test_an_empty_wiki_produces_an_index_that_says_so(self):
+    def test_an_empty_wiki_writes_nothing(self):
         report = build_index(self.content)
         self.assertEqual(report["pages"], 0)
-        self.assertIn("No pages published yet", (self.content / "INDEX.md").read_text())
+        self.assertEqual(report["written"], [])
+        self.assertEqual(list(self.content.rglob("*.md")), [])
+
+    def test_no_whole_corpus_index_is_produced(self):
+        # Retired deliberately: a file naming every page matched almost every
+        # query and answered none of them. Routing is docs/.nav.yml now.
+        self._write("docs/serving/a.md", title="A", summary="s")
+        build_index(self.content)
+        self.assertFalse((self.content / "INDEX.md").exists())
+
+    def test_a_missing_file_is_not_created(self):
+        # The create path is how every directory once acquired a README.
+        missing = self.content / "docs" / "serving" / "nothing.md"
+        self.assertFalse(write_region(missing, "body"))
+        self.assertFalse(missing.exists())
 
 
 
@@ -168,3 +217,60 @@ class StatusNoiseTest(unittest.TestCase):
                          ["blog/b.md"])
 if __name__ == "__main__":
     unittest.main()
+
+
+class RefreshTest(unittest.TestCase):
+    """One entry point for everything computed, because half of it is wrong.
+
+    Listings and relation blocks are both derived from what the pages declare
+    and both are only correct right after a publish. Running one without the
+    other leaves the wiki in a state neither intended, so the publisher should
+    not have to remember a list.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.content = Path(self._tmp.name) / "content"
+        (self.content / "docs").mkdir(parents=True)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _page(self, rel, refs=(), **front):
+        path = self.content / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        src = "".join(f"  - ref: {r}\n" for r in refs)
+        lines = "\n".join(f"{k}: {v}" for k, v in front.items())
+        body = f"---\n{lines}\n" + (f"sources:\n{src}" if src else "") + "---\n\nBody.\n"
+        path.write_text(body, encoding="utf-8")
+
+    def test_one_call_writes_both_kinds_of_block(self):
+        shared = ["mem:a", "mem:b", "mem:c"]
+        self._page("docs/a.md", shared, title="A", summary="s", topic_key="a")
+        self._page("docs/b.md", shared, title="B", summary="s", topic_key="b")
+        (self.content / "docs" / "README.md").write_text(
+            f"# Docs\n\n{BEGIN}\nstale\n{END}\n", encoding="utf-8")
+        report = refresh(self.content)
+        readme = (self.content / "docs" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("[A](a.md)", readme)
+        self.assertNotIn("stale", readme)
+        self.assertIn("related:begin", (self.content / "docs" / "a.md").read_text())
+        self.assertEqual(report["relation_pairs"], 1)
+
+    def test_the_report_names_every_file_it_touched(self):
+        # Both kinds of write land in one list, so a publisher reviewing the
+        # diff has one place to look rather than two reports to reconcile.
+        self._page("docs/a.md", ["mem:a"], title="A", summary="s", topic_key="a")
+        (self.content / "docs" / "README.md").write_text(
+            f"# Docs\n\n{BEGIN}\n{END}\n", encoding="utf-8")
+        written = refresh(self.content)["written"]
+        self.assertIn("docs/README.md", written)
+        self.assertIn("docs/a.md", written)
+
+    def test_a_page_with_no_relations_still_says_so(self):
+        self._page("docs/a.md", ["mem:a"], title="A", summary="s", topic_key="a")
+        refresh(self.content)
+        self.assertIn("related:begin", (self.content / "docs" / "a.md").read_text())
+
+    def test_refreshing_unchanged_content_touches_nothing(self):
+        self._page("docs/a.md", ["mem:a"], title="A", summary="s", topic_key="a")
+        refresh(self.content)
+        self.assertEqual(refresh(self.content)["written"], [])

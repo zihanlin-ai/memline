@@ -188,11 +188,10 @@ def run_check(wiki_root: Path, execute: ExecuteFn) -> dict[str, Any]:
         markdown = page.read_text(encoding="utf-8")
         front = parse_frontmatter(markdown)
         sources = front.get("sources")
-        # README.md and INDEX.md describe the wiki rather than asserting
-        # anything about the world, so they carry no provenance and are not
-        # missing any. INDEX.md is generated; flagging it would produce a
-        # findings list nobody reads, which is worse than no check at all.
-        if page.name not in ("README.md", "INDEX.md"):
+        # A README describes the shelf that holds it rather than asserting
+        # anything about the world, so it carries no provenance and is not
+        # missing any.
+        if page.name != "README.md":
             summary = front.get("summary")
             if not isinstance(summary, str) or not summary.strip():
                 flags.append({"page": rel, "kind": "missing_summary", "detail": ""})
@@ -238,6 +237,7 @@ def run_check(wiki_root: Path, execute: ExecuteFn) -> dict[str, Any]:
                 flags.append({"page": rel, "ref": ref, **flag})
         for flag in _check_body_links(page, wiki_root, markdown):
             flags.append({"page": rel, **flag})
+    flags += _nav_flags(content_dir / "docs")
     return {
         "wiki_root": str(wiki_root),
         "pages_scanned": len(pages),
@@ -245,3 +245,30 @@ def run_check(wiki_root: Path, execute: ExecuteFn) -> dict[str, Any]:
         "flags": flags,
         "clean": not flags,
     }
+
+
+def _nav_flags(docs_dir: Path) -> list[dict[str, str]]:
+    """Routing drift, reported alongside provenance drift.
+
+    A page whose citations all resolve is still lost if the navigation
+    skeleton does not reach it, and the two go wrong for the same reason —
+    something moved and only half the wiki followed. Keeping them in one
+    report is what makes "is this wiki healthy" a single question; the
+    standalone ``wiki nav`` remains for iterating on the skeleton itself,
+    where checking provenance against the memory store is wasted work.
+    """
+    from memline.wiki_nav import NAV_FILE, check_nav
+
+    # The skeleton's presence is the request to check it, exactly as a
+    # README's markers are the request to maintain its listing. A wiki that
+    # routes some other way is not answering this question wrongly; it is not
+    # being asked.
+    if not (docs_dir / NAV_FILE).is_file():
+        return []
+    report = check_nav(docs_dir)
+    return (
+        [{"page": f"content/docs/{p}", "kind": "page_unrouted", "detail": ""}
+         for p in report["unreachable"]]
+        + [{"page": "content/docs/.nav.yml", "kind": "nav_entry_dangling", "detail": e}
+           for e in report["dangling"]]
+    )

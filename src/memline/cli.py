@@ -2218,10 +2218,8 @@ def wiki_check_draft(
     result: dict[str, Any] = {"draft": str(draft), **report}
     gate_clean = report["clean"]
     if review:
-        from memline.wiki_review import (
-            build_review_bundle,
-            validate_review_artifact,
-        )
+        from memline.wiki_review import build_review_bundle
+        from memline.wiki_review_report import validate_review_artifact
 
         review_bundle_path = review_bundle or Path(str(stem) + ".review-bundle.json")
         if not review_bundle_path.is_file():
@@ -2456,33 +2454,44 @@ def wiki_check_pages(
         raise typer.Exit(code=1)
 
 
-@wiki_app.command("index")
-def wiki_index(
+@wiki_app.command("nav")
+def wiki_nav(
     wiki_root: Optional[Path] = typer.Argument(
         None, help="Wiki root (contains content/). Default: <workspace>/.agent-memory/wiki."),
+    check: bool = typer.Option(
+        True, "--check/--no-check",
+        help="Only checking is supported: the skeleton is hand-written by design."),
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero when a page is unreachable or an entry dangles."),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
-    """Regenerate INDEX.md and each shelf listing from page frontmatter."""
-    from memline.wiki_index import build_index
+    """Check docs/.nav.yml against the pages on disk (read-only)."""
+    from memline.wiki_nav import check_nav
 
+    if not check:
+        raise typer.BadParameter(
+            "the navigation skeleton is hand-written; there is nothing to generate")
     root = wiki_root or (ROOT / ".agent-memory" / "wiki")
-    report = build_index(root / "content")
+    report = check_nav(root / "content" / "docs")
     fmt = chosen_format(output_format, json_flag)
     if fmt == "text":
-        console.print(f"{report['pages']} page(s) across {report['shelves']} shelf/shelves; "
-                      f"{len(report['written'])} file(s) rewritten")
-        for path in report["pages_without_summary"]:
-            console.print(f"[yellow]no summary: {path}[/yellow]")
-        for path in report["pages_without_topic_key"]:
-            console.print(f"[yellow]no topic_key: {path}[/yellow]")
-        for item in report["flagged_pages"]:
-            console.print(f"[yellow]{item['status']}: {item['path']}[/yellow]")
-    output(report, command="wiki-index", fmt=fmt)
+        if not report["present"]:
+            console.print(f"[yellow]{report['reason']}: {report['nav_file']}[/yellow]")
+        else:
+            console.print(f"{report['entries']} entry/entries covering "
+                          f"{report['pages']} page(s)")
+            for path in report["unreachable"]:
+                console.print(f"[yellow]unreachable: {path}[/yellow]")
+            for entry in report["dangling"]:
+                console.print(f"[yellow]dangling entry: {entry}[/yellow]")
+    output(report, command="wiki-nav", fmt=fmt)
+    if strict and not report["clean"]:
+        raise typer.Exit(code=1)
 
 
-@wiki_app.command("related")
-def wiki_related(
+@wiki_app.command("index")
+def wiki_index(
     wiki_root: Optional[Path] = typer.Argument(
         None, help="Wiki root (contains content/). Default: <workspace>/.agent-memory/wiki."),
     min_shared: int = typer.Option(3, "--min-shared",
@@ -2492,16 +2501,24 @@ def wiki_related(
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
-    """Regenerate each page's related-pages block from shared evidence."""
-    from memline.wiki_related import build_related
+    """Recompute the generated blocks in content/: shelf listings and relations."""
+    from memline.wiki_index import refresh
 
     root = wiki_root or (ROOT / ".agent-memory" / "wiki")
-    report = build_related(root / "content", min_shared=min_shared, min_share=min_share)
+    report = refresh(root / "content", min_shared=min_shared, min_share=min_share)
     fmt = chosen_format(output_format, json_flag)
     if fmt == "text":
-        console.print(f"{report['pairs']} relation(s) across {report['pages']} page(s); "
+        console.print(f"{report['pages']} page(s) across {report['shelves']} shelf/shelves; "
+                      f"{len(report['shelves_listed'])} listed; "
+                      f"{report['relation_pairs']} relation(s); "
                       f"{len(report['written'])} file(s) rewritten")
-    output(report, command="wiki-related", fmt=fmt)
+        for path in report["pages_without_summary"]:
+            console.print(f"[yellow]no summary: {path}[/yellow]")
+        for path in report["pages_without_topic_key"]:
+            console.print(f"[yellow]no topic_key: {path}[/yellow]")
+        for item in report["flagged_pages"]:
+            console.print(f"[yellow]{item['status']}: {item['path']}[/yellow]")
+    output(report, command="wiki-index", fmt=fmt)
 
 
 @wiki_app.command("check-threads")

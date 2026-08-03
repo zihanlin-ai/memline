@@ -1,23 +1,41 @@
-"""Generate the wiki's index from what the pages already declare.
+"""Maintain the shelf listings the wiki has asked for, and nothing else.
 
-An eighty-page wiki does not need search. It needs one file an agent can read
-whole — every page's title, what it is for, and whether it is still trusted —
-because at that size reading the list is cheaper and more accurate than
-matching against it. The comparison that settled this is vLLM's: 243 pages
-navigated by a sixty-line table of contents, no embeddings anywhere.
+There was once a whole-corpus index here — one file naming every page, on the
+theory that at this size reading the list beats searching it. Measured against
+real retrieval it did the opposite. A page is found by its path and its
+filename; the index only added a large file that matched almost every query
+without answering any of them, because a summary tells you a page exists and
+not whether it holds your answer. Routing is now the hand-written skeleton at
+``content/docs/.nav.yml``, which states entry points and reading order — the
+judgement a generated list cannot carry — and filenames do the rest.
 
-Nothing here judges. Titles were written when the drafts were, summaries are
-the ``value`` the user approved when accepting the topic, and status is set by
-the page check. This module only reads those and lays them out, so the same
-content produces byte-identical output every time.
+What remains is narrow: a shelf whose landing page has asked to have its
+children listed gets that listing kept current. Nothing here judges. Titles
+were written when the drafts were, summaries are the ``value`` the user
+approved when accepting the topic, and status is set by the page check. This
+module only reads those and lays them out, so the same content produces
+byte-identical output every time.
 
 **It writes into ``content/``, which is otherwise off limits.** That directory
 holds approved, published work, and the standing rule is that compile may only
 touch a page's ``status`` field. This is the one sanctioned exception and it is
 kept narrow in a way a program can enforce: generated text goes between two
-markers and nowhere else, and on a page that has no markers yet the block is
-appended. No byte outside the markers is ever modified — not the paragraph
-someone wrote to explain what a shelf is for, not the frontmatter, nothing.
+markers and nowhere else. No byte outside the markers is ever modified — not
+the paragraph someone wrote to explain what a shelf is for, not the
+frontmatter, nothing.
+
+A shelf listing is **opt-in**: it is written only into a README that already
+exists and already carries the markers. The generator never creates a README
+for a directory and never appends markers to one a human wrote without them.
+The reason is a rule this wiki takes from vLLM's documentation, whose shape it
+is calibrated against: a README exists when the directory has a meaningful
+default page — a guide entry, a feature-family overview — and most directories
+have none. A generated list of child links in every directory is not
+navigation. It is one more file to open before reaching the page, and the
+filename it would have pointed at was already visible in the directory. So the
+judgement of which directories deserve a landing page stays with the person who
+can make it, and the generator maintains the listing only where that person has
+asked for one by leaving the markers in place.
 """
 
 from __future__ import annotations
@@ -35,8 +53,8 @@ def region_pattern(begin: str, end: str) -> re.Pattern[str]:
 
 
 GENERATED_REGION = region_pattern(BEGIN, END)
-# Pages that describe the wiki rather than belonging to it.
-NON_ENTRY = {"README.md", "INDEX.md"}
+# A README describes the shelf that holds it rather than belonging to it.
+NON_ENTRY = {"README.md"}
 # States that mean "this page is fine". Anything else is worth a reader's
 # attention and is surfaced in the listing.
 NORMAL_STATUS = {"published", "current", None, ""}
@@ -52,9 +70,9 @@ def _entry(page: Path, root: Path) -> dict[str, Any]:
     return {
         "path": rel,
         "shelf": rel.rsplit("/", 1)[0] if "/" in rel else "",
-        # A page with no title falls back to its filename: the index must list
-        # it either way, because a page missing from the index is a page that
-        # does not exist as far as retrieval is concerned.
+        # A page with no title falls back to its filename: a listed shelf must
+        # name it either way, because an entry silently dropped for a missing
+        # field is worse than an ugly one.
         "title": str(front.get("title") or page.stem),
         "summary": str(front.get("summary") or "").strip(),
         "topic_key": front.get("topic_key"),
@@ -69,16 +87,6 @@ def collect(content_dir: Path) -> list[dict[str, Any]]:
     entries = [_entry(p, content_dir) for p in pages]
     entries.sort(key=lambda e: (e["shelf"], e["order"], e["title"].lower(), e["path"]))
     return entries
-
-
-def shelf_title(content_dir: Path, shelf: str) -> str:
-    """The shelf's own H1, so the index uses the name a human chose for it."""
-    readme = content_dir / shelf / "README.md" if shelf else content_dir / "README.md"
-    if readme.is_file():
-        for line in readme.read_text(encoding="utf-8").splitlines():
-            if line.startswith("# "):
-                return line[2:].strip()
-    return shelf or "Wiki"
 
 
 def render_entry(entry: dict[str, Any], *, base: str = "") -> str:
@@ -99,19 +107,6 @@ def render_entry(entry: dict[str, Any], *, base: str = "") -> str:
     return line
 
 
-def render_index(entries: list[dict[str, Any]], content_dir: Path) -> str:
-    """The root listing: every page in the wiki, grouped by shelf."""
-    if not entries:
-        return "_No pages published yet._"
-    lines: list[str] = []
-    for shelf in sorted({e["shelf"] for e in entries}):
-        lines.append(f"### {shelf_title(content_dir, shelf)}")
-        lines.append("")
-        lines += [render_entry(e) for e in entries if e["shelf"] == shelf]
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def render_shelf(entries: list[dict[str, Any]], shelf: str) -> str:
     listed = [e for e in entries if e["shelf"] == shelf]
     if not listed:
@@ -119,57 +114,85 @@ def render_shelf(entries: list[dict[str, Any]], shelf: str) -> str:
     return "\n".join(render_entry(e, base=shelf) for e in listed) + "\n"
 
 
-def write_region(path: Path, body: str, *, preamble: str = "",
-                 begin: str = BEGIN, end: str = END) -> bool:
+def opts_in(readme: Path, *, begin: str = BEGIN) -> bool:
+    """Whether this README has asked to have its listing maintained.
+
+    The marker pair is the request. Its absence is an answer too — either the
+    directory has no landing page at all, or someone wrote one by hand and did
+    not want a generated list bolted onto the end of it.
+    """
+    return readme.is_file() and begin in readme.read_text(encoding="utf-8")
+
+
+def write_region(path: Path, body: str, *, begin: str = BEGIN, end: str = END) -> bool:
     """Replace the marked region in ``path``. Returns whether anything changed.
 
     Everything outside the markers is preserved exactly. A file without markers
-    gains the block at the end — appended, never merged into what is there —
-    and a file that does not exist is created from ``preamble``.
+    gains the block at the end — appended, never merged into what is there.
+
+    A file that does not exist is left that way and the call reports no change.
+    This module writes into approved, published work; creating a file there is
+    a publishing decision, and it is not one a generator gets to make. The
+    directory-wide READMEs this wiki had to delete all came from a create path
+    exactly like the one that used to live here.
 
     The marker pair is a parameter because one page can carry more than one
     generated region, and each must be able to be rewritten without disturbing
     the other.
     """
+    if not path.is_file():
+        return False
     pattern = region_pattern(begin, end)
     block = f"{begin}\n{body.rstrip()}\n{end}"
-    if path.is_file():
-        current = path.read_text(encoding="utf-8")
-        if pattern.search(current):
-            updated = pattern.sub(lambda _: block, current, count=1)
-        else:
-            updated = current.rstrip("\n") + "\n\n" + block + "\n"
+    current = path.read_text(encoding="utf-8")
+    if pattern.search(current):
+        updated = pattern.sub(lambda _: block, current, count=1)
     else:
-        updated = (preamble.rstrip("\n") + "\n\n" if preamble else "") + block + "\n"
-    if path.is_file() and updated == path.read_text(encoding="utf-8"):
+        updated = current.rstrip("\n") + "\n\n" + block + "\n"
+    if updated == current:
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(updated, encoding="utf-8")
     return True
 
 
-ROOT_PREAMBLE = """# Wiki Index
+def refresh(content_dir: Path, **related_kwargs: Any) -> dict[str, Any]:
+    """Recompute every generated block in ``content/``: listings and relations.
 
-Every published page, with what it is for. Generated from page frontmatter —
-edit the pages, not this list. A page marked `stale-pending-review` cites
-evidence that has moved since publication and is not current fact until
-someone rules on it."""
+    They were two commands and that was one too many. Both write between
+    markers, both are derived entirely from what the pages already declare,
+    and both are only ever correct immediately after a publish — so running
+    one without the other leaves the wiki in a state neither command intended.
+    A single entry point is what makes "regenerate what is computed" something
+    a publisher can do without remembering a list.
+    """
+    from memline.wiki_related import build_related
+
+    listings = build_index(content_dir)
+    relations = build_related(content_dir, **related_kwargs)
+    return {
+        **listings,
+        "written": listings["written"] + relations["written"],
+        "relation_pairs": relations["pairs"],
+        "pages_with_relations": relations["pages_with_relations"],
+    }
 
 
 def build_index(content_dir: Path) -> dict[str, Any]:
-    """Write the root index and each shelf's listing. Returns a report."""
+    """Refresh every shelf listing that has opted in. Returns a report."""
     entries = collect(content_dir)
     written: list[str] = []
-    if write_region(content_dir / "INDEX.md", render_index(entries, content_dir),
-                    preamble=ROOT_PREAMBLE):
-        written.append("INDEX.md")
-    for shelf in sorted({e["shelf"] for e in entries if e["shelf"]}):
+    shelves = sorted({e["shelf"] for e in entries if e["shelf"]})
+    listed = [s for s in shelves if opts_in(content_dir / s / "README.md")]
+    for shelf in listed:
         readme = content_dir / shelf / "README.md"
         if write_region(readme, render_shelf(entries, shelf)):
             written.append(f"{shelf}/README.md")
     return {
         "pages": len(entries),
-        "shelves": len({e["shelf"] for e in entries if e["shelf"]}),
+        "shelves": len(shelves),
+        # Named so the split is visible: a shelf without a listing is the
+        # normal case, not an omission the next run should correct.
+        "shelves_listed": listed,
         "written": written,
         # A page with no summary is listed by title alone, which makes the
         # index a directory rather than something you can choose from. Named
