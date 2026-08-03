@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from memline.wiki_index import BEGIN, END, build_index, collect, refresh, render_entry
+from memline.wiki.index import BEGIN, END, build_index, collect, refresh, render_entry
 
 
 def page(text: str, **front) -> str:

@@ -54,33 +54,41 @@ class DeferredImportTest(unittest.TestCase):
                         checked += 1
         self.assertGreater(checked, 20, "the walker stopped finding commands")
 
-    def test_names_called_in_a_command_are_imported_or_global(self):
-        """A call to a name the function never imported is the same bug wearing
-        a different hat: the import line was edited and the call site was not."""
+    def test_names_used_in_a_command_are_imported_or_global(self):
+        """A name the function never bound is the same bug wearing a different
+        hat: the import line was edited and the use site was not. Checked for
+        every Load-context name, not just calls — `os.environ[...]` shipped
+        broken once because the caller-only version of this test could not see
+        an attribute root."""
         for name, func in _commands():
             source = textwrap.dedent(inspect.getsource(func))
             tree = ast.parse(source)
-            imported = {a.asname or a.name
-                        for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
-                        for a in n.names}
-            assigned = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
-                        for t in n.targets if isinstance(t, ast.Name)}
-            # Commands define local helpers and call them; those are bound too.
-            assigned |= {n.name for n in ast.walk(tree)
-                         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-            args = {a.arg for n in ast.walk(tree) if isinstance(n, ast.arguments) for a in
-                    n.args + n.posonlyargs + n.kwonlyargs}
+            bound = {a.asname or a.name
+                     for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+                     for a in n.names}
+            # Everything a function body can bind: assignments, loop and with
+            # targets, comprehension variables, walrus, local defs, exceptions.
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                    bound.add(n.id)
+                elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    bound.add(n.name)
+                elif isinstance(n, ast.ExceptHandler) and n.name:
+                    bound.add(n.name)
+                elif isinstance(n, ast.arguments):
+                    for a in n.args + n.posonlyargs + n.kwonlyargs +                             [x for x in (n.vararg, n.kwarg) if x]:
+                        bound.add(a.arg)
             for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                    called = node.func.id
-                    if called in imported or called in assigned or called in args:
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                    used = node.id
+                    if used in bound:
                         continue
                     # A function resolves globals from the module it lives
                     # in, so that module is the only namespace worth checking.
                     home = importlib.import_module(func.__module__)
-                    with self.subTest(command=name, calls=called):
-                        self.assertTrue(hasattr(home, called) or hasattr(builtins, called),
-                                        f"{name}() calls {called}(), which is neither imported "
+                    with self.subTest(command=name, uses=used):
+                        self.assertTrue(hasattr(home, used) or hasattr(builtins, used),
+                                        f"{name}() uses {used}, which is neither imported "
                                         "nor defined at module level")
 
 

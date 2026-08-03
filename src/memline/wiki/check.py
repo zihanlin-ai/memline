@@ -41,8 +41,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-from .bundle import read_section
-from .wiki_page import parse_frontmatter, sha256_text
+from memline.bundle import read_section
+from memline.wiki.page import parse_frontmatter, sha256_text
 
 FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 # [text](target) — capture the target; ignore images ![...](...) too? Images
@@ -241,7 +241,7 @@ def _nav_flags(docs_dir: Path) -> list[dict[str, str]]:
     standalone ``wiki nav`` remains for iterating on the skeleton itself,
     where checking provenance against the memory store is wasted work.
     """
-    from memline.wiki_nav import NAV_FILE, check_nav
+    from memline.wiki.nav import NAV_FILE, check_nav
 
     # The skeleton's presence is the request to check it, exactly as a
     # README's markers are the request to maintain its listing. A wiki that

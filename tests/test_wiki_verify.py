@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from memline.wiki_verify import verify
+from memline.wiki.verify import verify
 
 BUNDLE = {
     "memories": [

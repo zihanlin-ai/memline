@@ -27,7 +27,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from memline.wiki_page import CITATION
+from memline.wiki.page import CITATION
 
 CITATION_TOKEN = re.compile(r"\^\[([^\]]+)\]")
 BARE_CITATION = re.compile(r"(?<!\^)\[(mem:[0-9a-fA-F-]{8,}|sources/[^\]]+)\]")

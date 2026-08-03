@@ -1,4 +1,4 @@
-from memline.backfill_metadata import desired_patch
+from memline.migrations.backfill_metadata import desired_patch
 from memline.config import LEDGER_IMPORT_AGENT_ID, LEDGER_IMPORT_SESSION_ID
 
 

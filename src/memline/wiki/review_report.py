@@ -25,7 +25,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from memline.wiki_page import CITATION, sha256_text as _sha256_text
+from memline.wiki.page import CITATION, sha256_text as _sha256_text
 
 CLAIM_VERDICTS = {
     "supported", "partially_supported", "contradicted", "unverifiable",

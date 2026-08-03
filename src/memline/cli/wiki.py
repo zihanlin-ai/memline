@@ -26,7 +26,7 @@ def wiki_close_run(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Advance the compile cursor. Only for a run that actually completed."""
-    from memline.wiki_state import close_run
+    from memline.wiki.state import close_run
 
     memories, read_at = _support.read_all_memories(user_id)
     new = close_run(state, started_at=started_at or read_at, memories=memories,
@@ -53,7 +53,7 @@ def wiki_plan(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Plan how the store is cut into batches for wiki topic profiling."""
-    from memline.wiki_batch import plan_batches, plan_summary
+    from memline.wiki.batch import plan_batches, plan_summary
 
     memories, read_at = _support.read_all_memories(user_id)
     batches = plan_batches(memories, since=since, max_memories=max_memories,
@@ -88,7 +88,7 @@ def wiki_profile(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Profile batches (or source documents) into raw per-batch topic profiles."""
-    from memline.wiki_profile import default_prompt, profile_batches, profile_sources
+    from memline.wiki.profile import default_prompt, profile_batches, profile_sources
 
     template = (prompt.read_text(encoding="utf-8") if prompt
                 else default_prompt("wiki-profile-source" if source_dir else "wiki-profile-session"))
@@ -174,8 +174,8 @@ def wiki_suggest(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Assemble reviewed associations into the suggestion list, resolving evidence."""
-    from memline.wiki_check import run_check
-    from memline.wiki_suggest import build_suggestions, load_threads, maintenance_suggestions
+    from memline.wiki.check import run_check
+    from memline.wiki.suggest import build_suggestions, load_threads, maintenance_suggestions
 
     def resolve(memory_id: str) -> str | None:
         try:
@@ -236,8 +236,8 @@ def wiki_draft(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Draft accepted topics from their evidence on the configured drafting endpoint."""
-    from memline.wiki_draft import draft_topic
-    from memline.wiki_profile import default_prompt
+    from memline.wiki.draft import draft_topic
+    from memline.wiki.profile import default_prompt
 
     template = prompt.read_text(encoding="utf-8") if prompt else default_prompt("wiki-draft")
     queue = [json.loads(line) for line in topics.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -278,7 +278,7 @@ def wiki_check_draft(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Check a draft and, optionally, bind an external review to its exact hashes."""
-    from memline.wiki_verify import verify
+    from memline.wiki.verify import verify
 
     stem = draft.with_suffix("")
     bundle_path = Path(str(stem) + ".bundle.json")
@@ -293,8 +293,8 @@ def wiki_check_draft(
     result: dict[str, Any] = {"draft": str(draft), **report}
     gate_clean = report["clean"]
     if review:
-        from memline.wiki_review import build_review_bundle
-        from memline.wiki_review_report import validate_review_artifact
+        from memline.wiki.review import build_review_bundle
+        from memline.wiki.review_report import validate_review_artifact
 
         review_bundle_path = review_bundle or Path(str(stem) + ".review-bundle.json")
         if not review_bundle_path.is_file():
@@ -342,7 +342,7 @@ def wiki_prepare_review(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Resolve every citation and attach its evidence in an immutable review bundle."""
-    from memline.wiki_review import build_review_bundle
+    from memline.wiki.review import build_review_bundle
 
     draft_text, bundle, claims, topic = _support._review_artifacts(draft, topics)
     bundle, claims, topic = _support._sanitize_review_artifacts(
@@ -387,8 +387,8 @@ def wiki_review_draft(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Compile the evidence packet, audit it on the configured review endpoint, and validate the report."""
-    from memline.wiki_profile import default_prompt
-    from memline.wiki_review import build_review_bundle, load_prior_review, run_review_passes
+    from memline.wiki.profile import default_prompt
+    from memline.wiki.review import build_review_bundle, load_prior_review, run_review_passes
 
     draft_text, bundle, claims, topic = _support._review_artifacts(draft, topics)
     if bundle.get("sanitized") is not True:
@@ -446,7 +446,7 @@ def wiki_check_pages(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Check wiki provenance and internal links against current memory/source state (read-only)."""
-    from memline.wiki_check import run_check
+    from memline.wiki.check import run_check
 
     root = wiki_root or (_support.ROOT / ".agent-memory" / "wiki")
     report = run_check(root, _support.execute)
@@ -468,7 +468,7 @@ def wiki_nav(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Check docs/.nav.yml against the pages on disk (read-only)."""
-    from memline.wiki_nav import check_nav
+    from memline.wiki.nav import check_nav
 
     if not check:
         raise typer.BadParameter(
@@ -503,7 +503,7 @@ def wiki_index(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Recompute the generated blocks in content/: shelf listings and relations."""
-    from memline.wiki_index import refresh
+    from memline.wiki.index import refresh
 
     root = wiki_root or (_support.ROOT / ".agent-memory" / "wiki")
     report = refresh(root / "content", min_shared=min_shared, min_share=min_share)
@@ -534,7 +534,7 @@ def wiki_check_threads(
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
 ) -> None:
     """Which profiled sub-topics a draft used, and which it dropped whole."""
-    from memline.wiki_threads import check_draft_threads
+    from memline.wiki.threads import check_draft_threads
 
     wiki_root = draft.resolve().parent.parent
     topics_file = topics or (wiki_root / "suggestions" / "accepted-topics.jsonl")

@@ -13,8 +13,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from memline import wiki_draft
-from memline.wiki_draft import UnreviewedMaterialError, draft_topic, load_review
+from memline.wiki import draft as wiki_draft
+from memline.wiki.draft import UnreviewedMaterialError, draft_topic, load_review
 
 
 class _Result:

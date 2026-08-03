@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import unittest
 
-from memline.wiki_batch import LEDGER_SOURCE, plan_batches, plan_summary
+from memline.wiki.batch import LEDGER_SOURCE, plan_batches, plan_summary
 
 
 def mem(mid, session=None, day=1, source="codex"):
@@ -100,7 +100,7 @@ class IncrementalTest(unittest.TestCase):
         )
 
     def selected(self, since="2026-07-05"):
-        from memline.wiki_batch import select_since
+        from memline.wiki.batch import select_since
         return {m["id"] for m in select_since(self.memories, since)}
 
     def test_a_session_that_gained_a_memory_comes_back_whole(self):
@@ -116,13 +116,13 @@ class IncrementalTest(unittest.TestCase):
         self.assertTrue(all(f"fresh-{i}" in self.selected() for i in range(3)))
 
     def test_updated_at_counts_as_movement(self):
-        from memline.wiki_batch import select_since
+        from memline.wiki.batch import select_since
         edited = [mem("old-0", "old", day=1)]
         edited[0]["updated_at"] = "2026-07-09T00:00:00"
         self.assertEqual([m["id"] for m in select_since(edited, "2026-07-05")], ["old-0"])
 
     def test_ledger_memories_are_taken_individually(self):
-        from memline.wiki_batch import select_since
+        from memline.wiki.batch import select_since
         old = mem("L-old", None, day=1, source=LEDGER_SOURCE)
         new = mem("L-new", None, day=9, source=LEDGER_SOURCE)
         self.assertEqual([m["id"] for m in select_since([old, new], "2026-07-05")], ["L-new"])

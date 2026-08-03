@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from memline.wiki_page import (
+from memline.wiki.page import (
     INDEX_BEGIN,
     INDEX_END,
     RELATED_BEGIN,

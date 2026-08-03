@@ -53,7 +53,7 @@ def source_hashes(source_dir: Path) -> dict[str, str]:
 
 def boundary_ids(memories: Iterable[dict[str, Any]], started_at: str) -> list[str]:
     """Ids stamped exactly at the cursor, which the next run must not re-read."""
-    from memline.wiki_batch import touched_at
+    from memline.wiki.batch import touched_at
 
     stamp = started_at[:19]
     return sorted(m["id"] for m in memories if touched_at(m)[:19] == stamp)

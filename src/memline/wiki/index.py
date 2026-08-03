@@ -43,14 +43,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from memline.wiki_page import (
+from memline.wiki.page import (
     INDEX_BEGIN as BEGIN,
     INDEX_END as END,
     NON_ENTRY,
     parse_frontmatter,
     write_region,
 )
-from memline.wiki_related import build_related
+from memline.wiki.related import build_related
 
 # States that mean "this page is fine". Anything else is worth a reader's
 # attention and is surfaced in the listing.

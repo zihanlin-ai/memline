@@ -832,7 +832,7 @@ def _review_artifacts(
     draft: Path, topics: Path | None = None
 ) -> tuple[str, dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
     """Load a draft's sidecars and its approved topic without touching the store."""
-    from memline.wiki_review import load_approved_topic
+    from memline.wiki.review import load_approved_topic
 
     stem = draft.with_suffix("")
     bundle_path = Path(str(stem) + ".bundle.json")
@@ -863,7 +863,7 @@ def _sanitize_review_artifacts(
     import copy
 
     from memline.bundle import Sanitizer
-    from memline.wiki_draft import BLOCKING_FLAG_KINDS, load_review
+    from memline.wiki.draft import BLOCKING_FLAG_KINDS, load_review
 
     if sensitivity_review is None:
         candidate = draft.parent.parent / "sanitization-review.json"

@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from unittest import mock
 
-from memline.wiki_draft import (
+from memline.wiki.draft import (
     UnreviewedMaterialError,
     draft_topic,
     load_review,
@@ -103,7 +103,7 @@ class DraftTest(unittest.TestCase):
             sent["kwargs"] = kwargs
             return (full_draft() if reply is None else reply), FakeResult()
 
-        with mock.patch("memline.wiki_draft.call_json", call_json):
+        with mock.patch("memline.wiki.draft.call_json", call_json):
             summary = draft_topic(topic or self.topic(), execute, "P:{material}",
                                   self.out, wiki_root=self.root,
                                   review_file=review_file, log=lambda _: None)
@@ -129,7 +129,7 @@ class DraftTest(unittest.TestCase):
             called.append(prompt)
             return full_draft(), FakeResult()
 
-        with mock.patch("memline.wiki_draft.call_json", call_json):
+        with mock.patch("memline.wiki.draft.call_json", call_json):
             with self.assertRaises(UnreviewedMaterialError):
                 draft_topic(self.topic(), store(**{MEM_A: "张伟 ran it"}), "P:{material}",
                             self.out, wiki_root=self.root, log=lambda _: None)

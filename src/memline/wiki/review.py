@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from memline.relay import CallResult, call_json
-from memline.wiki_review_report import (
+from memline.wiki.review_report import (
     _canonical_json,
     _content_hash,
     _sha256_text,
@@ -28,8 +28,8 @@ from memline.wiki_review_report import (
     validate_merged_review_report,
     validate_review_report,
 )
-from memline.wiki_page import CITATION
-from memline.wiki_verify import verify
+from memline.wiki.page import CITATION
+from memline.wiki.verify import verify
 
 SCHEMA_VERSION = 1
 

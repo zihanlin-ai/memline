@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from memline.wiki_suggest import build_suggestions, load_threads, suppressed_topics
+from memline.wiki.suggest import build_suggestions, load_threads, suppressed_topics
 
 TEXTS = {"m1": "first fact", "m2": "second fact", "m3": "third fact"}
 

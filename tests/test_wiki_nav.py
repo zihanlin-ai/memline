@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from memline.wiki_nav import check_nav
+from memline.wiki.nav import check_nav
 
 
 class NavCheckTest(unittest.TestCase):

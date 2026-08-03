@@ -25,7 +25,7 @@ import itertools
 from pathlib import Path
 from typing import Any
 
-from memline.wiki_page import (
+from memline.wiki.page import (
     NON_ENTRY,
     RELATED_BEGIN as BEGIN,
     RELATED_END as END,

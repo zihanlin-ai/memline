@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from memline.wiki_profile import coverage_digest, _needs_profiling
+from memline.wiki.profile import coverage_digest, _needs_profiling
 
 
 def batch(ids, batch_id="b000"):

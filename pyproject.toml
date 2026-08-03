@@ -30,8 +30,8 @@ dependencies = [
 
 [project.scripts]
 memline = "memline.cli:cli_main"
-memline-ingest-ledger = "memline.ingest_ledger:main"
-memline-backfill-metadata = "memline.backfill_metadata:main"
+memline-ingest-ledger = "memline.migrations.ingest_ledger:main"
+memline-backfill-metadata = "memline.migrations.backfill_metadata:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

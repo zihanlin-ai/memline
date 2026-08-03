@@ -54,13 +54,6 @@ def load_threads(*profile_dirs: Path) -> dict[tuple[str, str], dict[str, Any]]:
     return threads
 
 
-def verdicted_ids(ledger: Path) -> set[str]:
-    if not ledger.exists():
-        return set()
-    return {m.group(1) for line in ledger.read_text(encoding="utf-8").splitlines()
-            if (m := VERDICT_LINE.match(line.strip()))}
-
-
 def suppressed_topics(ledger: Path) -> set[str]:
     """Topic keys the user rejected. They do not come back on their own."""
     if not ledger.exists():

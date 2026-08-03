@@ -16,8 +16,8 @@ import json
 import unittest
 from pathlib import Path
 
-from memline.wiki_review import _content_hash, build_review_bundle
-from memline.wiki_review_report import (
+from memline.wiki.review import _content_hash, build_review_bundle
+from memline.wiki.review_report import (
     merge_reviews,
     validate_merged_review_report,
     validate_review_artifact,
