@@ -28,7 +28,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_SET = HERE / "necessity_judge_eval_set.jsonl"
+DEFAULT_SET = HERE / "examples" / "necessity_set.sample.jsonl"
+# The full labeled dataset is built from a real store and holds real memory
+# text, so it lives OUTSIDE this repo (this workspace: .tools/memline-eval/).
+# Pass it with --set; the in-repo sample only proves the harness runs.
 
 VERDICTS = {"DURABLE", "BORN_UNNECESSARY", "EXPIRING"}
 

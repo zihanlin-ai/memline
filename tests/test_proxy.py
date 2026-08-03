@@ -98,8 +98,8 @@ class NoProxyMatchingTests(unittest.TestCase):
 
     def test_glob_entries(self):
         self.assertTrue(bypasses_proxy("10.1.2.3", "10.*"))
-        self.assertTrue(bypasses_proxy("host.huawei.com", "*.huawei.com"))
-        self.assertFalse(bypasses_proxy("1.95.37.146", "10.*,100.10*,172.*,7.*"))
+        self.assertTrue(bypasses_proxy("host.corp.example.com", "*.corp.example.com"))
+        self.assertFalse(bypasses_proxy("203.0.113.9", "10.*,100.10*,172.*,7.*"))
 
     def test_wildcard_bypasses_everything(self):
         self.assertTrue(bypasses_proxy("anything", "*"))

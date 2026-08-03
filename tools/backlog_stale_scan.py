@@ -43,7 +43,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
 
-PROGRESS_FILE = Path("/workspace/.agent-memory/store/backlog-scan-progress.json")
+from memline.config import STORE_DIR  # noqa: E402  (sys.path set above)
+
+PROGRESS_FILE = STORE_DIR / "backlog-scan-progress.json"
 TOP_K = 10
 BATCH_TAG = "backlog-scan"
 

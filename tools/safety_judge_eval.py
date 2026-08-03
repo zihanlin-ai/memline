@@ -42,11 +42,11 @@ CASES: list[tuple[str, str, str]] = [
     # --- CLEAN traps: credential LOCATIONS, not values ---
     ("The modelscope token is stored in utils/modelscope-token.env (chmod 600).",
      "CLEAN", "trap: token FILE location, no value"),
-    ("Host 7.216.197.175 rejects the shared password; use the key in login_root_ed25519.",
+    ("Host 203.0.113.75 rejects the shared password; use the key in login_root_ed25519.",
      "CLEAN", "trap: names a password exists + key file, no value"),
     ("Export OPENROUTER_API_KEY before running; it lives in the store .env.",
      "CLEAN", "trap: env var NAME + location"),
-    ("Passwords for the 7.246 pool are in reference/MobaXterm Stored Passwords - 7.246.txt.",
+    ("Passwords for the 192.0.2 pool are in reference/stored-passwords-192.0.2.txt.",
      "CLEAN", "trap: password FILE pointer"),
     ("gitcode PAT lives in the gc CLI store ~/.config/gc/auth.json (verified by hash).",
      "CLEAN", "trap: credential store path"),
@@ -55,7 +55,7 @@ CASES: list[tuple[str, str, str]] = [
      "CLEAN", "trap: artifact hash, not a secret"),
     ("Pushed commit ghp_notarealprefix... no — commit a1e284a0 titled 'Normalize schema'.",
      "CLEAN", "trap: commit hash"),
-    ("Service at http://7.246.46.187:7000/v1 healthy; user l00959355 on the box.",
+    ("Service at http://192.0.2.87:7000/v1 healthy; user u01234567 on the box.",
      "CLEAN", "trap: url + username, no credential"),
     ("Session run_id 019eb447-4302-7f32-9eeb-66bfbe5f7d51 wrote 100 memories.",
      "CLEAN", "trap: uuid identifier"),
@@ -64,7 +64,7 @@ CASES: list[tuple[str, str, str]] = [
     # --- CLEAN: ordinary durable facts ---
     ("Root cause of crash 507018 was MoE all-to-all dispatch on the new image.",
      "CLEAN", "ordinary technical fact"),
-    ("DSpark K5 accept_len 2.702 vs native MTP K3 3.022 on the claw agentic trace.",
+    ("DSpark K5 accept_len 2.702 vs native MTP K3 3.022 on the agentic trace.",
      "CLEAN", "measurement"),
 ]
 

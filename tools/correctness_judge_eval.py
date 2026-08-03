@@ -38,12 +38,12 @@ CASES: list[tuple[str, str, str, dict]] = [
      "LANGUAGE_SUSPECT", "chinese narrative about refactor", {}),
     ("用户澄清 available:true 表示部门层面我方对这批机器有独占权利，可直接 kill 同事的进程。",
      "LANGUAGE_SUSPECT", "chinese narrative about hosts rule", {}),
-    ("在 7.150.11.86 上跑 run10 基准，用了 20 份拷贝共 40000 条样本，结果符合预期。",
+    ("在 192.0.2.86 上跑 run10 基准，用了 20 份拷贝共 40000 条样本，结果符合预期。",
      "LANGUAGE_SUSPECT", "chinese narrative with hosts/numbers", {}),
     # --- CONSISTENT traps: English prose that EMBEDS Chinese identifiers/names ---
-    ("Added group superpod_30 from the \"裸机资源分配群\" allocation channel; all entries are available:false.",
+    ("Added group pool_30 from the \"资源分配群\" allocation channel; all entries are available:false.",
      "CONSISTENT", "trap: english prose, quoted CN group name", {}),
-    ("Pulled model /data/models/openPangu-2.0-Flash to host 7.150.11.86 at ~3 MB/s over the WAN egress.",
+    ("Pulled model /data/models/openPangu-2.0-Flash to host 192.0.2.86 at ~3 MB/s over the WAN egress.",
      "CONSISTENT", "trap: english prose, paths/hosts", {}),
     ("Set OPENROUTER_API_KEY before running distdl.py; the token lives in the store .env file.",
      "CONSISTENT", "trap: english prose, env var + path", {}),
@@ -58,15 +58,15 @@ CASES: list[tuple[str, str, str, dict]] = [
     ("On 2026-06-13, the user decided to stop the OmniCache service and bring it up from the "
      "reference yml to test reproducibility, stating '把这个服务停了，直接用reference的yml拉起，再测一次看能不能复现'.",
      "CONSISTENT", "trap: english narrative quoting a full CN quote", {}),
-    ("Caveat from the 2026-07-03 probe: superpod_30 and superpod_75 hosts are from a bare-metal "
-     "resource allocation group (裸机资源分配群) not allocated to the team — NPU-idle does not mean free.",
+    ("Caveat from the 2026-07-03 probe: pool_30 and pool_75 hosts are from a bare-metal "
+     "resource allocation group (资源分配群) not allocated to the team — NPU-idle does not mean free.",
      "CONSISTENT", "trap: english narrative + parenthetical CN gloss", {}),
     ("AGENTS.md, KLAUD_DEBUG.md, and .claude/commands are the designated files for agent operations (运维).",
      "CONSISTENT", "trap: english sentence with one CN word", {}),
     # --- CONSISTENT: ordinary English narrative ---
     ("2026-07-21 refactored the daemon dispatch into ops.py; all 116 unit tests pass on host devbox.",
      "CONSISTENT", "plain english fact", {}),
-    ("DSpark K5 accept_len 2.702 vs native MTP K3 3.022 on the claw agentic trace.",
+    ("DSpark K5 accept_len 2.702 vs native MTP K3 3.022 on the agentic trace.",
      "CONSISTENT", "english measurement", {}),
     ("The user approved the safety full-store scan; 7 real plaintext credentials were redacted in place.",
      "CONSISTENT", "english, records user decision (not misattribution)", {}),
@@ -77,10 +77,10 @@ CASES: list[tuple[str, str, str, dict]] = [
     ("On 2026-06-13 the model safety boundary test wrote 680 records to censor_eval_raw_n20.jsonl.",
      "CONSISTENT", "english, historical event with its own old date", {}),
     # --- CONSISTENT: SGT text date vs UTC ingestion crossing midnight (real FP pattern) ---
-    ("On 2026-07-11, Codex verified root passwordless SSH to all six Pangu 505B image100008 hosts.",
+    ("On 2026-07-11, Codex verified root passwordless SSH to all six Pangu 505B pool hosts.",
      "CONSISTENT", "trap: SGT text date = ingest UTC 07-10 16:33 +8h",
      {"ingested_at": "2026-07-10T16:33:04+00:00", "created_at": "2026-07-10T16:33:04+00:00"}),
-    ("On 2026-07-12, a deep-adapter SGD lr=1e-2 trial completed on host 7.246.46.17: val loss 20.75.",
+    ("On 2026-07-12, a deep-adapter SGD lr=1e-2 trial completed on host 198.51.100.17: val loss 20.75.",
      "CONSISTENT", "trap: SGT text date = ingest UTC 07-11 18:28 +8h",
      {"ingested_at": "2026-07-11T18:28:02+00:00", "created_at": "2026-07-11T18:28:02+00:00"}),
     # --- CONSISTENT: status/revision markers dated at/after original ingestion (updated in place) ---

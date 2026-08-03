@@ -71,11 +71,11 @@ class VerifyTest(unittest.TestCase):
         self.assertNotIn("section_without_citation", self.kinds(body))
 
     def test_a_filled_in_placeholder_is_caught(self):
-        body = "the host 7.150.10.239 failed.^[mem:aaaa1111-2222-3333-4444-555566667777]"
+        body = "the host 192.0.2.39 failed.^[mem:aaaa1111-2222-3333-4444-555566667777]"
         self.assertIn("redaction_lost_ipv4", self.kinds(body))
 
     def test_an_account_id_is_caught(self):
-        body = "run by l00959355.^[mem:aaaa1111-2222-3333-4444-555566667777]"
+        body = "run by u01234567.^[mem:aaaa1111-2222-3333-4444-555566667777]"
         self.assertIn("redaction_lost_account_id", self.kinds(body))
 
     def test_a_number_absent_from_the_material_is_caught(self):

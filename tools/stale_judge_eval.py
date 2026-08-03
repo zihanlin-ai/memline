@@ -26,7 +26,10 @@ from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_PAIRS = HERE / "stale_judge_eval_pairs.jsonl"
+DEFAULT_PAIRS = HERE / "examples" / "stale_pairs.sample.jsonl"
+# The full labeled dataset is built from a real store and holds real memory
+# text, so it lives OUTSIDE this repo (this workspace: .tools/memline-eval/).
+# Pass it with --pairs; the in-repo sample only proves the harness runs.
 
 # (new_id, old_id, label, note)
 LABELED_PAIRS: list[tuple[str, str, str, str]] = [
