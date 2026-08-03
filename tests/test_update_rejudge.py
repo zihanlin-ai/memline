@@ -48,9 +48,9 @@ class UpdateRejudgeTests(unittest.TestCase):
             yield _Span()
 
         self._patches = [
-            (cli, "execute", fake_execute),
-            (cli, "audited", fake_audited),
-            (cli, "output", lambda *a, **k: None),
+            (cli._support, "execute", fake_execute),
+            (cli._support, "audited", fake_audited),
+            (cli._support, "output", lambda *a, **k: None),
         ]
         self._saved = [(obj, name, getattr(obj, name)) for obj, name, _ in self._patches]
         for obj, name, new in self._patches:

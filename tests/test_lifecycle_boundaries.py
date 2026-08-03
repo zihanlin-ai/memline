@@ -453,10 +453,10 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
             verdict="BORN_UNNECESSARY", confidence=0.9, reason="", new_session_id="s1",
         )
         with (
-            patch.object(cli, "execute", side_effect=StalenessError("memory not found: ghost")),
+            patch.object(cli._support, "execute", side_effect=StalenessError("memory not found: ghost")),
             patch("memline.audit.append_live_audit"),
-            patch.object(cli, "detect_writer_context", return_value={"session_id": "s1", "source": "claude"}),
-            patch.object(cli, "_interactive_tty", return_value=False),
+            patch.object(cli._support, "detect_writer_context", return_value={"session_id": "s1", "source": "claude"}),
+            patch.object(cli._support, "_interactive_tty", return_value=False),
         ):
             with self.assertRaises((click.ClickException, StalenessError)):
                 cli.stale_confirm(
@@ -475,8 +475,8 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
             new_session_id="someone-elses-session",
         )
         with (
-            patch.object(cli, "detect_writer_context", return_value={"session_id": "mine"}),
-            patch.object(cli, "_interactive_tty", return_value=False),
+            patch.object(cli._support, "detect_writer_context", return_value={"session_id": "mine"}),
+            patch.object(cli._support, "_interactive_tty", return_value=False),
         ):
             with self.assertRaises(click.ClickException):
                 cli.stale_confirm(
@@ -495,9 +495,9 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
             verdict="TTL_EXPIRED", confidence=1.0, reason="expired",
         )
         with (
-            patch.object(cli, "detect_writer_context", return_value={"session_id": "someone", "source": "claude"}),
-            patch.object(cli, "_interactive_tty", return_value=False),
-            patch.object(cli, "output"),
+            patch.object(cli._support, "detect_writer_context", return_value={"session_id": "someone", "source": "claude"}),
+            patch.object(cli._support, "_interactive_tty", return_value=False),
+            patch.object(cli._support, "output"),
         ):
             cli.stale_confirm(
                 pair_id=row["pair_id"], force=False, json_flag=True, output_format="json"
@@ -520,12 +520,12 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
 
         def run() -> None:
             with (
-                patch.object(cli, "detect_writer_context", return_value={"session_id": "s", "source": "claude"}),
-                patch.object(cli, "execute", return_value=[]),
-                patch.object(cli, "_event_queue_direct", return_value=_EmptyQueue()),
+                patch.object(cli._support, "detect_writer_context", return_value={"session_id": "s", "source": "claude"}),
+                patch.object(cli._support, "execute", return_value=[]),
+                patch.object(cli._support, "_event_queue_direct", return_value=_EmptyQueue()),
                 # memory previews flow through the patched execute now; the
                 # verdict under test never depended on their content
-                patch.object(cli, "output", side_effect=lambda payload, **kw: captured.update(payload)),
+                patch.object(cli._support, "output", side_effect=lambda payload, **kw: captured.update(payload)),
             ):
                 cli.review(session=None, wait=False, check=False, json_flag=True, output_format="json")
 
@@ -558,7 +558,7 @@ class ReviewFlowContractTests(ScratchPairStoreCase):
             new_id="n", old_id="o", old_text="t",
             verdict="SUPERSEDED", confidence=0.9, reason="",
         )
-        with patch.object(cli, "detect_writer_context", return_value={}):
+        with patch.object(cli._support, "detect_writer_context", return_value={}):
             with self.assertRaises(click.ClickException):
                 cli.stale_confirm(pair_id=ts["pair_id"], force=True, json_flag=True, output_format="json")
             with self.assertRaises(click.ClickException):

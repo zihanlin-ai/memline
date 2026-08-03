@@ -21,16 +21,20 @@ import textwrap
 import unittest
 
 from memline import cli
+from memline.cli import _support, daemon, entity, events, memory, stale, wiki
+
+_COMMAND_MODULES = (memory, stale, wiki, daemon, events, entity, _support)
 
 
 def _commands():
-    for name, obj in vars(cli).items():
-        if callable(obj) and not name.startswith("_") and getattr(obj, "__module__", "") == cli.__name__:
-            try:
-                inspect.getsource(obj)
-            except (OSError, TypeError):
-                continue
-            yield name, obj
+    for module in _COMMAND_MODULES:
+        for name, obj in vars(module).items():
+            if callable(obj) and not name.startswith("_")                     and getattr(obj, "__module__", "") == module.__name__:
+                try:
+                    inspect.getsource(obj)
+                except (OSError, TypeError):
+                    continue
+                yield name, obj
 
 
 class DeferredImportTest(unittest.TestCase):
@@ -71,8 +75,11 @@ class DeferredImportTest(unittest.TestCase):
                     called = node.func.id
                     if called in imported or called in assigned or called in args:
                         continue
+                    # A function resolves globals from the module it lives
+                    # in, so that module is the only namespace worth checking.
+                    home = importlib.import_module(func.__module__)
                     with self.subTest(command=name, calls=called):
-                        self.assertTrue(hasattr(cli, called) or hasattr(builtins, called),
+                        self.assertTrue(hasattr(home, called) or hasattr(builtins, called),
                                         f"{name}() calls {called}(), which is neither imported "
                                         "nor defined at module level")
 

@@ -74,12 +74,12 @@ class HandoffBannerTests(unittest.TestCase):
         context = {"session_id": session_id} if session_id else {}
         console = MagicMock()
         with (
-            patch.object(cli, "detect_writer_context", return_value=context),
+            patch.object(cli._support, "detect_writer_context", return_value=context),
             patch("memline.queue.read_alerts", return_value={}),
             patch("memline.staleness.pair_store", return_value=MagicMock(open_count=MagicMock(return_value=stale_open))),
             patch("memline.config.SESSION_ADD_ALERT_THRESHOLD", threshold),
             patch.object(session_stats, "session_stats_store", lambda path=None: store),
-            patch.object(cli, "err_console", console),
+            patch.object(cli._support, "err_console", console),
         ):
             cli.main(ctx=MagicMock(invoked_subcommand=subcommand), json_output=False)
         return console

@@ -22,51 +22,51 @@ class FakePath:
 class CliDaemonTests(unittest.TestCase):
     def test_maybe_daemon_request_falls_back_when_no_runtime_files_exist(self):
         with (
-            patch.dict(cli.os.environ, {}, clear=False),
+            patch.dict(cli._support.os.environ, {}, clear=False),
             patch("memline.daemon.SOCKET_PATH", FakePath(False)),
             patch("memline.daemon.PID_PATH", FakePath(False)),
             patch("memline.daemon.request", side_effect=DaemonUnavailable("missing socket")),
         ):
-            used, result = cli.maybe_daemon_request("search", {"rerank": False})
+            used, result = cli._support.maybe_daemon_request("search", {"rerank": False})
 
         self.assertFalse(used)
         self.assertIsNone(result)
 
     def test_maybe_daemon_request_fails_fast_when_runtime_files_exist_but_daemon_unreachable(self):
         with (
-            patch.dict(cli.os.environ, {}, clear=False),
+            patch.dict(cli._support.os.environ, {}, clear=False),
             patch("memline.daemon.SOCKET_PATH", FakePath(True)),
             patch("memline.daemon.PID_PATH", FakePath(True)),
             patch("memline.daemon.request", side_effect=DaemonUnavailable("permission denied")),
         ):
             with self.assertRaises(click.ClickException) as raised:
-                cli.maybe_daemon_request("search", {"rerank": False})
+                cli._support.maybe_daemon_request("search", {"rerank": False})
 
         self.assertIn("daemon appears to be configured but is not reachable", str(raised.exception))
 
     def test_daemon_timeout_defaults_are_short_for_base_search(self):
-        self.assertEqual(cli.daemon_operation_timeout("search", {"rerank": False}), 30.0)
-        self.assertEqual(cli.daemon_operation_timeout("search", {"rerank": True}), 180.0)
-        self.assertEqual(cli.daemon_operation_timeout("add", {"infer": False}), 30.0)
-        self.assertEqual(cli.daemon_operation_timeout("add", {"infer": True}), 300.0)
+        self.assertEqual(cli._support.daemon_operation_timeout("search", {"rerank": False}), 30.0)
+        self.assertEqual(cli._support.daemon_operation_timeout("search", {"rerank": True}), 180.0)
+        self.assertEqual(cli._support.daemon_operation_timeout("add", {"infer": False}), 30.0)
+        self.assertEqual(cli._support.daemon_operation_timeout("add", {"infer": True}), 300.0)
 
     def test_daemon_timeout_can_be_overridden(self):
-        with patch.dict(cli.os.environ, {"MEMLINE_DAEMON_TIMEOUT": "7.5"}, clear=False):
-            self.assertEqual(cli.daemon_operation_timeout("search", {"rerank": True}), 7.5)
+        with patch.dict(cli._support.os.environ, {"MEMLINE_DAEMON_TIMEOUT": "7.5"}, clear=False):
+            self.assertEqual(cli._support.daemon_operation_timeout("search", {"rerank": True}), 7.5)
 
     def test_invalid_timeout_override_uses_default(self):
-        with patch.dict(cli.os.environ, {"MEMLINE_DAEMON_TIMEOUT": "bad"}, clear=False):
-            self.assertEqual(cli.daemon_operation_timeout("search", {"rerank": False}), 30.0)
+        with patch.dict(cli._support.os.environ, {"MEMLINE_DAEMON_TIMEOUT": "bad"}, clear=False):
+            self.assertEqual(cli._support.daemon_operation_timeout("search", {"rerank": False}), 30.0)
 
     def test_add_appends_live_audit_after_successful_daemon_add(self):
         result = {"results": [{"id": "memory-1", "memory": "Keep audit manifests.", "event": "ADD"}]}
         from memline import queue as queue_mod
 
         with (
-            patch.dict(cli.os.environ, {}, clear=False),
-            patch.object(cli, "maybe_daemon_request", return_value=(True, result)),
+            patch.dict(cli._support.os.environ, {}, clear=False),
+            patch.object(cli._support, "maybe_daemon_request", return_value=(True, result)),
             patch("memline.audit.append_live_audit") as append_live_audit,
-            patch.object(cli, "output") as output,
+            patch.object(cli._support, "output") as output,
             patch.object(queue_mod, "EventQueue") as event_queue,
         ):
             event_queue.return_value.enqueue.return_value = "test-event"
@@ -109,9 +109,9 @@ class CliDaemonTests(unittest.TestCase):
             "dismissed_evidence_count": 3,
         }
         with (
-            patch.object(cli, "audited") as audited,
-            patch.object(cli, "execute", return_value=result) as execute,
-            patch.object(cli, "output") as output,
+            patch.object(cli._support, "audited") as audited,
+            patch.object(cli._support, "execute", return_value=result) as execute,
+            patch.object(cli._support, "output") as output,
         ):
             audited.return_value.__enter__.return_value = span
             cli.stale_protect(
@@ -141,10 +141,10 @@ class CliDaemonTests(unittest.TestCase):
             "new_session_id": "other-session",
         }
         with (
-            patch.object(cli, "_load_open_pair", return_value=(store, pair)),
-            patch.object(cli, "_interactive_tty", return_value=False),
+            patch.object(cli._support, "_load_open_pair", return_value=(store, pair)),
+            patch.object(cli._support, "_interactive_tty", return_value=False),
             patch.object(
-                cli,
+                cli._support,
                 "detect_writer_context",
                 return_value={"session_id": "current-session", "source": "codex"},
             ),
@@ -160,14 +160,14 @@ class CliDaemonTests(unittest.TestCase):
         store.dispose.assert_not_called()
 
         with (
-            patch.object(cli, "_load_open_pair", return_value=(store, pair)),
-            patch.object(cli, "_interactive_tty", return_value=False),
+            patch.object(cli._support, "_load_open_pair", return_value=(store, pair)),
+            patch.object(cli._support, "_interactive_tty", return_value=False),
             patch.object(
-                cli,
+                cli._support,
                 "detect_writer_context",
                 return_value={"session_id": "current-session", "source": "codex"},
             ),
-            patch.object(cli, "output"),
+            patch.object(cli._support, "output"),
         ):
             cli.stale_dismiss(
                 pair_id="pair-1",
@@ -186,9 +186,9 @@ class CliDaemonTests(unittest.TestCase):
             "new_session_id": "other-session",
         }
         with (
-            patch.object(cli, "detect_writer_context", return_value={"session_id": "mine"}),
-            patch.object(cli, "_interactive_tty", return_value=True),
-            patch.object(cli.click, "confirm", return_value=True) as confirm,
+            patch.object(cli._support, "detect_writer_context", return_value={"session_id": "mine"}),
+            patch.object(cli._support, "_interactive_tty", return_value=True),
+            patch.object(cli._support.click, "confirm", return_value=True) as confirm,
         ):
             cli._require_disposition_authority(pair, False, "dismiss")
         confirm.assert_called_once_with(
@@ -197,9 +197,9 @@ class CliDaemonTests(unittest.TestCase):
         )
 
         with (
-            patch.object(cli, "detect_writer_context", return_value={"session_id": "mine"}),
-            patch.object(cli, "_interactive_tty", return_value=True),
-            patch.object(cli.click, "confirm", return_value=False),
+            patch.object(cli._support, "detect_writer_context", return_value={"session_id": "mine"}),
+            patch.object(cli._support, "_interactive_tty", return_value=True),
+            patch.object(cli._support.click, "confirm", return_value=False),
         ):
             with self.assertRaises(click.ClickException) as raised:
                 cli._require_disposition_authority(pair, False, "dismiss")
