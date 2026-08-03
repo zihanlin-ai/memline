@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# memline launcher for a source checkout living inside a workspace at
+# <workspace>/.agent-memory/projects/memline.
+#
+# Install: symlink (or copy) this file to <workspace>/.agent-memory/bin/memline
+# and put that path (or a further symlink, e.g. ~/.local/bin/memline) on PATH.
+#
+# The workspace root is found by walking the symlink chain and testing each
+# hop for ../../.agent-memory/config.toml -- NOT by resolving the chain to its
+# end, because the fully-resolved location of this file is the repo checkout,
+# whose parent directories are not the workspace.
+set -euo pipefail
+
+find_root() {
+    local candidate="$1"
+    while :; do
+        local dir root
+        dir="$(cd "$(dirname "$candidate")" && pwd)"
+        root="$(cd "$dir/../.." 2>/dev/null && pwd)" || return 1
+        if [ -f "$root/.agent-memory/config.toml" ]; then
+            printf '%s\n' "$root"
+            return 0
+        fi
+        if [ -L "$candidate" ]; then
+            local target
+            target="$(readlink "$candidate")"
+            case "$target" in
+                /*) candidate="$target" ;;
+                *) candidate="$dir/$target" ;;
+            esac
+        else
+            return 1
+        fi
+    done
+}
+
+if [ -n "${MEMLINE_CONFIG:-}" ]; then
+    ROOT="$(cd "$(dirname "$MEMLINE_CONFIG")/.." && pwd)"
+elif ! ROOT="$(find_root "${BASH_SOURCE[0]}")"; then
+    echo "memline launcher: no .agent-memory/config.toml found on the symlink chain of $0" >&2
+    echo "  (set MEMLINE_CONFIG, or install this launcher under <workspace>/.agent-memory/bin/)" >&2
+    exit 1
+fi
+
+# The repo checkout is where this file REALLY lives (integrations/bin/ -> repo
+# root two levels up). When the launcher was copied instead of symlinked, fall
+# back to the standard in-workspace checkout location.
+REPO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
+if [ ! -d "$REPO/src/memline" ]; then
+    REPO="$ROOT/.agent-memory/projects/memline"
+fi
+
+export MEMLINE_CONFIG="${MEMLINE_CONFIG:-$ROOT/.agent-memory/config.toml}"
+export PYTHONPATH="$REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+PY="$ROOT/.agent-memory/store/venv/bin/python"
+if [ ! -x "$PY" ]; then
+    echo "memline launcher: store venv missing at $PY (see README: Bootstrap a new workspace)" >&2
+    exit 1
+fi
+exec "$PY" -m memline.cli "$@"

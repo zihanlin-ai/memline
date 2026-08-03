@@ -9,7 +9,7 @@ whitespace collapse, and hyphen-spacing collapse ("pre - patch" == "pre-patch").
 Canonical row = most-linked; linked_memory_ids are unioned. Rows whose
 normalized text is <3 chars or pure digits/punctuation are deleted as noise.
 
-Run with the mem0-local daemon STOPPED; talks to qdrant directly.
+Run with the memline daemon STOPPED; talks to qdrant directly.
 """
 
 import json

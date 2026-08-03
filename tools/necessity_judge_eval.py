@@ -250,7 +250,7 @@ Output JSON only:
 # "prod" = whatever judge.py currently ships, so a rerun of this eval always
 # gates the deployed prompt against the labeled set.
 sys.path.insert(0, str(HERE.parent / "src"))
-from mem0_local.judge import NECESSITY_PROMPT as _PROD_NECESSITY_PROMPT  # noqa: E402
+from memline.judge import NECESSITY_PROMPT as _PROD_NECESSITY_PROMPT  # noqa: E402
 
 PROMPTS["prod"] = _PROD_NECESSITY_PROMPT
 
@@ -290,7 +290,7 @@ PROMPTS["v4"] = PROMPTS["v2"].replace(
 
 def cli_list_index(prefixes: set[str]) -> dict[str, dict]:
     out = subprocess.run(
-        ["mem0-local", "--json", "list", "--page-size", "10000"],
+        ["memline", "--json", "list", "--page-size", "10000"],
         capture_output=True,
         text=True,
     )
@@ -329,8 +329,8 @@ def build(set_path: Path) -> None:
 
 def make_llm():
     sys.path.insert(0, str(HERE.parent / "src"))
-    from mem0_local.runtime import setup_env
-    from mem0_local.config import LLM_APP_NAME, LLM_BASE_URL, LLM_MODEL, LLM_SITE_URL
+    from memline.runtime import setup_env
+    from memline.config import LLM_APP_NAME, LLM_BASE_URL, LLM_MODEL, LLM_SITE_URL
 
     setup_env()
     from mem0.utils.factory import LlmFactory

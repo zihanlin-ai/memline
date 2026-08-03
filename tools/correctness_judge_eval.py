@@ -100,8 +100,8 @@ CASES: list[tuple[str, str, str, dict]] = [
 
 
 def make_llm():
-    from mem0_local.runtime import setup_env
-    from mem0_local.config import LLM_APP_NAME, LLM_BASE_URL, LLM_MODEL, LLM_SITE_URL
+    from memline.runtime import setup_env
+    from memline.config import LLM_APP_NAME, LLM_BASE_URL, LLM_MODEL, LLM_SITE_URL
 
     setup_env()
     from mem0.utils.factory import LlmFactory
@@ -115,7 +115,7 @@ def make_llm():
 
 
 def run() -> int:
-    from mem0_local.judge import judge_correctness
+    from memline.judge import judge_correctness
 
     llm = make_llm()
 

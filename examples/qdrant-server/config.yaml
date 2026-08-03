@@ -1,4 +1,4 @@
-# Qdrant server config template for mem0-local server mode.
+# Qdrant server config template for memline server mode.
 # Place next to qdrantctl.sh under <store>/qdrant-server/ together with the
 # official qdrant binary in ./bin/, and replace the paths below.
 log_level: INFO

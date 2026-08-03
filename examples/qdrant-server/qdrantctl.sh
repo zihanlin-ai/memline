@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Start/stop/status for the local qdrant server backing mem0-local.
+# Start/stop/status for the local qdrant server backing memline.
 # WSL has no systemd, so run `qdrantctl.sh start` after a WSL restart
-# (before any mem0-local command).
+# (before any memline command).
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

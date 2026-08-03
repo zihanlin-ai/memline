@@ -1,6 +1,6 @@
 """One-off: prune entity-graph links pointing at deleted memories.
 
-Run with the mem0-local daemon STOPPED (the in-daemon entity lock cannot
+Run with the memline daemon STOPPED (the in-daemon entity lock cannot
 protect against an external writer). Talks to the qdrant server directly.
 
 - entity rows whose links ALL point at deleted memories -> row deleted

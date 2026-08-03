@@ -49,15 +49,15 @@ BATCH_TAG = "backlog-scan"
 
 
 def cli(*args) -> dict:
-    out = subprocess.run(["mem0-local", "--json", *args], capture_output=True, text=True)
+    out = subprocess.run(["memline", "--json", *args], capture_output=True, text=True)
     if out.returncode != 0:
-        raise RuntimeError(f"mem0-local {' '.join(args[:2])} failed: {out.stderr[:300]}")
+        raise RuntimeError(f"memline {' '.join(args[:2])} failed: {out.stderr[:300]}")
     return json.loads(out.stdout)["data"]
 
 
 def daemon_search(query: str, older_than: str, top_k: int) -> list[dict]:
     """Search via the daemon op so arbitrary filters (created_at lt) pass through."""
-    from mem0_local.daemon import request
+    from memline.daemon import request
 
     result = request(
         {
@@ -90,8 +90,8 @@ def save_progress(probed: set[str]) -> None:
 
 
 def make_judge_llm():
-    from mem0_local.runtime import setup_env
-    from mem0_local.config import LLM_APP_NAME, LLM_BASE_URL, LLM_MODEL, LLM_SITE_URL
+    from memline.runtime import setup_env
+    from memline.config import LLM_APP_NAME, LLM_BASE_URL, LLM_MODEL, LLM_SITE_URL
 
     setup_env()
     from mem0.utils.factory import LlmFactory
@@ -120,8 +120,8 @@ def entry(row: dict) -> dict:
 
 
 def scan_probe(llm, store, probe: dict, stats: dict) -> None:
-    from mem0_local.judge import judge
-    from mem0_local.staleness import STALE_PIN
+    from memline.judge import judge
+    from memline.staleness import STALE_PIN
 
     probe_created = str(probe.get("created_at") or "")
     if not probe_created:
@@ -178,7 +178,7 @@ def main() -> None:
     parser.add_argument("--status", action="store_true", help="Show progress and exit.")
     args = parser.parse_args()
 
-    from mem0_local.staleness import pair_store, result_item_superseded
+    from memline.staleness import pair_store, result_item_superseded
 
     probed = load_progress()
     rows = cli("list", "--page-size", "10000")

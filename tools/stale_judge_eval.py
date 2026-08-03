@@ -69,10 +69,10 @@ LABELED_PAIRS: list[tuple[str, str, str, str]] = [
 
 def cli_get(memory_id: str) -> dict:
     out = subprocess.run(
-        ["mem0-local", "--json", "get", memory_id], capture_output=True, text=True
+        ["memline", "--json", "get", memory_id], capture_output=True, text=True
     )
     if out.returncode != 0:
-        raise SystemExit(f"mem0-local get {memory_id} failed: {out.stderr[:200]}")
+        raise SystemExit(f"memline get {memory_id} failed: {out.stderr[:200]}")
     return json.loads(out.stdout)["data"]
 
 
@@ -88,7 +88,7 @@ def _prefix_index() -> dict[str, dict]:
     global _index_cache
     if _index_cache is None:
         out = subprocess.run(
-            ["mem0-local", "--json", "list", "--page-size", "10000"],
+            ["memline", "--json", "list", "--page-size", "10000"],
             capture_output=True,
             text=True,
         )
@@ -134,8 +134,8 @@ def build(pairs_path: Path) -> None:
 
 def make_llm():
     sys.path.insert(0, str(HERE.parent / "src"))
-    from mem0_local.runtime import setup_env
-    from mem0_local.config import (
+    from memline.runtime import setup_env
+    from memline.config import (
         LLM_APP_NAME,
         LLM_BASE_URL,
         LLM_MODEL,
@@ -162,7 +162,7 @@ def make_llm():
 
 def run(pairs_path: Path) -> int:
     sys.path.insert(0, str(HERE.parent / "src"))
-    from mem0_local.judge import judge
+    from memline.judge import judge
 
     pairs = [json.loads(l) for l in pairs_path.read_text().splitlines() if l.strip()]
     llm = make_llm()

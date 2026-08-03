@@ -1,4 +1,4 @@
-# Mem0 Local Command Reference
+# memline Command Reference
 
 Use built-in help first:
 

@@ -70,8 +70,8 @@ CASES: list[tuple[str, str, str]] = [
 
 
 def make_llm():
-    from mem0_local.runtime import setup_env
-    from mem0_local.config import LLM_APP_NAME, LLM_BASE_URL, LLM_MODEL, LLM_SITE_URL
+    from memline.runtime import setup_env
+    from memline.config import LLM_APP_NAME, LLM_BASE_URL, LLM_MODEL, LLM_SITE_URL
 
     setup_env()
     from mem0.utils.factory import LlmFactory
@@ -93,7 +93,7 @@ _SECRET_LITERALS = [
 
 
 def run() -> int:
-    from mem0_local.judge import judge_safety
+    from memline.judge import judge_safety
 
     llm = make_llm()
 

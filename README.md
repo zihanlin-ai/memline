@@ -1,6 +1,11 @@
-# mem0-local
+# memline
 
-`mem0-local` is a local-first Mem0 CLI wrapper. It keeps runtime state under a configured local store, backs vectors with Qdrant (embedded local path mode by default, or a local Qdrant server via `[vector_store]`), and writes audit metadata for timestamps, writer identity, sessions, schema version, and updates.
+`memline` (formerly `mem0-local`) is a local-first Mem0 CLI wrapper. It keeps
+runtime state under a configured local store, backs vectors with Qdrant
+(embedded local path mode by default, or a local Qdrant server via
+`[vector_store]`), and writes audit metadata for timestamps, writer identity,
+sessions, schema version, and updates. On top of the store it ships the
+deterministic programs of an LLM wiki pipeline (`memline wiki ...`).
 
 ## Architecture
 
@@ -15,23 +20,53 @@ The abstraction is split into four boundaries:
   in `cli.py` and `daemon.py`.
 - Workspace profile: absolute local paths, collection name, model/provider settings.
 - Runtime store: Qdrant path data, Mem0 history DB, model cache, venv, lock file, and secrets.
-- Agent discovery: skill docs and wrappers that tell Codex/Claude to call `mem0-local`.
+- Agent discovery: the `skills/local-memory/` skill and the launchers under
+  `integrations/` that tell Codex/Claude/opencode to call `memline`.
 
 Only the package and workspace profile are meant to be committed. Runtime store contents stay local.
 
-## Install
+## Bootstrap a new workspace
 
-For a new local workspace:
+Everything a fresh workspace needs, in order. `<ws>` is the workspace root.
 
 ```bash
-python -m venv .agent-memory/store/venv
-# 1. Vendored mem0ai FIRST — the official PyPI mem0ai will not work
-#    (this repo depends on workspace modifications in vendor/mem0ai).
-.agent-memory/store/venv/bin/pip install "mem0ai @ git+https://github.com/linzihan-tech/mem0-local.git#subdirectory=vendor/mem0ai"
-# 2. The CLI package itself.
-.agent-memory/store/venv/bin/pip install git+https://github.com/linzihan-tech/mem0-local.git
-export MEM0_LOCAL_CONFIG="$PWD/.agent-memory/config.toml"
+# 0. The checkout. The standard location is inside the workspace:
+git clone https://github.com/linzihan-tech/memline.git <ws>/.agent-memory/projects/memline
+
+# 1. The store venv. Vendored mem0ai FIRST -- the official PyPI mem0ai will
+#    not work (this package depends on the modifications in vendor/mem0ai).
+python -m venv <ws>/.agent-memory/store/venv
+<ws>/.agent-memory/store/venv/bin/pip install -e <ws>/.agent-memory/projects/memline/vendor/mem0ai
+<ws>/.agent-memory/store/venv/bin/pip install -e <ws>/.agent-memory/projects/memline
+
+# 2. The workspace profile. Copy the template and replace every path.
+cp <ws>/.agent-memory/projects/memline/examples/config.toml <ws>/.agent-memory/config.toml
+
+# 3. Secrets. Put provider keys in the configured env file; never commit it.
+touch <ws>/.agent-memory/store/.env
+
+# 4. The launcher, on PATH.
+mkdir -p <ws>/.agent-memory/bin
+ln -s ../projects/memline/integrations/bin/memline <ws>/.agent-memory/bin/memline
+ln -s <ws>/.agent-memory/bin/memline ~/.local/bin/memline
+
+# 5. Agent integration (each is optional):
+#    - skill: symlink skills/local-memory into the workspace agent config,
+#      e.g. <ws>/.agents/skills/local-memory -> ../../.agent-memory/projects/memline/skills/local-memory
+#    - opencode session attribution:
+mkdir -p <ws>/.opencode/plugin
+ln -s ../../.agent-memory/projects/memline/integrations/opencode/memline.js <ws>/.opencode/plugin/memline.js
+
+# 6. Larger stores: run a local qdrant server (see examples/qdrant-server/)
+#    and add [vector_store] to config.toml.
+
+# 7. Verify.
+memline status
 ```
+
+When the checkout lives elsewhere, or without the launcher, set
+`MEMLINE_CONFIG=<ws>/.agent-memory/config.toml` and run
+`python -m memline.cli` from the venv directly.
 
 For development from a checkout:
 
@@ -41,8 +76,6 @@ For development from a checkout:
 
 The CLI fails fast with a clear error if the official mem0ai package is
 installed instead of the vendored build.
-
-Put provider secrets in the configured env file, for example `.agent-memory/store/.env`. Do not commit that file.
 
 ### LLM endpoints
 
@@ -59,7 +92,7 @@ where provider pinning and routing hints belong:
 model = "kimi-for-coding"
 base_url = "http://relay.internal:3000/v1"
 api_key_json = "~/.local/share/opencode/auth.json"
-api_key_json_path = "huawei.key"
+api_key_json_path = "provider.key"
 
 [llm.fallback]
 model = "deepseek/deepseek-v4-flash"
@@ -105,13 +138,13 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 ## Commands
 
 ```bash
-mem0-local status
-mem0-local add "accurate atomic memory text"
-mem0-local search "semantic query"
-mem0-local list --filter agent_id=codex
-mem0-local get <memory_id>
-mem0-local update <memory_id> "corrected memory text"
-mem0-local delete <memory_id>
+memline status
+memline add "accurate atomic memory text"
+memline search "semantic query"
+memline list --filter agent_id=codex
+memline get <memory_id>
+memline update <memory_id> "corrected memory text"
+memline delete <memory_id>
 ```
 
 Routine agents should call `add` with only the memory text. The CLI auto-detects agent/session context when possible, writes timestamps and schema metadata, and returns JSON in agent contexts.
@@ -127,12 +160,12 @@ reads hard signals only -- identity env vars, then the `AI_AGENT` tag, then
 ancestor executable names -- and never the memory text itself.
 
 Claude Code and Codex export their session id to child processes on their own.
-opencode does not, so `.opencode/plugin/mem0-local.js` injects
-`OPENCODE_SESSION_ID` (and `OPENCODE_CALL_ID`) into every shell command through
-opencode's `shell.env` plugin hook. Without the plugin, opencode writes are
-still attributed via ancestor-process detection, but carry no session id.
-Plugins load at opencode startup: restart a long-lived `opencode serve` after
-installing or editing it.
+opencode does not, so `integrations/opencode/memline.js` (installed at
+`.opencode/plugin/memline.js`) injects `OPENCODE_SESSION_ID` (and
+`OPENCODE_CALL_ID`) into every shell command through opencode's `shell.env`
+plugin hook. Without the plugin, opencode writes are still attributed via
+ancestor-process detection, but carry no session id. Plugins load at opencode
+startup: restart a long-lived `opencode serve` after installing or editing it.
 
 ## Optional Daemon
 
@@ -142,9 +175,9 @@ that listens on a Unix socket under the configured store directory; it does not
 open a TCP port.
 
 ```bash
-mem0-local daemon start
-mem0-local daemon status
-mem0-local daemon stop
+memline daemon start
+memline daemon status
+memline daemon stop
 ```
 
 When the daemon is running, `add`, `search`, `list`, `get`, `update`, `delete`,
@@ -153,16 +186,16 @@ back to the direct one-shot CLI path. To force the direct path for debugging,
 stop the daemon first and then run:
 
 ```bash
-MEM0_LOCAL_NO_DAEMON=1 mem0-local search "semantic query"
+MEMLINE_NO_DAEMON=1 memline search "semantic query"
 ```
 
 ## Configuration
 
 The CLI locates configuration in this order:
 
-1. `MEM0_LOCAL_CONFIG`
+1. `MEMLINE_CONFIG`
 2. `.agent-memory/config.toml` found from the current directory upward
-3. `~/.config/mem0-local/config.toml`
+3. `~/.config/memline/config.toml`
 
 See `examples/config.toml` for a portable template.
 
@@ -205,8 +238,13 @@ identity migrations use `ledger-identity-migration-*.jsonl`.
 
 ## Agent Integration
 
-Agent-facing operating guidance is deployment-owned and intentionally not
-bundled in this repository. A workspace can keep its memory skill under its
-own agent configuration (for example, `.agents/skills/local-memory/`) so local
-policies, handoff rules, and higher-level retrieval layers can evolve without
-coupling them to the reusable `mem0-local` CLI package.
+Agent-facing operating guidance ships in this repository at
+`skills/local-memory/` — the skill that teaches an agent the memory
+discipline (atomic raw writes, retrieval habits, lifecycle hygiene, the
+handoff review) and the wiki pipeline's gates. A workspace installs it by
+symlinking the directory into its agent configuration (see Bootstrap step 5),
+so the live skill and the committed one are the same files.
+
+The skill states policy in deployment-neutral terms; facts specific to one
+deployment (hosts, endpoints, project names) belong in that workspace's
+memory store and configuration, not in the skill text.
