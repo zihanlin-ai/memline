@@ -1,0 +1,2127 @@
+{
+ "commands": {
+  "<root>": [
+   {
+    "default": "False",
+    "name": "json_output",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   }
+  ],
+  "add": [
+   {
+    "default": "None",
+    "name": "text",
+    "opts": [
+     "text"
+    ],
+    "required": false
+   },
+   {
+    "default": "'workspace'",
+    "name": "user_id",
+    "opts": [
+     "--user-id",
+     "-u"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "agent_id",
+    "opts": [
+     "--agent-id"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "app_id",
+    "opts": [
+     "--app-id"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "run_id",
+    "opts": [
+     "--run-id"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "messages",
+    "opts": [
+     "--messages"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "file",
+    "opts": [
+     "--file",
+     "-f"
+    ],
+    "required": false
+   },
+   {
+    "default": "[]",
+    "name": "metadata",
+    "opts": [
+     "--metadata",
+     "-m"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "timestamp",
+    "opts": [
+     "--created-at",
+     "--timestamp"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "ledger_timestamp",
+    "opts": [
+     "--ledger-timestamp"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "infer_opt",
+    "opts": [
+     "--infer",
+     "--no-infer"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "supersedes",
+    "opts": [
+     "--supersedes"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "wait",
+    "opts": [
+     "--wait"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "daemon": [],
+  "daemon start": [
+   {
+    "default": "90.0",
+    "name": "wait_seconds",
+    "opts": [
+     "--wait"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "daemon status": [
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "daemon stop": [
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "delete": [
+   {
+    "default": "None",
+    "name": "memory_id",
+    "opts": [
+     "memory_id"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "all_",
+    "opts": [
+     "--all"
+    ],
+    "required": false
+   },
+   {
+    "default": "'workspace'",
+    "name": "user_id",
+    "opts": [
+     "--user-id",
+     "-u"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "agent_id",
+    "opts": [
+     "--agent-id"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "run_id",
+    "opts": [
+     "--run-id"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "force",
+    "opts": [
+     "--force"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "dry_run",
+    "opts": [
+     "--dry-run"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "embed-test": [
+   {
+    "default": "None",
+    "name": "text",
+    "opts": [
+     "text"
+    ],
+    "required": true
+   }
+  ],
+  "entity": [],
+  "entity delete": [
+   {
+    "default": "None",
+    "name": "entity_id",
+    "opts": [
+     "entity_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "dry_run",
+    "opts": [
+     "--dry-run"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "force",
+    "opts": [
+     "--force"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "entity list": [
+   {
+    "default": "None",
+    "name": "entity_type",
+    "opts": [
+     "--type"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "contains",
+    "opts": [
+     "--contains"
+    ],
+    "required": false
+   },
+   {
+    "default": "1",
+    "name": "page",
+    "opts": [
+     "--page"
+    ],
+    "required": false
+   },
+   {
+    "default": "50",
+    "name": "page_size",
+    "opts": [
+     "--page-size"
+    ],
+    "required": false
+   },
+   {
+    "default": "50000",
+    "name": "scan_limit",
+    "opts": [
+     "--scan-limit"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'table'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "event": [],
+  "event ack": [
+   {
+    "default": "None",
+    "name": "event_id",
+    "opts": [
+     "event_id"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "all_",
+    "opts": [
+     "--all"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "event list": [
+   {
+    "default": "None",
+    "name": "status",
+    "opts": [
+     "--status"
+    ],
+    "required": false
+   },
+   {
+    "default": "1",
+    "name": "page",
+    "opts": [
+     "--page"
+    ],
+    "required": false
+   },
+   {
+    "default": "50",
+    "name": "page_size",
+    "opts": [
+     "--page-size"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'table'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "event retry": [
+   {
+    "default": "None",
+    "name": "event_id",
+    "opts": [
+     "event_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "event status": [
+   {
+    "default": "None",
+    "name": "event_id",
+    "opts": [
+     "event_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "get": [
+   {
+    "default": "None",
+    "name": "memory_id",
+    "opts": [
+     "memory_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "resolve_head",
+    "opts": [
+     "--resolve-head"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "history": [
+   {
+    "default": "None",
+    "name": "memory_id",
+    "opts": [
+     "memory_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "invalidate": [
+   {
+    "default": "None",
+    "name": "memory_id",
+    "opts": [
+     "memory_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "by",
+    "opts": [
+     "--by"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "reason",
+    "opts": [
+     "--reason"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "list": [
+   {
+    "default": "'workspace'",
+    "name": "user_id",
+    "opts": [
+     "--user-id",
+     "-u"
+    ],
+    "required": false
+   },
+   {
+    "default": "1",
+    "name": "page",
+    "opts": [
+     "--page"
+    ],
+    "required": false
+   },
+   {
+    "default": "100",
+    "name": "page_size",
+    "opts": [
+     "--page-size"
+    ],
+    "required": false
+   },
+   {
+    "default": "[]",
+    "name": "filter_json",
+    "opts": [
+     "--filter"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'table'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "review": [
+   {
+    "default": "None",
+    "name": "session",
+    "opts": [
+     "--session"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "wait",
+    "opts": [
+     "--wait"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "check",
+    "opts": [
+     "--check"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "revive": [
+   {
+    "default": "None",
+    "name": "memory_id",
+    "opts": [
+     "memory_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "search": [
+   {
+    "default": "None",
+    "name": "query",
+    "opts": [
+     "query"
+    ],
+    "required": false
+   },
+   {
+    "default": "'workspace'",
+    "name": "user_id",
+    "opts": [
+     "--user-id",
+     "-u"
+    ],
+    "required": false
+   },
+   {
+    "default": "10",
+    "name": "top_k",
+    "opts": [
+     "--limit",
+     "--top-k",
+     "-k"
+    ],
+    "required": false
+   },
+   {
+    "default": "0.1",
+    "name": "threshold",
+    "opts": [
+     "--threshold"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "rerank",
+    "opts": [
+     "--rerank"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "keyword",
+    "opts": [
+     "--keyword"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "include_superseded",
+    "opts": [
+     "--include-superseded"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "fields",
+    "opts": [
+     "--fields"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "explain",
+    "opts": [
+     "--explain"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "stale": [],
+  "stale confirm": [
+   {
+    "default": "None",
+    "name": "pair_id",
+    "opts": [
+     "pair_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "force",
+    "opts": [
+     "--force"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "stale dismiss": [
+   {
+    "default": "None",
+    "name": "pair_id",
+    "opts": [
+     "pair_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "force",
+    "opts": [
+     "--force"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "stale list": [
+   {
+    "default": "None",
+    "name": "session",
+    "opts": [
+     "--session"
+    ],
+    "required": false
+   },
+   {
+    "default": "100",
+    "name": "limit",
+    "opts": [
+     "--limit"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "stale merge": [
+   {
+    "default": "None",
+    "name": "pair_id",
+    "opts": [
+     "pair_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "merged_text",
+    "opts": [
+     "merged_text"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "force",
+    "opts": [
+     "--force"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "stale protect": [
+   {
+    "default": "None",
+    "name": "memory_id",
+    "opts": [
+     "memory_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "'displacement'",
+    "name": "kind",
+    "opts": [
+     "--kind"
+    ],
+    "required": false
+   },
+   {
+    "default": "30.0",
+    "name": "days",
+    "opts": [
+     "--days"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "reason",
+    "opts": [
+     "--reason"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "stale protected": [],
+  "stale protected list": [
+   {
+    "default": "False",
+    "name": "include_expired",
+    "opts": [
+     "--include-expired"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "stale ttl": [
+   {
+    "default": "None",
+    "name": "pair_id",
+    "opts": [
+     "pair_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "days",
+    "opts": [
+     "--days"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "stale unprotect": [
+   {
+    "default": "None",
+    "name": "memory_id",
+    "opts": [
+     "memory_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "start": [
+   {
+    "default": "1.0",
+    "name": "days",
+    "opts": [
+     "--days"
+    ],
+    "required": false
+   },
+   {
+    "default": "100",
+    "name": "limit",
+    "opts": [
+     "--limit"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "status": [
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "ttl": [
+   {
+    "default": "None",
+    "name": "memory_id",
+    "opts": [
+     "memory_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "days",
+    "opts": [
+     "--days"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "clear",
+    "opts": [
+     "--clear"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'json'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "update": [
+   {
+    "default": "None",
+    "name": "memory_id",
+    "opts": [
+     "memory_id"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "text",
+    "opts": [
+     "text"
+    ],
+    "required": true
+   },
+   {
+    "default": "[]",
+    "name": "metadata",
+    "opts": [
+     "--metadata",
+     "-m"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki": [],
+  "wiki bundle": [
+   {
+    "default": "None",
+    "name": "memory_ids",
+    "opts": [
+     "memory_ids"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "ids_file",
+    "opts": [
+     "--ids-file"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "wiki_root",
+    "opts": [
+     "--wiki-root"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "out",
+    "opts": [
+     "--out"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "mapping_out",
+    "opts": [
+     "--mapping-out"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "no_sanitize",
+    "opts": [
+     "--no-sanitize"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki check-draft": [
+   {
+    "default": "None",
+    "name": "draft",
+    "opts": [
+     "draft"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "review",
+    "opts": [
+     "--review"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "review_bundle",
+    "opts": [
+     "--review-bundle"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "sensitivity_review",
+    "opts": [
+     "--sensitivity-review"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "strict",
+    "opts": [
+     "--strict"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki check-pages": [
+   {
+    "default": "None",
+    "name": "wiki_root",
+    "opts": [
+     "wiki_root"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "strict",
+    "opts": [
+     "--strict"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki check-threads": [
+   {
+    "default": "None",
+    "name": "draft",
+    "opts": [
+     "draft"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "topics",
+    "opts": [
+     "--topics"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "profiles",
+    "opts": [
+     "--profiles"
+    ],
+    "required": false
+   },
+   {
+    "default": "10",
+    "name": "show",
+    "opts": [
+     "--show"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki close-run": [
+   {
+    "default": "None",
+    "name": "state",
+    "opts": [
+     "state"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "started_at",
+    "opts": [
+     "--started-at"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "source_dir",
+    "opts": [
+     "--source-dir"
+    ],
+    "required": false
+   },
+   {
+    "default": "'workspace'",
+    "name": "user_id",
+    "opts": [
+     "--user-id",
+     "-u"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki draft": [
+   {
+    "default": "None",
+    "name": "topics",
+    "opts": [
+     "topics"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "out_dir",
+    "opts": [
+     "--out-dir"
+    ],
+    "required": true
+   },
+   {
+    "default": "PosixPath('.')",
+    "name": "wiki_root",
+    "opts": [
+     "--wiki-root"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "only",
+    "opts": [
+     "--only"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "review_file",
+    "opts": [
+     "--review-file"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "prompt",
+    "opts": [
+     "--prompt"
+    ],
+    "required": false
+   },
+   {
+    "default": "128000",
+    "name": "max_tokens",
+    "opts": [
+     "--max-tokens"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "force",
+    "opts": [
+     "--force"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki index": [
+   {
+    "default": "None",
+    "name": "wiki_root",
+    "opts": [
+     "wiki_root"
+    ],
+    "required": false
+   },
+   {
+    "default": "3",
+    "name": "min_shared",
+    "opts": [
+     "--min-shared"
+    ],
+    "required": false
+   },
+   {
+    "default": "0.15",
+    "name": "min_share",
+    "opts": [
+     "--min-share"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki nav": [
+   {
+    "default": "None",
+    "name": "wiki_root",
+    "opts": [
+     "wiki_root"
+    ],
+    "required": false
+   },
+   {
+    "default": "True",
+    "name": "check",
+    "opts": [
+     "--check",
+     "--no-check"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "strict",
+    "opts": [
+     "--strict"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki plan": [
+   {
+    "default": "None",
+    "name": "out",
+    "opts": [
+     "--out"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "since",
+    "opts": [
+     "--since"
+    ],
+    "required": false
+   },
+   {
+    "default": "275",
+    "name": "max_memories",
+    "opts": [
+     "--max-memories"
+    ],
+    "required": false
+   },
+   {
+    "default": "60",
+    "name": "pack_threshold",
+    "opts": [
+     "--pack-threshold"
+    ],
+    "required": false
+   },
+   {
+    "default": "'workspace'",
+    "name": "user_id",
+    "opts": [
+     "--user-id",
+     "-u"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki prepare-review": [
+   {
+    "default": "None",
+    "name": "draft",
+    "opts": [
+     "draft"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "out",
+    "opts": [
+     "--out"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "topics",
+    "opts": [
+     "--topics"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "sensitivity_review",
+    "opts": [
+     "--sensitivity-review"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki profile": [
+   {
+    "default": "None",
+    "name": "plan",
+    "opts": [
+     "plan"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "prompt",
+    "opts": [
+     "--prompt"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "out_dir",
+    "opts": [
+     "--out-dir"
+    ],
+    "required": true
+   },
+   {
+    "default": "'session,pack,session-part'",
+    "name": "kinds",
+    "opts": [
+     "--kinds"
+    ],
+    "required": false
+   },
+   {
+    "default": "2",
+    "name": "concurrency",
+    "opts": [
+     "--concurrency"
+    ],
+    "required": false
+   },
+   {
+    "default": "128000",
+    "name": "max_tokens",
+    "opts": [
+     "--max-tokens"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "source_dir",
+    "opts": [
+     "--source-dir"
+    ],
+    "required": false
+   },
+   {
+    "default": "'workspace'",
+    "name": "user_id",
+    "opts": [
+     "--user-id",
+     "-u"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki review-draft": [
+   {
+    "default": "None",
+    "name": "draft",
+    "opts": [
+     "draft"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "out",
+    "opts": [
+     "--out"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "review_bundle_out",
+    "opts": [
+     "--review-bundle-out"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "topics",
+    "opts": [
+     "--topics"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "sensitivity_review",
+    "opts": [
+     "--sensitivity-review"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "prompt",
+    "opts": [
+     "--prompt"
+    ],
+    "required": false
+   },
+   {
+    "default": "3",
+    "name": "passes",
+    "opts": [
+     "--passes"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "fresh",
+    "opts": [
+     "--fresh"
+    ],
+    "required": false
+   },
+   {
+    "default": "64000",
+    "name": "max_tokens",
+    "opts": [
+     "--max-tokens"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
+  "wiki suggest": [
+   {
+    "default": "None",
+    "name": "associations",
+    "opts": [
+     "associations"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "profile_dir",
+    "opts": [
+     "--profiles"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "out",
+    "opts": [
+     "--out"
+    ],
+    "required": true
+   },
+   {
+    "default": "1",
+    "name": "run",
+    "opts": [
+     "--run"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "ledger",
+    "opts": [
+     "--ledger"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "wiki_root",
+    "opts": [
+     "--wiki-root"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "skip_page_check",
+    "opts": [
+     "--skip-page-check"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ]
+ },
+ "scripts": {
+  "memline": "memline.cli:cli_main",
+  "memline-backfill-metadata": "memline.backfill_metadata:main",
+  "memline-ingest-ledger": "memline.ingest_ledger:main"
+ }
+}
