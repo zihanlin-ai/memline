@@ -83,6 +83,7 @@ class CliDaemonTests(unittest.TestCase):
                 ledger_timestamp=None,
                 infer_opt=None,
                 supersedes=None,
+                force=False,
                 wait=False,
                 json_flag=True,
                 output_format="json",

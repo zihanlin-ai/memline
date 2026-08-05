@@ -60,6 +60,20 @@ adds. The only required work is writing accurate, atomic memory text.
 memline add "memory text"
 ```
 
+Raw adds deterministically reject non-Latin letters before any write or audit
+mutation. Rewrite the entry with English narration. If non-Latin content must
+be preserved, explicitly override only this gate:
+
+```bash
+memline add "required non-Latin text" --force
+```
+
+`--force` on `add` never bypasses the raw-write length cap or any other input
+validation. Extraction inputs (`--infer`, `--messages`, and default `--file`)
+are not screened as raw narration because their source conversation may be
+non-English while the extracted memories are English; the post-write
+correctness judge still checks stored results.
+
 Every successful live `add` appends one external audit row to
 `.agent-memory/manifests/live-YYYY-MM.jsonl`. The row includes the raw input
 content, infer mode, automatic metadata, scope, Mem0 result, memory ids/result

@@ -115,6 +115,14 @@
    },
    {
     "default": "False",
+    "name": "force",
+    "opts": [
+     "--force"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
     "name": "wait",
     "opts": [
      "--wait"

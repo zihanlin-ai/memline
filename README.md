@@ -149,6 +149,13 @@ memline delete <memory_id>
 
 Routine agents should call `add` with only the memory text. The CLI auto-detects agent/session context when possible, writes timestamps and schema metadata, and returns JSON in agent contexts.
 
+Raw adds reject non-Latin letters before any store or audit mutation. Rewrite
+the narration in English, or use `memline add "..." --force` only when the
+non-Latin content must be preserved. This override applies only to the language
+gate; the raw-write length cap remains absolute. Extraction input is checked
+after storage by the existing correctness judge rather than at the source-text
+boundary.
+
 Use `list --filter ...` for structured audits by metadata fields such as `agent_id`, `run_id`, `source`, `session_id`, `created_at`, or `ingested_at`. Keep `search` for semantic retrieval.
 
 ### Writer attribution

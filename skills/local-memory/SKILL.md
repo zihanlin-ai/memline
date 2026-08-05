@@ -38,6 +38,7 @@ Call `memline` directly; it is installed on PATH.
 ```bash
 memline start                                     # session bootstrap: recall recently ingested memories (last 1d)
 memline add "accurate memory text"
+memline add "required non-Latin text" --force    # language-gate override; never bypasses the raw length cap
 memline add "newer fact" --supersedes <old_id>   # when this write knowingly replaces an old entry
 memline search "query"                            # retired entries excluded by default
 memline search "query" --include-superseded       # history digs: include retired entries
@@ -64,6 +65,7 @@ explicitly only for portability, or `--output text` for human-readable output.
 
 - Write small, frequent, single-fact entries — one `add` per atomic fact, called often — not big multi-fact paragraphs. Raw writes enforce a hard length cap (default 600 chars): an over-cap `add` errors before touching the store — split it into multiple single-fact adds (or use `--infer` extraction for genuinely long conversational input). `update` may keep or shrink an over-cap legacy entry but cannot grow it past the cap.
 - Plain-text `add` stores the exact text verbatim by default (raw mode): synchronous, ~1s, returns the memory id, exact-hash dedup, near-duplicate annotation, entity-linked. Because no LLM normalizes the text, the writer must produce entries that are atomic, self-contained (no pronouns or session-relative references), dated, and rich in exact identifiers.
+- Raw adds deterministically reject non-Latin letters before any store or audit mutation. Rewrite the narration in English; use `--force` only when non-Latin text must be preserved. This override applies only to the language gate and never bypasses the raw length cap. Extraction inputs (`--infer` / `--messages` / default `--file`) are not raw writes and remain governed by the post-write correctness judge.
 - Raw storage is the default because agent-authored entries are already atomic facts and verbatim fidelity beats LLM rewriting for paths, hosts, commands, and dates (policy updated 2026-07-16; the older infer-by-default rule is superseded).
 - Raw adds hash-dedup exact re-fires (event `NONE` with `duplicate_of`) and annotate semantic near-duplicates with `near_duplicate_of`/`near_duplicate_score` (cosine >= 0.95) without skipping the store — review the hint and `delete --force` the redundant copy if it truly duplicates.
 

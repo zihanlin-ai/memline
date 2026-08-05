@@ -212,6 +212,11 @@ def add(
         "--supersedes",
         help="Comma-separated memory ids this new entry supersedes (raw adds only): they are invalidated with superseded_by=<new id>.",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Allow non-Latin text in a raw write. Only bypasses the language gate; never the raw-write length cap.",
+    ),
     wait: bool = typer.Option(
         False,
         "--wait",
@@ -236,8 +241,11 @@ def add(
             "--supersedes requires the raw add path (extraction adds are async and have no id yet)."
         )
     content = _support.read_content(text, messages, file)
+    detected_non_latin: list[str] = []
     if not infer:
+        # The cap is absolute: --force only applies after this check passes.
         _support.check_raw_length(content)
+        detected_non_latin = _support.check_raw_language(content, force=force)
     meta = _support.parse_json_or_key_values(metadata, option_name="--metadata")
     auto_context = _support.detect_writer_context()
     if auto_context.get("source"):
@@ -297,6 +305,8 @@ def add(
             "file": str(file) if file else None,
             "content": content,
             "infer": infer,
+            "language_override": bool(force and detected_non_latin),
+            "non_latin_character_count": len(detected_non_latin),
         },
         metadata=meta,
         scope=_support.scope_dict(user_id, agent_id, app_id, run_id),

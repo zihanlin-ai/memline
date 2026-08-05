@@ -1,0 +1,29 @@
+{
+  "description": "memline session recall for Codex.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "^startup$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /workspace/.agent-memory/projects/memline/integrations/codex/session_start.sh",
+            "statusMessage": "Recalling recent memories",
+            "additionalContextLimit": 10000
+          }
+        ]
+      },
+      {
+        "matcher": "^compact$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /workspace/.agent-memory/projects/memline/integrations/codex/session_start.sh",
+            "statusMessage": "Restoring this session's memories after compaction",
+            "additionalContextLimit": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

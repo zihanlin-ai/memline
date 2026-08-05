@@ -9,6 +9,7 @@ import re
 import stat
 import sys
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -524,6 +525,36 @@ def check_raw_length(content: Any, *, previous: Optional[str] = None) -> None:
     )
 
 
+def non_latin_letters(content: Any) -> list[str]:
+    """Return letter-like characters outside the Latin script.
+
+    The raw-write gate is deterministic: it classifies Unicode letters and
+    ideographs by their assigned character name, without a language model or
+    ratio heuristic. Numbers, punctuation, symbols, emoji and combining marks
+    do not trip the gate; Latin letters with diacritics remain allowed.
+    """
+    if not isinstance(content, str):
+        return []
+    return [
+        char
+        for char in content
+        if unicodedata.category(char).startswith("L")
+        and "LATIN" not in unicodedata.name(char, "")
+    ]
+
+
+def check_raw_language(content: Any, *, force: bool = False) -> list[str]:
+    """Reject raw non-Latin narration unless explicitly overridden."""
+    detected = non_latin_letters(content)
+    if detected and not force:
+        raise click.ClickException(
+            "Non-English input detected. Rewrite the memory in English before "
+            "adding it. If non-English content must be preserved, rerun the "
+            "command with --force."
+        )
+    return detected
+
+
 def parse_messages_or_text(raw: str) -> Any:
     try:
         parsed = json.loads(raw)
@@ -942,5 +973,3 @@ def _event_queue_direct():
 
 def cli_main() -> None:
     app(prog_name="memline")
-
-
