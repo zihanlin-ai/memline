@@ -36,7 +36,7 @@ separable even though they now ship from one repository.
 Call `memline` directly; it is installed on PATH.
 
 ```bash
-memline start                                     # session bootstrap: recall recently ingested memories (last 1d)
+memline start                                     # manual recent-window recall / hook fallback
 memline add "accurate memory text"
 memline add "required non-Latin text" --force    # language-gate override; never bypasses the raw length cap
 memline add "newer fact" --supersedes <old_id>   # when this write knowingly replaces an old entry
@@ -77,7 +77,9 @@ explicitly only for portability, or `--output text` for human-readable output.
 
 ### Retrieval
 
-- At session start, after reading `.agent-memory/MEMORY.md`, recall the last day with `memline start`; then use semantic `search` for task-specific recall.
+- Supported harness integrations inject a recent window when a new context starts and restore this session's writes after context compaction. Do not read `.agent-memory/MEMORY.md` or call `memline start` as routine session bootstrap; resume, fork, and clear preserve or reset context without another recall injection.
+- Use `memline search` whenever task-specific or older context might help. Automatic recall is deliberately limited by time, count, and character budget, so it does not replace semantic retrieval.
+- Use `memline start` only to inspect or widen the recent window manually, or as a fallback when the harness recall hook is unavailable or demonstrably failed.
 - Keep `search` as pure semantic retrieval: pass a query, optionally `--top-k` or `--rerank`, and do not use it for agent/session/time scoping. Default retrieval is hybrid (vector + BM25); `--keyword` switches to pure BM25 term matching (exact identifiers, paths, error strings). The local `--threshold` default is 0.1 (official CLI: 0.3) on purpose — local hybrid scores are distributed lower; do not "align" it to 0.3.
 - Prefer English search terms, exact paths, commands, ports, model names, and environment variables. If the user asks in Chinese, keep the Chinese intent but add the likely English entities/keywords.
 - Use `list --filter ...` only when the user asks to enumerate/audit memories by structured fields such as time range, writer, session, source, or import batch. Field details: [commands.md](references/commands.md).

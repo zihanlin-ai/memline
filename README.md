@@ -50,12 +50,13 @@ mkdir -p <ws>/.agent-memory/bin
 ln -s ../projects/memline/integrations/bin/memline <ws>/.agent-memory/bin/memline
 ln -s <ws>/.agent-memory/bin/memline ~/.local/bin/memline
 
-# 5. Agent integration (each is optional):
+# 5. Agent integration (each harness is optional):
 #    - skill: symlink skills/local-memory into the workspace agent config,
 #      e.g. <ws>/.agents/skills/local-memory -> ../../.agent-memory/projects/memline/skills/local-memory
-#    - opencode session attribution:
+#    - opencode session attribution and automatic recall:
 mkdir -p <ws>/.opencode/plugin
 ln -s ../../.agent-memory/projects/memline/integrations/opencode/memline.js <ws>/.opencode/plugin/memline.js
+ln -s ../../.agent-memory/projects/memline/integrations/opencode/session_recall.js <ws>/.opencode/plugin/session_recall.js
 
 # 6. Larger stores: run a local qdrant server (see examples/qdrant-server/)
 #    and add [vector_store] to config.toml.
@@ -63,6 +64,34 @@ ln -s ../../.agent-memory/projects/memline/integrations/opencode/memline.js <ws>
 # 7. Verify.
 memline status
 ```
+
+### Automatic recall hooks
+
+Installed harness hooks own session bootstrap: a fresh context receives the
+recent memory window, and the first message after context compaction receives
+the memories written by that session. Resume and fork reuse their inherited
+context without injecting the same payload again. Agents should still use
+`memline search` for task-specific or older history and `memline add` as facts
+are established.
+
+- **OpenCode:** install both plugins shown in bootstrap step 5, then restart a
+  long-lived `opencode serve`. `memline.js` supplies session attribution;
+  `session_recall.js` performs recall on `session.created` and
+  `session.compacted`.
+- **Claude Code:** register
+  `integrations/claude-code/session_start.sh` as a `SessionStart` command with
+  matcher `startup|compact`, then restart Claude Code. Do not register resume or
+  fork because their transcript already contains the startup injection.
+- **Codex:** expose `integrations/codex/hooks.json` as a plugin hook or merge it
+  into `~/.codex/hooks.json`. Use `hooks.windows-wsl.json` when Codex runs on a
+  Windows host and memline lives in WSL. Approve the hook through `/hooks` in
+  the interactive TUI; trust is pinned to the hook definition hash, so approve
+  it again after changing that definition.
+
+Every adapter appends invocation evidence to
+`.agent-memory/store/hook-invocations.log`. Check that log before falling back
+to a manual `memline start`; recall failures intentionally do not block session
+startup or compaction.
 
 When the checkout lives elsewhere, or without the launcher, set
 `MEMLINE_CONFIG=<ws>/.agent-memory/config.toml` and run

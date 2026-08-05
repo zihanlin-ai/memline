@@ -28,7 +28,7 @@ When called from Codex/Claude contexts, output defaults to agent-readable JSON.
 Use `--json` only when portability matters, and use `--output text` or
 `--output table` for human-readable output.
 
-## Start (session bootstrap)
+## Start (manual recent-window recall)
 
 ```bash
 memline start                 # recall memories ingested in the last 1 day, newest first
@@ -36,10 +36,13 @@ memline start --days 3        # widen the recall window
 memline start --limit 200
 ```
 
-`start` is the one-liner session bootstrap: it lists recently ingested
-memories so a new session picks up recent context, then use semantic
-`search` for task-specific recall. Equivalent to a `list --filter` on an
-`ingested_at` range but with no JSON to hand-write.
+`start` lists recently ingested memories. Installed harness hooks normally do
+this automatically for a fresh context and restore the current session after
+compaction, so routine agents should not call it at every session start. Use it
+to inspect or widen the recent window manually, or as a fallback when recall
+hook evidence is absent. It is equivalent to a `list --filter` on an
+`ingested_at` range but with no JSON to hand-write; use semantic `search` for
+task-specific recall.
 
 ## Add
 

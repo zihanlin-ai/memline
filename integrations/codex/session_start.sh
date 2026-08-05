@@ -15,10 +15,14 @@
 # The `additionalContextLimit` is the reason the shared helper compacts the
 # payload rather than passing `memline start` output through unchanged.
 #
-# Codex fires SessionStart with a `source` of startup, resume, clear or compact,
-# and the source decides what to recall: after a compaction, this session's own
-# memories rather than a time window. SessionStart is the injection point for
-# both -- PostCompact exists but is observational, with no additionalContext.
+# Codex can fire SessionStart with a `source` of startup, resume, clear or
+# compact. The shipped hooks register only startup and compact: a resumed
+# transcript already contains the original injected developer message, so
+# recalling again would duplicate it; clear is excluded by explicit preference.
+# The adapter still parses every source defensively, selecting this session's
+# own memories only for compact and the recent window otherwise. SessionStart
+# is the injection point for both registered cases -- PostCompact exists but is
+# observational, with no additionalContext.
 #
 # Install: ship as a plugin hooks.json, or add to ~/.codex/config.toml. Codex
 # requires persisted hook trust before an enabled hook will run -- unlike Claude
