@@ -104,6 +104,18 @@ class VerdictTest(unittest.TestCase):
         report = run(queue=queue)
         self.assertEqual([b["kind"] for b in report["blocking"]], ["failed_adds"])
 
+    def test_an_acknowledged_failed_own_add_does_not_block(self):
+        queue = FakeQueue([{"event_id": "e1", "op": "add", "status": "failed",
+                            "acked": True}],
+                          {"e1": {"session_id": "s1"}})
+        self.assertEqual(run(queue=queue)["verdict"], "pass")
+
+    def test_a_failed_own_stale_check_does_not_count_as_a_failed_add(self):
+        queue = FakeQueue([{"event_id": "e1", "op": "stale_check",
+                            "status": "failed"}],
+                          {"e1": {"session_id": "s1"}})
+        self.assertEqual(run(queue=queue)["verdict"], "pass")
+
     def test_another_sessions_failed_add_does_not(self):
         queue = FakeQueue([{"event_id": "e1", "op": "add", "status": "failed"}],
                           {"e1": {"session_id": "other"}})

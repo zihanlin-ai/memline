@@ -219,6 +219,8 @@ def session_review(
         queue = queue_factory()
         out: list[str] = []
         for row in queue.list(status="failed", limit=500):
+            if row["op"] != "add" or row.get("acked"):
+                continue
             args = queue.get_args(row["event_id"]) or {}
             if args.get("session_id") == session:
                 out.append(row["event_id"])
@@ -305,4 +307,3 @@ def session_review(
         "ttl_expired": ttl_expired,
         "how_to_dispose": HOW_TO_DISPOSE,
     }
-
