@@ -208,7 +208,11 @@ startup: restart a long-lived `opencode serve` after installing or editing it.
 The CLI can use an optional local daemon to avoid paying the Mem0/FastEmbed/ONNX
 cold-start cost for every command. The daemon is a user-local Python process
 that listens on a Unix socket under the configured store directory; it does not
-open a TCP port.
+open a TCP port. In a managed sandbox that can see the workspace but cannot
+connect to the host Unix socket, the same CLI commands transparently use a
+SQLite mailbox under the store directory. The host daemon executes those
+requests through the same handlers, store, audit, and identity metadata. Normal
+host, Claude, and OpenCode callers continue to use the Unix socket.
 
 ```bash
 memline daemon start

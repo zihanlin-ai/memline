@@ -18,10 +18,18 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
 from memline.audit import append_live_audit
+from memline.bridge import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    POLL_INTERVAL_SECONDS,
+    BridgeQueue,
+    BridgeUnavailable,
+    request as bridge_request,
+)
 from memline.ops import (
     QUEUE_OPS,
     dispatch as dispatch_op,
@@ -50,6 +58,7 @@ CPU_SAMPLE_SECONDS = 0.05
 MAX_WORKERS = int(os.environ.get("MEMLINE_DAEMON_WORKERS", "32"))
 LLM_CONCURRENCY = int(os.environ.get("MEMLINE_LLM_CONCURRENCY", "4"))
 ASYNC_WORKERS = int(os.environ.get("MEMLINE_ASYNC_WORKERS", "2"))
+BRIDGE_WORKERS = int(os.environ.get("MEMLINE_BRIDGE_WORKERS", "8"))
 # TTL expiry is enforced lazily by the search filter; this loop only
 # materializes it (payload stamp + history + pair closure), so a long
 # interval is fine.
@@ -204,6 +213,13 @@ def handle_request(client: Any, request: dict[str, Any]) -> dict[str, Any]:
 
     if op == "ping":
         return {"status": "ok", "result": {"pid": os.getpid(), "socket": str(SOCKET_PATH)}}
+
+    if op == "daemon_stop":
+        # Return the response before SIGTERM closes the active transport. The
+        # public CLI still owns all stop-policy checks; this internal operation
+        # only lets a namespace-isolated CLI address the same daemon.
+        threading.Timer(0.2, os.kill, args=(os.getpid(), signal.SIGTERM)).start()
+        return {"status": "ok", "result": {"pid": os.getpid(), "stopping": True}}
 
     # Queue-plane ops never touch the memory store: no gate, no LLM slot.
     if op == "add" and args.get("async"):
@@ -416,6 +432,35 @@ def _serve_connection(client: Any, conn: socket.socket) -> None:
         write_json_line(conn, response)
 
 
+def _process_bridge_request(client: Any, bridge: BridgeQueue, item: dict[str, Any]) -> None:
+    try:
+        response = handle_request(client, item["payload"])
+    except Exception as exc:  # noqa: BLE001 - bridge must persist errors.
+        response = {
+            "status": "error",
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+    bridge.complete(item["id"], response)
+
+
+def _bridge_worker_loop(client: Any, bridge: BridgeQueue, stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
+        item = bridge.claim_next()
+        if item is None:
+            stop_event.wait(POLL_INTERVAL_SECONDS)
+            continue
+        _process_bridge_request(client, bridge, item)
+
+
+def _bridge_heartbeat_loop(
+    bridge: BridgeQueue, daemon_id: str, stop_event: threading.Event
+) -> None:
+    while not stop_event.wait(HEARTBEAT_INTERVAL_SECONDS):
+        if not bridge.heartbeat(daemon_id):
+            return
+
+
 def serve() -> None:
     STORE_DIR.mkdir(parents=True, exist_ok=True)
     # Lifetime lock: exactly one daemon may hold it. It is released by the
@@ -483,6 +528,40 @@ def serve() -> None:
 
     stop_event = threading.Event()
 
+    # The Unix socket remains the primary transport. This mailbox is consumed
+    # by the same handlers only when a managed sandbox cannot connect across
+    # its namespace boundary.
+    bridge = BridgeQueue()
+    recovered_bridge = bridge.recover_stale()
+    if recovered_bridge:
+        print(
+            f"failed {recovered_bridge} interrupted sandbox bridge requests",
+            file=sys.stderr,
+            flush=True,
+        )
+    bridge.purge()
+    daemon_id = uuid.uuid4().hex
+    bridge_stop = threading.Event()
+    bridge_workers = [
+        threading.Thread(
+            target=_bridge_worker_loop,
+            args=(client, bridge, bridge_stop),
+            daemon=True,
+            name=f"mem0-bridge-{i}",
+        )
+        for i in range(BRIDGE_WORKERS)
+    ]
+    for worker in bridge_workers:
+        worker.start()
+    bridge.mark_ready(daemon_id, os.getpid())
+    bridge_heartbeat = threading.Thread(
+        target=_bridge_heartbeat_loop,
+        args=(bridge, daemon_id, bridge_stop),
+        daemon=True,
+        name="mem0-bridge-heartbeat",
+    )
+    bridge_heartbeat.start()
+
     def shutdown(_signum: int, _frame: Any) -> None:
         # Closing the socket unblocks accept(); in-flight requests drain below.
         stop_event.set()
@@ -511,6 +590,8 @@ def serve() -> None:
                 path.unlink()
             except FileNotFoundError:
                 pass
+        bridge.mark_stopped(daemon_id)
+        bridge_stop.set()
         executor.shutdown(wait=True)
         ttl_stop.set()
         # Give event workers a grace window; anything still 'processing' after
@@ -520,6 +601,9 @@ def serve() -> None:
             _event_queue.notify.notify_all()
         for worker in workers:
             worker.join(timeout=30.0)
+        for worker in bridge_workers:
+            worker.join(timeout=30.0)
+        bridge_heartbeat.join(timeout=2.0)
         server.close()
 
 
@@ -529,22 +613,38 @@ def request(
     timeout: float = REQUEST_TIMEOUT_SECONDS,
     connect_timeout: float = CONNECT_TIMEOUT_SECONDS,
 ) -> Any:
+    socket_error: str | None = None
+    response: dict[str, Any]
     if not SOCKET_PATH.exists():
-        raise DaemonUnavailable("daemon socket does not exist")
-    try:
+        socket_error = "daemon socket does not exist"
+    else:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(connect_timeout)
-            client.connect(str(SOCKET_PATH))
-            client.settimeout(timeout)
-            if not write_json_line(client, payload):
-                raise DaemonUnavailable("failed to write request to daemon")
-            response = read_json_line(client)
-    except OSError as exc:
-        raise DaemonUnavailable(str(exc)) from exc
+            try:
+                client.settimeout(connect_timeout)
+                client.connect(str(SOCKET_PATH))
+            except OSError as exc:
+                socket_error = str(exc)
+            else:
+                client.settimeout(timeout)
+                if not write_json_line(client, payload):
+                    raise DaemonUnavailable("failed to write request to daemon")
+                try:
+                    response = read_json_line(client)
+                except OSError as exc:
+                    # The daemon may already have accepted a mutating request;
+                    # never replay it through the bridge after a read failure.
+                    raise DaemonUnavailable(str(exc)) from exc
+                if response.get("status") != "ok":
+                    raise RuntimeError(response.get("error") or "daemon request failed")
+                return response.get("result")
 
-    if response.get("status") != "ok":
-        raise RuntimeError(response.get("error") or "daemon request failed")
-    return response.get("result")
+    # Cross-namespace socket denial is expected in Codex managed sandboxes.
+    # Try the shared mailbox only after the ordinary transport fails, keeping
+    # existing Claude/OpenCode/host behavior untouched.
+    try:
+        return bridge_request(payload, timeout=timeout)
+    except BridgeUnavailable as exc:
+        raise DaemonUnavailable(f"{socket_error}; bridge unavailable: {exc}") from exc
 
 
 def pid_state(pid: int) -> str | None:
@@ -745,6 +845,14 @@ def _start_daemon_locked(wait_seconds: float) -> dict[str, Any]:
 
 def stop_daemon(wait_seconds: float = 10.0) -> dict[str, Any]:
     pid = read_pid()
+    pong = ping()
+    # A live daemon may be in the host PID namespace and therefore invisible
+    # to /proc and kill(2) here. Stop it through its normal request handler;
+    # never unlink host runtime files merely because this namespace cannot see
+    # the process.
+    if pong and (pid is None or not is_pid_running(pid)):
+        result = request({"op": "daemon_stop"}, timeout=wait_seconds)
+        return {"stopped": True, "pid": result.get("pid")}
     if pid is None:
         if SOCKET_PATH.exists():
             SOCKET_PATH.unlink()
@@ -767,13 +875,18 @@ def stop_daemon(wait_seconds: float = 10.0) -> dict[str, Any]:
 def status() -> dict[str, Any]:
     pid = read_pid()
     pong = ping()
-    pid_running = is_pid_running(pid) if pid is not None else False
-    pid_is_daemon = is_daemon_pid(pid) if pid is not None and pid_running else False
-    cpu_percent = sample_process_cpu_percent(pid) if pid_running else None
+    visible_pid_running = is_pid_running(pid) if pid is not None else False
+    remote_running = bool(pong)
+    pid_running = visible_pid_running or remote_running
+    pid_is_daemon = (
+        is_daemon_pid(pid) if pid is not None and visible_pid_running else remote_running
+    )
+    reported_pid = pid or (pong or {}).get("pid")
+    cpu_percent = sample_process_cpu_percent(pid) if visible_pid_running else None
     return {
         "running": pid_running and pid_is_daemon,
         "responsive": bool(pong),
-        "pid": pid,
+        "pid": reported_pid,
         "pid_running": pid_running,
         "pid_is_daemon": pid_is_daemon,
         "cpu_percent": cpu_percent,

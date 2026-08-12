@@ -87,9 +87,57 @@ class DaemonRequestTests(unittest.TestCase):
                 "socket",
                 return_value=FakeSocket(connect_error=PermissionError(errno.EPERM, "not permitted")),
             ),
+            patch.object(
+                daemon,
+                "bridge_request",
+                side_effect=daemon.BridgeUnavailable("no host heartbeat"),
+            ),
+        ):
+            with self.assertRaises(daemon.DaemonUnavailable) as raised:
+                daemon.request({"op": "ping"})
+        self.assertIn("not permitted", str(raised.exception))
+        self.assertIn("no host heartbeat", str(raised.exception))
+
+    def test_request_falls_back_to_bridge_after_socket_permission_denied(self):
+        payload = {"op": "search", "args": {"query": "bridge"}}
+        with (
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/memline.sock", exists=True)),
+            patch.object(
+                daemon.socket,
+                "socket",
+                return_value=FakeSocket(connect_error=PermissionError(errno.EPERM, "not permitted")),
+            ),
+            patch.object(daemon, "bridge_request", return_value={"ids": ["m1"]}) as bridge_request,
+        ):
+            result = daemon.request(payload, timeout=17)
+
+        self.assertEqual(result, {"ids": ["m1"]})
+        bridge_request.assert_called_once_with(payload, timeout=17)
+
+    def test_request_falls_back_to_bridge_when_socket_is_not_visible(self):
+        payload = {"op": "ping"}
+        with (
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/memline.sock", exists=False)),
+            patch.object(daemon, "bridge_request", return_value={"pid": 91}) as bridge_request,
+        ):
+            result = daemon.request(payload)
+
+        self.assertEqual(result, {"pid": 91})
+        bridge_request.assert_called_once_with(payload, timeout=daemon.REQUEST_TIMEOUT_SECONDS)
+
+    def test_request_does_not_replay_after_connected_read_failure(self):
+        payload = {"op": "add", "args": {"content": "only once"}}
+        with (
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/memline.sock", exists=True)),
+            patch.object(daemon.socket, "socket", return_value=FakeSocket()),
+            patch.object(daemon, "write_json_line", return_value=True),
+            patch.object(daemon, "read_json_line", side_effect=TimeoutError("read timed out")),
+            patch.object(daemon, "bridge_request") as bridge_request,
         ):
             with self.assertRaises(daemon.DaemonUnavailable):
-                daemon.request({"op": "ping"})
+                daemon.request(payload)
+
+        bridge_request.assert_not_called()
 
     def test_write_json_line_returns_false_on_broken_pipe(self):
         conn = Mock()
@@ -131,6 +179,25 @@ class DaemonLifecycleTests(unittest.TestCase):
 
         self.assertTrue(result["running"])
         self.assertFalse(result["responsive"])
+
+    def test_status_infers_host_daemon_from_bridge_ping_when_pid_is_invisible(self):
+        with (
+            patch.object(daemon, "read_pid", return_value=777),
+            patch.object(daemon, "ping", return_value={"pid": 777, "socket": "sock"}),
+            patch.object(daemon, "is_pid_running", return_value=False),
+            patch.object(daemon, "sample_process_cpu_percent") as sample_cpu,
+            patch.object(daemon, "SOCKET_PATH", FakePath("/tmp/memline.sock", exists=True)),
+            patch.object(daemon, "LOG_PATH", FakePath("/tmp/memline.log", exists=True)),
+        ):
+            result = daemon.status()
+
+        self.assertTrue(result["running"])
+        self.assertTrue(result["responsive"])
+        self.assertTrue(result["pid_running"])
+        self.assertTrue(result["pid_is_daemon"])
+        self.assertEqual(result["pid"], 777)
+        self.assertIsNone(result["cpu_percent"])
+        sample_cpu.assert_not_called()
 
     def test_sample_process_cpu_percent_uses_cpu_delta_not_lifetime_average(self):
         with (
@@ -215,6 +282,7 @@ class DaemonLifecycleTests(unittest.TestCase):
     def test_stop_daemon_does_not_signal_non_daemon_pid(self):
         with (
             patch.object(daemon, "read_pid", return_value=123),
+            patch.object(daemon, "ping", return_value=None),
             patch.object(daemon, "is_pid_running", return_value=True),
             patch.object(daemon, "is_daemon_pid", return_value=False),
             patch.object(daemon, "unlink_runtime_files") as unlink_runtime_files,
@@ -225,6 +293,24 @@ class DaemonLifecycleTests(unittest.TestCase):
         self.assertEqual(result["reason"], "pid file did not point to memline daemon")
         unlink_runtime_files.assert_called_once()
         os_kill.assert_not_called()
+
+    def test_stop_daemon_uses_bridge_when_host_pid_is_invisible(self):
+        with (
+            patch.object(daemon, "read_pid", return_value=456),
+            patch.object(daemon, "ping", return_value={"pid": 456, "socket": "sock"}),
+            patch.object(daemon, "is_pid_running", return_value=False),
+            patch.object(
+                daemon,
+                "request",
+                return_value={"pid": 456, "stopping": True},
+            ) as request,
+            patch.object(daemon, "unlink_runtime_files") as unlink_runtime_files,
+        ):
+            result = daemon.stop_daemon(wait_seconds=8)
+
+        self.assertEqual(result, {"stopped": True, "pid": 456})
+        request.assert_called_once_with({"op": "daemon_stop"}, timeout=8)
+        unlink_runtime_files.assert_not_called()
 
     def test_terminate_daemon_pid_uses_sigkill_when_requested(self):
         states = [True, True, True, False]
