@@ -94,7 +94,7 @@ def wiki_profile(
                 else default_prompt("wiki-profile-source" if source_dir else "wiki-profile-session"))
     if source_dir:
         summary = profile_sources(source_dir, template, out_dir, max_tokens=max_tokens,
-                                  concurrency=concurrency, log=lambda m: _support.console.print(m))
+                                  concurrency=concurrency, log=lambda m: _support.err_console.print(m))
     else:
         batches = json.loads(plan.read_text(encoding="utf-8"))
         wanted = [mid for b in batches if b["kind"] in tuple(kinds.split(","))
@@ -105,7 +105,7 @@ def wiki_profile(
             _support.console.print(f"[yellow]{len(missing)} planned memories no longer in the store[/yellow]")
         summary = profile_batches(batches, texts, template, out_dir,
                                   kinds=tuple(kinds.split(",")), concurrency=concurrency,
-                                  max_tokens=max_tokens, log=lambda m: _support.console.print(m))
+                                  max_tokens=max_tokens, log=lambda m: _support.err_console.print(m))
     _support.output(summary, command="wiki-profile", fmt=_support.chosen_format(output_format, json_flag))
 
 
@@ -255,7 +255,7 @@ def wiki_draft(
         try:
             done.append(draft_topic(topic, _support.execute, template, out_dir, wiki_root=wiki_root,
                                     review_file=review_file, max_tokens=max_tokens,
-                                    log=lambda m: _support.console.print(m)))
+                                    log=lambda m: _support.err_console.print(m)))
         except Exception as exc:  # noqa: BLE001 - one bad topic must not stop the queue
             _support.console.print(f"[red]{topic.get('topic_key')}: {exc}[/red]")
             failed.append({"topic_key": topic.get("topic_key"), "error": str(exc)})
@@ -413,7 +413,7 @@ def wiki_review_draft(
         _support.console.print(f"adding {passes} pass(es) to the existing {prior['passes']} "
                       f"for this unchanged article")
     report = run_review_passes(compiled, template, passes=passes, max_tokens=max_tokens,
-                               prior=prior, log=lambda m: _support.console.print(m))
+                               prior=prior, log=lambda m: _support.err_console.print(m))
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     validation = report["validation"]
