@@ -202,10 +202,11 @@ def run_external_review(
     *,
     max_tokens: int = 64000,
     caller: Callable[..., tuple[Any, CallResult]] = call_json,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Ask a fresh wiki endpoint call to review, then validate its report locally."""
     data, result = caller(render_review_prompt(template, review_bundle), job="review",
-                          max_tokens=max_tokens)
+                          max_tokens=max_tokens, progress=progress)
     if not isinstance(data, dict):
         data = {"invalid_model_output": data}
     data["review_provenance"] = result.provenance
@@ -253,7 +254,9 @@ def run_review_passes(
     reports = []
     for index in range(max(1, passes)):
         report = run_external_review(review_bundle, template,
-                                     max_tokens=max_tokens, caller=caller)
+                                     max_tokens=max_tokens, caller=caller,
+                                     progress=lambda line, n=index: log(
+                                         f"pass {n + 1}/{passes}: {line}"))
         counts = (report.get("validation") or {}).get("claim_verdict_counts") or {}
         flagged = sum(n for v, n in counts.items() if v != "supported")
         log(f"pass {index + 1}/{passes}: {flagged} flagged, "

@@ -21,9 +21,11 @@ Three failure modes are handled here because each is silent otherwise:
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from memline.config import llm_endpoint_specs, llm_knobs
 from memline.llm import Endpoint
@@ -33,6 +35,159 @@ from memline.runtime import setup_env
 
 class RefusedError(RuntimeError):
     """The endpoint declined the content. Retrying will not help."""
+
+
+def _heartbeat_interval() -> float:
+    """Seconds between stream heartbeats; a 40-minute review and a 30-second
+    profile call want different cadences."""
+    raw = os.environ.get("MEMLINE_STREAM_HEARTBEAT", "30")
+    try:
+        value = float(raw)
+    except ValueError:
+        return 30.0
+    return value if value > 0 else 30.0
+
+
+class _StreamProgress:
+    """Report stream activity without exposing any generated text.
+
+    The OpenAI iterator blocks while the endpoint is quiet, so reporting only
+    from inside its loop cannot distinguish a live stream from a silent one.
+    A small daemon heartbeat snapshots counters every ``interval`` seconds.
+    The callback receives metadata only: no prompt, delta, or completed text.
+    """
+
+    def __init__(
+        self,
+        endpoint: Endpoint,
+        attempt: int,
+        report: Callable[[str], None],
+        *,
+        interval: float | None = None,
+    ) -> None:
+        self.endpoint = endpoint
+        self.attempt = attempt
+        self.report = report
+        self.interval = interval if interval is not None else _heartbeat_interval()
+        self.started = time.monotonic()
+        self.last_chunk_at: float | None = None
+        self.chunks = 0
+        self.content_chars = 0
+        self.reasoning_chars = 0
+        # Deltas are the only token signal available while the stream runs; one
+        # usually carries one token, which is why they are reported with a ~.
+        self.content_deltas = 0
+        self.reasoning_deltas = 0
+        # Exact, but most endpoints send usage in the final chunk only.
+        self.prompt_tokens: int | None = None
+        self.completion_tokens: int | None = None
+        # A rate over the whole call cannot show a stall: it decays instead of
+        # dropping. Each line reports what arrived since the previous one.
+        self._marked_tokens = 0
+        self._marked_at = self.started
+        self._lock = threading.Lock()
+        self._stopped = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self.report(self._line("started"))
+        self._thread = threading.Thread(
+            target=self._heartbeat,
+            name=f"memline-stream-{self.endpoint.name}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def observe(self, chunk: Any) -> None:
+        content_chars = 0
+        reasoning_chars = 0
+        content_deltas = 0
+        reasoning_deltas = 0
+        for choice in getattr(chunk, "choices", None) or []:
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+            content = getattr(delta, "content", None)
+            if isinstance(content, str):
+                content_chars += len(content)
+                content_deltas += 1
+            for field_name in ("reasoning_content", "reasoning"):
+                reasoning = getattr(delta, field_name, None)
+                if isinstance(reasoning, str):
+                    reasoning_chars += len(reasoning)
+                    reasoning_deltas += 1
+        chunk_usage = getattr(chunk, "usage", None)
+        with self._lock:
+            self.chunks += 1
+            self.content_chars += content_chars
+            self.reasoning_chars += reasoning_chars
+            self.content_deltas += content_deltas
+            self.reasoning_deltas += reasoning_deltas
+            if chunk_usage is not None:
+                prompt = getattr(chunk_usage, "prompt_tokens", None)
+                completion = getattr(chunk_usage, "completion_tokens", None)
+                if isinstance(prompt, int):
+                    self.prompt_tokens = prompt
+                if isinstance(completion, int):
+                    self.completion_tokens = completion
+            self.last_chunk_at = time.monotonic()
+
+    def emit(self) -> None:
+        self.report(self._line("active"))
+
+    def stop(
+        self,
+        status: str,
+        *,
+        finish_reason: str | None = None,
+        usage: dict[str, Any] | None = None,
+    ) -> None:
+        self._stopped.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=0.1)
+        if usage:
+            with self._lock:
+                if isinstance(usage.get("prompt_tokens"), int):
+                    self.prompt_tokens = usage["prompt_tokens"]
+                if isinstance(usage.get("completion_tokens"), int):
+                    self.completion_tokens = usage["completion_tokens"]
+        self.report(self._line(status) + f" finish_reason={finish_reason or 'none'}")
+
+    def _heartbeat(self) -> None:
+        while not self._stopped.wait(self.interval):
+            self.emit()
+
+    def _line(self, status: str) -> str:
+        now = time.monotonic()
+        with self._lock:
+            chunks = self.chunks
+            content_chars = self.content_chars
+            reasoning_chars = self.reasoning_chars
+            content_deltas = self.content_deltas
+            reasoning_deltas = self.reasoning_deltas
+            prompt_tokens = self.prompt_tokens
+            completion_tokens = self.completion_tokens
+            last_chunk_at = self.last_chunk_at
+            est = content_deltas + reasoning_deltas
+            since_tokens = est - self._marked_tokens
+            since_seconds = max(0.0, now - self._marked_at)
+            self._marked_tokens = est
+            self._marked_at = now
+        last_chunk = "none" if last_chunk_at is None else f"{max(0.0, now - last_chunk_at):.1f}s"
+        elapsed = max(0.0, now - self.started)
+        exact = ""
+        if prompt_tokens is not None or completion_tokens is not None:
+            exact = (f" prompt_tokens={prompt_tokens if prompt_tokens is not None else 'unknown'}"
+                     f" completion_tokens={completion_tokens if completion_tokens is not None else 'unknown'}")
+        return (
+            f"llm stream: status={status} endpoint={self.endpoint.name} "
+            f"model={self.endpoint.model} attempt={self.attempt} "
+            f"elapsed={elapsed:.1f}s chunks={chunks} "
+            f"out_tokens~{est} (content~{content_deltas} reasoning~{reasoning_deltas}) "
+            f"since_last_line={since_tokens}tok/{since_seconds:.0f}s{exact} "
+            f"content_chars={content_chars} reasoning_chars={reasoning_chars} "
+            f"last_chunk_age={last_chunk}"
+        )
 
 
 @dataclass
@@ -56,32 +211,52 @@ class CallResult:
                 "earlier_failures": self.earlier_failures}
 
 
-def _stream_once(endpoint: Endpoint, prompt: str, max_tokens: int, timeout: float) -> tuple[str, dict, str | None]:
+def _stream_once(
+    endpoint: Endpoint,
+    prompt: str,
+    max_tokens: int,
+    timeout: float,
+    *,
+    progress: Callable[[str], None] | None = None,
+    attempt: int = 1,
+) -> tuple[str, dict, str | None]:
     from openai import OpenAI
 
-    http_client = client_for_base_url(endpoint.base_url)
-    if http_client is not None:
-        http_client.timeout = timeout
-    client = OpenAI(api_key=endpoint.api_key(), base_url=endpoint.base_url,
-                    timeout=timeout, **({"http_client": http_client} if http_client else {}))
-    stream = client.chat.completions.create(
-        model=endpoint.model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-        stream=True,
-        **({"extra_body": endpoint.extra_body} if endpoint.extra_body else {}),
-    )
     parts: list[str] = []
     usage: dict[str, Any] = {}
     finish: str | None = None
-    for chunk in stream:
-        if getattr(chunk, "usage", None):
-            usage = chunk.usage.model_dump() if hasattr(chunk.usage, "model_dump") else dict(chunk.usage)
-        for choice in getattr(chunk, "choices", None) or []:
-            finish = getattr(choice, "finish_reason", None) or finish
-            delta = getattr(choice, "delta", None)
-            if delta is not None and getattr(delta, "content", None):
-                parts.append(delta.content)
+    observer = _StreamProgress(endpoint, attempt, progress) if progress else None
+    if observer:
+        observer.start()
+    try:
+        http_client = client_for_base_url(endpoint.base_url)
+        if http_client is not None:
+            http_client.timeout = timeout
+        client = OpenAI(api_key=endpoint.api_key(), base_url=endpoint.base_url,
+                        timeout=timeout, **({"http_client": http_client} if http_client else {}))
+        stream = client.chat.completions.create(
+            model=endpoint.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            stream=True,
+            **({"extra_body": endpoint.extra_body} if endpoint.extra_body else {}),
+        )
+        for chunk in stream:
+            if observer:
+                observer.observe(chunk)
+            if getattr(chunk, "usage", None):
+                usage = chunk.usage.model_dump() if hasattr(chunk.usage, "model_dump") else dict(chunk.usage)
+            for choice in getattr(chunk, "choices", None) or []:
+                finish = getattr(choice, "finish_reason", None) or finish
+                delta = getattr(choice, "delta", None)
+                if delta is not None and getattr(delta, "content", None):
+                    parts.append(delta.content)
+    except Exception:
+        if observer:
+            observer.stop("error", finish_reason=finish, usage=usage)
+        raise
+    if observer:
+        observer.stop("complete", finish_reason=finish, usage=usage)
     return "".join(parts), usage, finish
 
 
@@ -100,6 +275,7 @@ def call_json(
     attempts_per_endpoint: int = 4,
     timeout: float = 2400.0,
     backoff: float = 30.0,
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[Any, CallResult]:
     """Return ``(parsed_json, CallResult)``.
 
@@ -139,7 +315,8 @@ def call_json(
         for attempt in range(1, attempts_per_endpoint + 1):
             started = time.time()
             try:
-                text, usage, finish = _stream_once(endpoint, prompt, max_tokens, timeout)
+                text, usage, finish = _stream_once(endpoint, prompt, max_tokens, timeout,
+                                                   progress=progress, attempt=attempt)
             except Exception as exc:  # noqa: BLE001 - every transport error is a retry candidate
                 if _looks_refused(exc):
                     raise RefusedError(f"{endpoint.name}: {exc}") from exc

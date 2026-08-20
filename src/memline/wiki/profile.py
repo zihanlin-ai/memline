@@ -158,7 +158,9 @@ def profile_batches(
         started = time.time()
         prompt = render(template, batch, _material(batch, texts, sanitizer))
         try:
-            data, result = call_json(prompt, job="profile", max_tokens=max_tokens)
+            data, result = call_json(
+                prompt, job="profile", max_tokens=max_tokens,
+                progress=lambda line, b=batch["batch_id"]: log(f"{b}: {line}"))
         except RefusedError as exc:
             log(f"{batch['batch_id']}: REFUSED by endpoint — needs local handling")
             record = {"batch_id": batch["batch_id"], "status": "refused", "detail": str(exc)}
@@ -230,8 +232,10 @@ def profile_sources(
                                "text": sanitizer.scrub(path.read_text(encoding="utf-8"))},
                               ensure_ascii=False)
         try:
-            data, result = call_json(render(template, batch, material), job="profile",
-                                     max_tokens=max_tokens)
+            data, result = call_json(
+                render(template, batch, material), job="profile",
+                max_tokens=max_tokens,
+                progress=lambda line, r=rel: log(f"{r}: {line}"))
         except RefusedError as exc:
             log(f"{rel}: REFUSED — needs local handling")
             record = {"batch_id": path.stem, "status": "refused", "detail": str(exc)}

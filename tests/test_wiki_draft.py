@@ -109,6 +109,28 @@ class DraftTest(unittest.TestCase):
                                   review_file=review_file, log=lambda _: None)
         return summary, sent
 
+    def test_draft_routes_stream_progress_to_its_log_callback(self):
+        logs: list[str] = []
+        sent = {}
+
+        def call_json(prompt, **kwargs):
+            sent.update(kwargs)
+            kwargs["progress"]("stream heartbeat")
+            return full_draft(), FakeResult()
+
+        with mock.patch("memline.wiki.draft.call_json", call_json):
+            draft_topic(
+                self.topic(),
+                store(**{MEM_A: "plain evidence"}),
+                "P:{material}",
+                self.out,
+                wiki_root=self.root,
+                log=logs.append,
+            )
+
+        self.assertEqual(sent["progress"], logs.append)
+        self.assertIn("stream heartbeat", logs)
+
     # --- nothing unreviewed leaves ----------------------------------------
 
     def test_an_unruled_personal_name_blocks_the_call(self):

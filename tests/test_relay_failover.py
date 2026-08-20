@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 from memline import relay
 from memline.llm import Endpoint
@@ -24,7 +25,12 @@ def endpoint(name, model):
 class FailoverTest(unittest.TestCase):
     def setUp(self):
         self.calls: list[str] = []
-        for target, replacement in (("setup_env", lambda: None),):
+        # This suite states a retry policy, so it must not read the developer's
+        # own config: `call_json` lets a job's configured knobs win over its
+        # arguments, and a workspace that pins `attempts_per_endpoint = 1` for
+        # `draft` would silently rewrite every budget asserted below.
+        for target, replacement in (("setup_env", lambda: None),
+                                    ("llm_knobs", lambda job: {})):
             patcher = mock.patch.object(relay, target, replacement)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -33,7 +39,7 @@ class FailoverTest(unittest.TestCase):
         self.addCleanup(sleeper.stop)
 
     def _run(self, failure, **kwargs):
-        def stream_once(ep, prompt, max_tokens, timeout):
+        def stream_once(ep, prompt, max_tokens, timeout, progress=None, attempt=1):
             self.calls.append(ep.name)
             if ep.name == "primary":
                 raise RuntimeError(failure)
@@ -59,6 +65,48 @@ class FailoverTest(unittest.TestCase):
         self.assertEqual(result.endpoint, "fallback")
         self.assertEqual(len(result.earlier_failures), 2)
         self.assertIn("model_not_found", result.earlier_failures[0])
+
+
+class StreamProgressTest(unittest.TestCase):
+    def test_progress_reports_counts_without_exposing_generated_text(self):
+        messages: list[str] = []
+        progress = relay._StreamProgress(
+            endpoint("primary", "model-a"),
+            2,
+            messages.append,
+            interval=60,
+        )
+        secret_content = "generated-secret-text"
+        secret_reasoning = "hidden-reasoning-text"
+        chunk = SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(
+                content=secret_content,
+                reasoning_content=secret_reasoning,
+            ))]
+        )
+
+        progress.observe(chunk)
+        progress.emit()
+
+        self.assertIn("chunks=1", messages[-1])
+        self.assertIn(f"content_chars={len(secret_content)}", messages[-1])
+        self.assertIn(f"reasoning_chars={len(secret_reasoning)}", messages[-1])
+        self.assertNotIn(secret_content, messages[-1])
+        self.assertNotIn(secret_reasoning, messages[-1])
+
+    def test_progress_distinguishes_a_silent_live_stream(self):
+        messages: list[str] = []
+        progress = relay._StreamProgress(
+            endpoint("primary", "model-a"),
+            1,
+            messages.append,
+            interval=60,
+        )
+
+        progress.emit()
+
+        self.assertIn("chunks=0", messages[-1])
+        self.assertIn("last_chunk_age=none", messages[-1])
 
 
 if __name__ == "__main__":
