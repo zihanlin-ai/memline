@@ -50,13 +50,15 @@ class WikiCheckTest(unittest.TestCase):
     def flags(self, execute):
         return run_check(self.root, execute)["flags"]
 
-    def provenance_page(self, content_hash=None, *, name="page.md"):
+    def provenance_page(self, content_hash=None, *, name="page.md", historical=False):
         hash_line = f'    content_hash: "{content_hash}"\n' if content_hash else ""
+        historical_line = "    historical: true\n" if historical else ""
         self.page(
             "---\ntitle: Test page\nsummary: What this page establishes.\n"
             "topic_key: test-page\nsources:\n"
             + f'  - ref: "mem:{MEM_ID}"\n'
             + hash_line
+            + historical_line
             + "---\nbody\n",
             name=name,
         )
@@ -73,6 +75,20 @@ class WikiCheckTest(unittest.TestCase):
         self.provenance_page(sha256_text(MEM_TEXT), name="docs/page.md")
         kinds = self.kinds(make_execute(head={"heads": [MEM_ID]}))
         self.assertEqual(kinds, [])
+
+    def test_docs_may_explicitly_archive_a_superseded_memory(self):
+        self.provenance_page(
+            sha256_text(MEM_TEXT), name="docs/page.md", historical=True
+        )
+        kinds = self.kinds(make_execute(head={"heads": [HEAD_ID]}))
+        self.assertEqual(kinds, [])
+
+    def test_historical_docs_source_still_checks_publication_time_hash(self):
+        self.provenance_page(
+            sha256_text("older text"), name="docs/page.md", historical=True
+        )
+        kinds = self.kinds(make_execute(head={"heads": [HEAD_ID]}))
+        self.assertEqual(kinds, ["memory_content_changed"])
 
     def test_frozen_blog_may_archive_a_superseded_memory(self):
         self.provenance_page(sha256_text(MEM_TEXT), name="blog/post.md")

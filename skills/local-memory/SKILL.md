@@ -121,6 +121,11 @@ Hard gates, always in force:
   a topic → user asks for a draft → user approves the draft → publish.
 - **Sanitize before anything leaves this machine.** `memline wiki bundle` and
   `wiki profile` do it; never hand-assemble a payload that skips them.
+- **Run one valid semantic review pass by default.** The external model finds
+  candidate defects; it does not decide publication. Adjudicate every finding
+  yourself with the materiality rule in [wiki-drafting.md](references/wiki-drafting.md).
+  Only an unresolved blocking finding requires correction and a new one-pass
+  review. Never spend another LLM call on non-blocking findings.
 - **Blog is frozen once published** (append errata, never rewrite); **Docs are
   living**. Formal body text is English.
 - **`content/docs/.nav.yml` is hand-written, never generated** — it carries

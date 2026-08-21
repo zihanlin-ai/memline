@@ -12,11 +12,11 @@ passes outvote the one that read the evidence.
 
 from __future__ import annotations
 
-import json
 import unittest
-from pathlib import Path
 
-from memline.wiki.review import _content_hash, build_review_bundle
+from memline.wiki.adjudication import build_adjudication, validate_adjudication
+from memline.wiki.artifacts import content_hash
+from memline.wiki.review import build_review_bundle
 from memline.wiki.review_report import (
     merge_reviews,
     validate_merged_review_report,
@@ -75,7 +75,9 @@ class SensitivityQuoteTest(unittest.TestCase):
             "review_bundle_sha256": "x", "article_sha256": "y",
             "claim_packets": [], "uncited_evidence": [],
         }
-        self.bundle["review_bundle_sha256"] = _content_hash(self.bundle, "review_bundle_sha256")
+        self.bundle["review_bundle_sha256"] = content_hash(
+            self.bundle, "review_bundle_sha256"
+        )
         self.report = {
             "summary": "s",
             "article_sha256": "y",
@@ -278,6 +280,109 @@ class MergedReviewValidationTest(unittest.TestCase):
         self.assertIn("review_hash_mismatch",
                       {finding["kind"] for finding in validation["findings"]})
 
+    def test_scope_reason_is_retained_for_agent_adjudication(self):
+        report = self._pass()
+        report["scope_review"] = {"verdict": "minor_drift", "reason": "Adjacent topic."}
+        report["validation"] = validate_review_report(report, self.bundle)
+        merged = merge_reviews([report])
+        self.assertEqual(merged["scope_reviews"], [{
+            "pass": 1, "verdict": "minor_drift", "reason": "Adjacent topic."
+        }])
+
+
+class AgentAdjudicationTest(unittest.TestCase):
+    """The reviewer discovers issues; only the agent materiality ruling gates them."""
+
+    def setUp(self):
+        article = ("# T\n\nAlpha."
+                   "^[mem:aaaa1111-2222-3333-4444-555566667777]")
+        self.bundle = build_review_bundle(article, BUNDLE, full_claims(), {"scope": "alpha"})
+
+    def _review(self, *, finding=True, overall="revise"):
+        report = passing_report(self.bundle)
+        report["overall_verdict"] = overall
+        if finding:
+            report["claim_reviews"][0].update({
+                "verdict": "partially_supported", "confidence": "medium",
+                "reason": "The wording is slightly broader than the measurement.",
+                "suggested_rewrite": "Narrow the wording.",
+            })
+        report["review_provenance"] = {"model": "reviewer"}
+        report["validation"] = validate_review_report(report, self.bundle)
+        return merge_reviews([report])
+
+    @staticmethod
+    def _rule(template, decision, category):
+        template["findings"][0].update({
+            "decision": decision, "category": category,
+            "reason": "This does not change the result or an engineering decision."
+        })
+        return template
+
+    def test_a_finding_without_agent_adjudication_blocks(self):
+        validation = validate_review_artifact(self._review(), self.bundle)
+        self.assertFalse(validation["clean"])
+        self.assertEqual(validation["adjudication"]["findings"][0]["kind"],
+                         "adjudication_missing")
+
+    def test_non_blocking_adjudication_clears_reviewer_revise(self):
+        report = self._review()
+        adjudication = self._rule(build_adjudication(report), "non_blocking", "non_material")
+        validation = validate_review_artifact(report, self.bundle, adjudication)
+        self.assertFalse(validation["reviewer_clean"])
+        self.assertTrue(validation["clean"])
+        self.assertEqual(validation["adjudication"]["non_blocking_findings"], 1)
+
+    def test_blocking_adjudication_requires_fix_and_new_review(self):
+        report = self._review()
+        adjudication = self._rule(
+            build_adjudication(report), "blocking", "factual_contradiction")
+        validation = validate_review_artifact(report, self.bundle, adjudication)
+        self.assertFalse(validation["clean"])
+        self.assertEqual(validation["adjudication"]["unresolved_blocking_findings"], 1)
+
+    def test_reviewer_overall_verdict_is_not_itself_a_finding(self):
+        report = self._review(finding=False, overall="revise")
+        validation = validate_review_artifact(report, self.bundle)
+        self.assertEqual(validation["reviewer_findings"], 0)
+        self.assertTrue(validation["clean"])
+
+    def test_non_blocking_cannot_use_a_blocking_category(self):
+        report = self._review()
+        adjudication = self._rule(
+            build_adjudication(report), "non_blocking", "factual_contradiction")
+        validation = validate_adjudication(adjudication, report)
+        self.assertFalse(validation["valid"])
+        self.assertIn("adjudication_category_invalid",
+                      {item["kind"] for item in validation["findings"]})
+
+    def test_malformed_finding_id_is_reported_instead_of_crashing(self):
+        report = self._review()
+        adjudication = build_adjudication(report)
+        adjudication["findings"][0]["finding_id"] = ["not", "hashable"]
+        validation = validate_adjudication(adjudication, report)
+        self.assertFalse(validation["valid"])
+        self.assertIn("adjudication_finding_id_invalid",
+                      {item["kind"] for item in validation["findings"]})
+
+    def test_adjudication_is_bound_to_the_exact_review_report(self):
+        report = self._review()
+        adjudication = self._rule(build_adjudication(report), "non_blocking", "non_material")
+        report["overall_verdict"] = "reject"
+        validation = validate_adjudication(adjudication, report)
+        self.assertIn("adjudication_hash_mismatch",
+                      {item["kind"] for item in validation["findings"]})
+
+    def test_contract_invalid_review_cannot_be_adjudicated_away(self):
+        report = self._review()
+        report["validation"]["per_pass"][0]["report_valid"] = False
+        report["validation"]["report_valid"] = False
+        report["validation"]["invalid_passes"] = [1]
+        adjudication = self._rule(build_adjudication(report), "non_blocking", "non_material")
+        validation = validate_review_artifact(report, self.bundle, adjudication)
+        self.assertEqual(validation["valid_review_passes"], 0)
+        self.assertFalse(validation["clean"])
+
 
 class SensitivityAbsenceTest(unittest.TestCase):
     """Reporting that nothing leaked is not a claim that needs proving.
@@ -291,7 +396,9 @@ class SensitivityAbsenceTest(unittest.TestCase):
         self.bundle = {"article_markdown": "# T\n\nStack ab93.\n",
                        "review_bundle_sha256": "x", "article_sha256": "y",
                        "claim_packets": [], "uncited_evidence": []}
-        self.bundle["review_bundle_sha256"] = _content_hash(self.bundle, "review_bundle_sha256")
+        self.bundle["review_bundle_sha256"] = content_hash(
+            self.bundle, "review_bundle_sha256"
+        )
         self.report = {"summary": "s", "article_sha256": "y",
                        "review_bundle_sha256": self.bundle["review_bundle_sha256"],
                        "claim_reviews": [], "omission_reviews": [],

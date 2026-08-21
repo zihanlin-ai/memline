@@ -15,20 +15,16 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
 from memline.relay import CallResult, call_json
+from memline.wiki.artifacts import artifact_sha256, content_hash
 from memline.wiki.review_report import (
-    _canonical_json,
-    _content_hash,
-    _sha256_text,
     merge_reviews,
-    validate_merged_review_report,
     validate_review_report,
 )
-from memline.wiki.page import CITATION
+from memline.wiki.page import CITATION, sha256_text
 from memline.wiki.verify import verify
 
 SCHEMA_VERSION = 1
@@ -176,8 +172,8 @@ def build_review_bundle(
     review_bundle: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "draft_name": draft_name,
-        "article_sha256": _sha256_text(draft_markdown),
-        "evidence_bundle_sha256": _sha256_text(_canonical_json(bundle)),
+        "article_sha256": sha256_text(draft_markdown),
+        "evidence_bundle_sha256": artifact_sha256(bundle),
         "approved_topic": approved_topic,
         "article_markdown": draft_markdown,
         "deterministic_report": deterministic,
@@ -186,7 +182,9 @@ def build_review_bundle(
         "uncited_evidence": uncited_evidence,
         "claims_manifest": claims,
     }
-    review_bundle["review_bundle_sha256"] = _content_hash(review_bundle, "review_bundle_sha256")
+    review_bundle["review_bundle_sha256"] = content_hash(
+        review_bundle, "review_bundle_sha256"
+    )
     return review_bundle
 
 
@@ -244,15 +242,17 @@ def run_review_passes(
     review_bundle: dict[str, Any],
     template: str,
     *,
-    passes: int = 3,
+    passes: int = 1,
     max_tokens: int = 64000,
     prior: dict[str, Any] | None = None,
     caller: Callable[..., tuple[Any, CallResult]] = call_json,
     log: Callable[[str], None] = lambda _: None,
 ) -> dict[str, Any]:
-    """Several independent passes over one draft, merged into their union."""
+    """Run one review by default; optionally merge explicit diagnostic passes."""
+    if passes < 1:
+        raise ValueError("passes must be at least 1")
     reports = []
-    for index in range(max(1, passes)):
+    for index in range(passes):
         report = run_external_review(review_bundle, template,
                                      max_tokens=max_tokens, caller=caller,
                                      progress=lambda line, n=index: log(

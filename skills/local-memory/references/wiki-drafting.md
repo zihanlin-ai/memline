@@ -1,9 +1,10 @@
 # Drafting a wiki article
 
-How an accepted topic becomes a reviewable draft. Generation and the first
-semantic audit may run on the external wiki endpoint; they must be separate
-calls. Deterministic joins and an agent adjudication sit between that audit and
-the user.
+How an accepted topic becomes a reviewable draft. Generation and one semantic
+audit may run on the external wiki endpoint; they must be separate calls.
+Deterministic joins and an agent adjudication sit between that audit and the
+user. A second semantic call is exceptional: run it only after correcting a
+blocking finding.
 
 ## Pipeline
 
@@ -48,7 +49,21 @@ the user.
    schema its caller parses are one contract; the scope, granularity and
    acceptance judgement stay in this skill.
 
-3. **Compile the review bundle** — deterministic, before semantic review:
+3. **Agent factual and editorial pass** — do this before paying for semantic
+   review. Check the evidence strength, current-versus-superseded status,
+   retraction arcs, approved scope, sensitivity, and retrieval summary. Improve
+   organization, concision, and flow without strengthening the evidence. For a
+   Blog, make the investigation spine visible; for Docs, keep the page
+   task-shaped. Split compound claims and preserve explicit boundaries between
+   observations, mechanism hypotheses, and open questions.
+
+   Hand editing the Markdown is not sidecar-neutral. Synchronize `sections`,
+   `claims`, `open_questions`, `retraction_arcs`, and
+   `unused_evidence_refs` with the edited article. Finish this pass before
+   compiling the review bundle so the normal path pays for one final-version
+   audit rather than reviewing prose that is already scheduled to change.
+
+4. **Compile the review bundle** — deterministic, before semantic review:
 
    ```
    memline wiki prepare-review drafts/<slug>.md
@@ -66,7 +81,7 @@ the user.
    canonical full id. The checker also enforces that every bundle ref is
    either cited or declared unused, never both.
 
-4. **Independent audit** — use a fresh call, not the drafting response or
+5. **Independent audit** — use a fresh call, not the drafting response or
    the writer's self-check:
 
    ```
@@ -91,56 +106,85 @@ the user.
    it cannot accidentally submit a stale packet. Preserve a prior packet only
    when debugging by choosing an explicit `--review-bundle-out` path.
 
-   The default audit has multiple independent passes. Their merge is a union,
-   not a vote: a claim flagged by one pass stays flagged even when the other
-   passes support it. `flagged_in` describes recurrence, not whether the finding
-   may be ignored. One contract-invalid pass invalidates the merged report even
-   when all semantic verdicts are `supported`.
+   The default is exactly one fresh pass. `--passes >1` remains a legacy or
+   diagnostic option, not an acceptance requirement. An empty response,
+   malformed JSON, incomplete claim coverage, an evidence ref outside its
+   packet, or another contract-invalid response is an operational failure:
+   retry the call; do not classify it as a semantic blocker.
 
-   Re-running an unchanged article normally accumulates more passes. Use
-   `--fresh` only when replacing a contract-invalid attempt or deliberately
-   starting a new audit set. First preserve and adjudicate any substantive
-   finding from the old report; `--fresh` must never be a way to make a real
-   finding disappear. A changed article hash already prevents old passes from
-   being reused.
+6. **Agent adjudication and correction** — create the durable ruling template:
 
-5. **Agent adjudication and correction** — read both artifacts. Inspect every
-   deterministic finding, every non-supported or low-confidence audit verdict,
-   every omission, all superseded/retraction passages, and a random sample of
-   the verdicts that passed. For omission review, `memline wiki check-threads
-   drafts/<slug>.md` names which profiled sub-topics the draft used and which
-   it dropped whole — not "coverage is 0.24" but "the capture shim and the
-   harness audit are absent", so you can tell discarded noise from a discarded
-   investigation. Review scope and sensitivity yourself. Correct
-   factual support, citation placement, causal strength, scope drift and missing
-   arcs before doing prose polish. Fix or regenerate, then rerun from step 3.
+   ```
+   memline wiki prepare-adjudication drafts/<slug>.md
+   ```
 
-6. **Editorial pass** — once the factual shape is stable, improve organization,
-   concision and flow without changing evidentiary strength. For a Blog, make
-   the investigation spine visible and move adjacent work out of that spine;
-   for Docs, keep the page task-shaped. Split overloaded paragraphs and
-   compound claims, remove repeated setup, and preserve explicit boundaries
-   between observed results, mechanism hypotheses and open questions.
+   This writes `<slug>.adjudication.json`, bound to the exact article, review
+   bundle, and review report hashes. For every finding, set `decision`,
+   `category`, and a concrete `reason`. Do this yourself; do not ask another
+   LLM to judge the first LLM.
 
-   Hand editing the Markdown is not sidecar-neutral. Synchronize `sections`,
-   `claims`, `open_questions`, `retraction_arcs` and `unused_evidence_refs` with
-   the edited article. Then rerun from step 3. Review artifacts are stale after
-   any article, bundle, claims or approved-scope change, even when the edit was
-   intended to be stylistic only.
+   Apply this counterfactual materiality test:
+
+   > If the reader did not know this finding, could they believe an invalid
+   > result, misunderstand the current state, or make a different engineering
+   > decision?
+
+   If yes, mark `decision: blocking` and use exactly one of these categories:
+
+   - `factual_contradiction` — a number, status, version, result, or conclusion
+     directly conflicts with the evidence.
+   - `superseded_current_claim` — superseded evidence is presented as current;
+     historical narration of it is not blocking.
+   - `core_claim_unverifiable` — the title, summary, main verdict, release
+     status, core number, or central mechanism cannot be verified.
+   - `decision_changing_omission` — omitted evidence changes the recommendation,
+     measurement validity, direction or magnitude, current-versus-historical
+     status, deployability, reproducibility, safety, or includes a retraction
+     that overturns the current conclusion.
+   - `severe_causal_overclaim` — an unsupported causal claim changes the repair,
+     deployment choice, or core engineering judgement.
+   - `safety_privacy_or_scope` — publishing would expose sensitive material,
+     create a safety problem, or materially leave the user-approved scope.
+
+   If no, mark `decision: non_blocking`, `category: non_material`, and explain
+   why it cannot change validity, current status, or an engineering decision.
+   Typical non-blockers are optional history, intermediate failures after an
+   accurate final conclusion, adjacent host/dashboard/tooling work, mild
+   wording improvements, extra open questions, non-material qualifiers, and
+   completeness or style suggestions. The reviewer's `warning|error|critical`
+   label and `overall_verdict: revise|reject` are signals only; never copy them
+   into the decision without applying the test.
+
+   If any finding is blocking, correct the article and aligned sidecars, then
+   rerun steps 4–6 once for the revised version. The hash change prevents the
+   old review or adjudication from clearing it; after the new review, run
+   `prepare-adjudication ... --force` to replace the now-stale ruling template.
+   If every finding is
+   non-blocking, leave those optional changes alone and spend no further LLM
+   call. Fixing even a non-blocking wording issue changes the article hash and
+   therefore creates a new version that needs a fresh review.
+
+   Also inspect every deterministic finding, all superseded/retraction
+   passages, and a small sample of supported verdicts. `memline wiki
+   check-threads drafts/<slug>.md` remains a local, optional aid for deciding
+   whether an omitted thread is decision-changing; it does not create an LLM
+   review requirement.
 
 7. **Acceptance gate** — before presenting the draft as reviewed, require:
 
    ```
    memline wiki check-draft drafts/<slug>.md \
-     --review drafts/<slug>.review.json --strict
+     --review drafts/<slug>.review.json \
+     --adjudication drafts/<slug>.adjudication.json --strict
    ```
 
-   `--strict` binds the report to the current article and review-bundle hashes
-   and exits non-zero unless every machine gate is clean. It does not replace
-   agent judgement or the user's final approval. Complete the acceptance
-   checklist below; if the command fails because of a tool or report
-   contract defect, name that blocker instead of relabelling the draft as
-   checked.
+   `--strict` requires deterministic clean, at least one contract-valid review
+   pass, a hash-bound ruling for every finding, and zero unresolved blocking
+   findings. It deliberately ignores the reviewer's aggregate verdict after
+   adjudication. It does not replace the user's final approval. Complete the
+   acceptance checklist below; if the command fails because of a tool or
+   report contract defect, name that operational blocker instead of
+   relabelling the draft as checked.
 
 ## Prompt contract
 
@@ -265,11 +309,15 @@ as reviewed. Every item is required:
   whether the page answers the reader's question.
 - **Sensitivity:** the formal body contains no unnecessary internal identifiers,
   including identifiers reintroduced during hand editing.
-- **Fresh artifacts:** the review bundle and all audit passes were generated
-  after the last change to the article, evidence bundle, claims sidecar or
-  approved scope.
+- **Fresh artifacts:** the review bundle, one valid audit pass, and the
+  adjudication were generated after the last change to the article, evidence
+  bundle, claims sidecar or approved scope.
+- **Materiality adjudication:** every model finding has a reasoned blocking or
+  non-blocking decision; the latter use `non_material`, and no blocking finding
+  remains on this article version.
 - **Machine gates:** `memline wiki check-draft drafts/<slug>.md --review
-  drafts/<slug>.review.json --strict` exits zero. If it does not, report the
-  exact blocker; semantic agreement alone is not a checked draft.
+  drafts/<slug>.review.json --adjudication
+  drafts/<slug>.adjudication.json --strict` exits zero. If it does not, report
+  the exact blocker; semantic agreement alone is not a checked draft.
 - **Human gate:** publishing still requires the user's explicit approval of this
   reviewed version. Then follow [wiki-publishing.md](wiki-publishing.md).

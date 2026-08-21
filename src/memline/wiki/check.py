@@ -26,6 +26,7 @@ Expected page frontmatter (YAML)::
     sources:
       - ref: "mem:0f39f11-..."
         content_hash: "<sha256 of the memory text at publication>"
+        historical: true  # optional: explicit retraction/history, not current guidance
       - ref: "sources/plan.md"
         content_hash: "<sha256 of the file at publication>"
     ---
@@ -207,11 +208,12 @@ def run_check(wiki_root: Path, execute: ExecuteFn) -> dict[str, Any]:
                     }
                 )
             if ref.startswith("mem:"):
+                historical = entry.get("historical") is True
                 found = _check_memory_ref(
                     execute,
                     ref[len("mem:") :],
                     recorded_hash,
-                    check_superseded=check_superseded,
+                    check_superseded=check_superseded and not historical,
                 )
             elif ref.startswith("sources/"):
                 found = _check_source_ref(wiki_root, ref, recorded_hash)

@@ -15,10 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from memline.wiki.review import (
-    _content_hash,
     build_review_bundle,
     load_prior_review,
     run_external_review,
+    run_review_passes,
 )
 
 BUNDLE = {
@@ -169,6 +169,12 @@ class PriorReviewTest(unittest.TestCase):
         self.path.write_text(json.dumps({"article_sha256": "aaa", "claim_reviews": []}),
                              encoding="utf-8")
         self.assertIsNone(load_prior_review(self.path, "aaa"))
+
+
+class ReviewPassCountTest(unittest.TestCase):
+    def test_zero_passes_is_rejected_instead_of_silently_running_one(self):
+        with self.assertRaisesRegex(ValueError, "at least 1"):
+            run_review_passes({}, "{review_bundle}", passes=0)
 
 
 # --- deployment-config stub -------------------------------------------------

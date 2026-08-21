@@ -10,22 +10,18 @@ obtained the report being able to influence how it is graded.
 So this module never calls out and never reads the draft. It takes a report
 and the bundle it claims to be about, and returns what is wrong with it.
 
-The merge follows the same discipline. Independent passes disagree, and the
-rule is that the strictest verdict wins in both directions -- a claim any pass
-called contradicted stays contradicted, an article any pass wanted revised
-stays revised. Averaging would let a majority of shallow passes outvote the
-one that actually read the evidence.
+Legacy multi-pass reports are still merged conservatively so old artifacts
+remain readable.  Publication readiness is decided later: the reviewer finds
+possible defects, then an agent adjudicates their materiality.
 """
 
 from __future__ import annotations
 
-import json
-import re
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
-from memline.wiki.page import CITATION, sha256_text as _sha256_text
+from memline.wiki.adjudication import collect_review_findings, validate_adjudication
+from memline.wiki.artifacts import content_hash
 
 CLAIM_VERDICTS = {
     "supported", "partially_supported", "contradicted", "unverifiable",
@@ -35,20 +31,6 @@ SCOPE_VERDICTS = {"in_scope", "minor_drift", "major_drift", "unverifiable"}
 OVERALL_VERDICTS = {"pass", "revise", "reject"}
 CONFIDENCE = {"high", "medium", "low"}
 SEVERITIES = {"info", "warning", "error", "critical"}
-
-
-# The hash that binds a report to the packet it judges. It lives here rather
-# than beside the code that stamps it: a report claiming to be about some
-# other bundle is exactly the failure this module exists to catch, and the
-# check must not depend on the stamping code agreeing about what it computed.
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _content_hash(value: dict[str, Any], field: str) -> str:
-    copy = dict(value)
-    copy.pop(field, None)
-    return _sha256_text(_canonical_json(copy))
 
 
 def _validate_omission_reviews(
@@ -104,7 +86,7 @@ def _validate_omission_reviews(
 def validate_review_report(report: dict[str, Any], review_bundle: dict[str, Any]) -> dict[str, Any]:
     """Validate reviewer coverage, hashes, enum values and evidence joins."""
     findings: list[dict[str, Any]] = []
-    expected_hash = _content_hash(review_bundle, "review_bundle_sha256")
+    expected_hash = content_hash(review_bundle, "review_bundle_sha256")
     if review_bundle.get("review_bundle_sha256") != expected_hash:
         findings.append({"kind": "review_bundle_hash_invalid"})
     for field in ("article_sha256", "review_bundle_sha256"):
@@ -197,7 +179,7 @@ def validate_merged_review_report(
 ) -> dict[str, Any]:
     """Validate the locally merged shape emitted by :func:`merge_reviews`."""
     findings: list[dict[str, Any]] = []
-    expected_hash = _content_hash(review_bundle, "review_bundle_sha256")
+    expected_hash = content_hash(review_bundle, "review_bundle_sha256")
     if review_bundle.get("review_bundle_sha256") != expected_hash:
         findings.append({"kind": "review_bundle_hash_invalid"})
     for field in ("article_sha256", "review_bundle_sha256"):
@@ -336,6 +318,21 @@ def validate_merged_review_report(
     if not isinstance(provenance, list) or len(provenance) != passes:
         findings.append({"kind": "merged_review_provenance_incomplete"})
 
+    # New reports retain the per-pass scope reason so an agent can adjudicate
+    # it. Older reports only retained aggregate.scope_clean; keep accepting
+    # that legacy shape and expose a synthetic scope finding downstream.
+    scope_reviews = report.get("scope_reviews")
+    if scope_reviews is not None:
+        if not isinstance(scope_reviews, list) or len(scope_reviews) != passes:
+            findings.append({"kind": "merged_scope_reviews_incomplete"})
+        else:
+            for index, item in enumerate(scope_reviews, start=1):
+                if (not isinstance(item, dict) or item.get("pass") != index
+                        or item.get("verdict") not in SCOPE_VERDICTS
+                        or not isinstance(item.get("reason"), str)
+                        or not item.get("reason", "").strip()):
+                    findings.append({"kind": "merged_scope_review_invalid", "pass": index})
+
     verdicts = [item.get("verdict") for item in reviews if isinstance(item, dict)]
     semantic_clean = len(verdicts) == len(expected) and all(v == "supported" for v in verdicts)
     omission_clean = all(item.get("severity") == "info" for item in omissions)
@@ -364,12 +361,36 @@ def validate_merged_review_report(
 
 
 def validate_review_artifact(
-    report: dict[str, Any], review_bundle: dict[str, Any]
+    report: dict[str, Any], review_bundle: dict[str, Any],
+    adjudication: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Validate either a raw single pass or the local multi-pass merge."""
-    if "passes" in report:
-        return validate_merged_review_report(report, review_bundle)
-    return validate_review_report(report, review_bundle)
+    """Validate a review and apply the agent-owned materiality gate.
+
+    Reviewer severities and ``overall_verdict`` remain diagnostics. They do
+    not decide publication readiness after every substantive finding has a
+    valid agent adjudication. Invalid model output is still an operational
+    failure and cannot be adjudicated away.
+    """
+    validation = (validate_merged_review_report(report, review_bundle)
+                  if "passes" in report else validate_review_report(report, review_bundle))
+    adjudication_validation = validate_adjudication(adjudication, report)
+    valid_passes = ((report.get("passes") or 0) if "passes" in report else 1)
+    if not validation["report_valid"]:
+        valid_passes = 0
+    reviewer_clean = validation["clean"]
+    validation.update({
+        "reviewer_clean": reviewer_clean,
+        "reviewer_findings": len(collect_review_findings(report)),
+        "valid_review_passes": valid_passes,
+        "adjudication": adjudication_validation,
+        "clean": bool(
+            validation["report_valid"]
+            and validation["deterministic_clean"]
+            and valid_passes >= 1
+            and adjudication_validation["clean"]
+        ),
+    })
+    return validation
 
 # Strictest wins when passes disagree, in both directions a verdict can go.
 _VERDICT_RANK = {"supported": 0, "unverifiable": 1, "partially_supported": 2,
@@ -379,40 +400,16 @@ _OVERALL_RANK = {"pass": 0, "revise": 1, "reject": 2}
 
 def merge_reviews(reports: list[dict[str, Any]], prior: dict[str, Any] | None = None
                   ) -> dict[str, Any]:
-    """Fold several independent passes over one draft into a union.
+    """Fold explicitly requested legacy/diagnostic passes into a union.
 
-    One pass is not a measurement. Five audits of one unchanged article flagged
-    17, 1, 1, 5 and 19 claims — and the last two ran on the *same* prompt as
-    each other. The union across three of them is 21, which no single pass
-    reached. Passes also surface claims no earlier pass did, so this is not one
-    thorough reading plus four lazy ones; each reading stops somewhere
-    different.
-
-    So the merge takes the union, not the majority. A claim flagged once is
-    flagged, and ``flagged_in`` records how many passes saw it — the number a
-    reviewer should read as strength of signal, since a finding every pass
-    agrees on is a different thing from one that surfaced once. Voting would
-    discard precisely the findings this exists to buy: the ones easy to miss.
-    With this much spread, a majority rule over three passes would have thrown
-    away most of what was found.
-
-    The reverse never applies. A pass cannot clear a claim another flagged,
-    because "I did not notice this" and "this is fine" are not the same
-    statement, and nothing in the report distinguishes them.
-
-    What the spread does *not* license is reading a low ``flagged_in`` as a
-    weak finding. The one claim flagged by every pass was also the only one any
-    pass marked high-confidence; everything else, including a genuine causal
-    error confirmed by hand against the evidence, moved in and out of view
-    between runs.
+    The normal acceptance path runs one pass. If a caller deliberately asks
+    for several, no finding may disappear merely because another pass missed
+    it; the Agent still adjudicates each union member by materiality.
     """
     if not reports:
         raise ValueError("no review passes to merge")
-    # Auditing the same article again adds passes to the union rather than
-    # re-rolling it. Two audits of one unchanged draft returned 5 findings and
-    # 19; replacing the first with the second would have discarded fourteen
-    # real ones and looked like an update. The article's hash is what makes
-    # this safe, and the caller checks it before passing a prior report.
+    # Accumulation is opt-in at the caller. The article and bundle hashes make
+    # it impossible to pool passes about different review packets.
     claims: dict[str, dict[str, Any]] = {}
     offset = 0
     if prior:
@@ -456,6 +453,22 @@ def merge_reviews(reports: list[dict[str, Any]], prior: dict[str, Any] | None = 
                   for item in report.get("omission_reviews") or []
                   if isinstance(item, dict)]
 
+    scope_reviews = list((prior or {}).get("scope_reviews") or [])
+    if prior and not scope_reviews and offset:
+        legacy_scope_clean = ((prior.get("validation") or {}).get("scope_clean") is True)
+        scope_reviews = [
+            {"pass": pass_number,
+             "verdict": "in_scope" if legacy_scope_clean else "unverifiable",
+             "reason": "Scope detail was not retained by this legacy review pass."}
+            for pass_number in range(1, offset + 1)
+        ]
+    scope_reviews += [
+        {**item, "pass": index + 1}
+        for index, report in enumerate(reports, start=offset)
+        for item in [report.get("scope_review")]
+        if isinstance(item, dict)
+    ]
+
     overall = max([r.get("overall_verdict") for r in reports]
                   + ([(prior or {}).get("overall_verdict")] if prior else []),
                   key=lambda v: _OVERALL_RANK.get(v, 0), default=None)
@@ -471,10 +484,9 @@ def merge_reviews(reports: list[dict[str, Any]], prior: dict[str, Any] | None = 
         "overall_verdict": overall,
         "claim_reviews": sorted(claims.values(), key=lambda c: c["claim_id"]),
         "omission_reviews": omissions,
+        "scope_reviews": scope_reviews,
         "flagged_claims": len(flagged),
-        # How much a second opinion actually bought. All passes agreeing is a
-        # reason to trust a finding; only one pass seeing it is a reason to run
-        # more passes, not to discount it.
+        # Legacy diagnostics. Recurrence never replaces Agent adjudication.
         "unanimous_claims": sum(1 for c in flagged if c["flagged_in"] == total),
         "single_pass_claims": sum(1 for c in flagged if c["flagged_in"] == 1),
         "validation": {

@@ -69,7 +69,22 @@ from memline.cli._support import (
 )
 from memline.cli.memory import status, invalidate, revive, ttl, review, start, add, search, list_memories, get, update, delete, history, embed_test
 from memline.cli.stale import stale_list, stale_confirm, stale_ttl, stale_dismiss, stale_protect, stale_unprotect, stale_protected_list, stale_merge
-from memline.cli.wiki import wiki_close_run, wiki_plan, wiki_profile, wiki_bundle, wiki_suggest, wiki_draft, wiki_check_draft, wiki_prepare_review, wiki_review_draft, wiki_check_pages, wiki_nav, wiki_index, wiki_check_threads
+from memline.cli.wiki import (
+    wiki_bundle,
+    wiki_check_draft,
+    wiki_check_pages,
+    wiki_check_threads,
+    wiki_close_run,
+    wiki_draft,
+    wiki_index,
+    wiki_nav,
+    wiki_plan,
+    wiki_prepare_adjudication,
+    wiki_prepare_review,
+    wiki_profile,
+    wiki_review_draft,
+    wiki_suggest,
+)
 from memline.cli.daemon import daemon_start, daemon_stop, daemon_status
 from memline.cli.events import event_list, event_status, event_retry, event_ack
 from memline.cli.entity import entity_list, entity_delete

@@ -1413,6 +1413,14 @@
    },
    {
     "default": "None",
+    "name": "adjudication",
+    "opts": [
+     "--adjudication"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
     "name": "sensitivity_review",
     "opts": [
      "--sensitivity-review"
@@ -1821,6 +1829,66 @@
     "required": false
    }
   ],
+  "wiki prepare-adjudication": [
+   {
+    "default": "None",
+    "name": "draft",
+    "opts": [
+     "draft"
+    ],
+    "required": true
+   },
+   {
+    "default": "None",
+    "name": "review",
+    "opts": [
+     "--review"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "review_bundle",
+    "opts": [
+     "--review-bundle"
+    ],
+    "required": false
+   },
+   {
+    "default": "None",
+    "name": "out",
+    "opts": [
+     "--out"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "force",
+    "opts": [
+     "--force"
+    ],
+    "required": false
+   },
+   {
+    "default": "False",
+    "name": "json_flag",
+    "opts": [
+     "--agent",
+     "--json"
+    ],
+    "required": false
+   },
+   {
+    "default": "'text'",
+    "name": "output_format",
+    "opts": [
+     "--output",
+     "-o"
+    ],
+    "required": false
+   }
+  ],
   "wiki prepare-review": [
    {
     "default": "None",
@@ -2008,7 +2076,7 @@
     "required": false
    },
    {
-    "default": "3",
+    "default": "1",
     "name": "passes",
     "opts": [
      "--passes"

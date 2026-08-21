@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import json
-import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-import click
 import typer
 
 from memline.cli import _support
@@ -270,6 +267,9 @@ def wiki_check_draft(
         None, "--review", help="Review report JSON to bind and validate against this draft."),
     review_bundle: Optional[Path] = typer.Option(
         None, "--review-bundle", help="Review bundle used by --review (defaults beside draft)."),
+    adjudication: Optional[Path] = typer.Option(
+        None, "--adjudication",
+        help="Agent finding rulings (defaults beside draft when present)."),
     sensitivity_review: Optional[Path] = typer.Option(
         None, "--sensitivity-review",
         help="Human redaction rulings; auto-detected for workspace drafts."),
@@ -320,8 +320,13 @@ def wiki_check_draft(
             }
         else:
             review_report = json.loads(review.read_text(encoding="utf-8"))
+            adjudication_path = adjudication or Path(str(stem) + ".adjudication.json")
+            adjudication_report = (json.loads(adjudication_path.read_text(encoding="utf-8"))
+                                   if adjudication_path.is_file() else None)
             result["review_validation"] = validate_review_artifact(
-                review_report, compiled)
+                review_report, compiled, adjudication_report)
+            result["adjudication"] = (str(adjudication_path)
+                                      if adjudication_path.is_file() else None)
         gate_clean = bool(result["review_validation"].get("clean"))
     _support.output(result, command="wiki-verify",
            fmt=_support.chosen_format(output_format, json_flag))
@@ -366,6 +371,49 @@ def wiki_prepare_review(
     }, command="wiki-prepare-review", fmt=_support.chosen_format(output_format, json_flag))
 
 
+@_support.wiki_app.command("prepare-adjudication")
+def wiki_prepare_adjudication(
+    draft: Path = typer.Argument(..., help="Draft Markdown written by wiki-draft."),
+    review: Optional[Path] = typer.Option(None, "--review", help="Review report JSON path."),
+    review_bundle: Optional[Path] = typer.Option(
+        None, "--review-bundle", help="Review bundle JSON path."),
+    out: Optional[Path] = typer.Option(None, "--out", help="Adjudication JSON path."),
+    force: bool = typer.Option(False, "--force", help="Replace an existing adjudication template."),
+    json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
+    output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
+) -> None:
+    """Create the agent-owned materiality rulings for one valid review report."""
+    from memline.wiki.adjudication import BLOCKING_CATEGORIES, build_adjudication
+    from memline.wiki.review_report import validate_review_artifact
+
+    stem = draft.with_suffix("")
+    report_path = review or Path(str(stem) + ".review.json")
+    bundle_path = review_bundle or Path(str(stem) + ".review-bundle.json")
+    target = out or Path(str(stem) + ".adjudication.json")
+    for label, path in (("review report", report_path), ("review bundle", bundle_path)):
+        if not path.is_file():
+            raise typer.BadParameter(f"no {label}: {path}")
+    if target.exists() and not force:
+        raise typer.BadParameter(
+            f"adjudication already exists: {target} (use --force only for a new review report)")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    validation = validate_review_artifact(report, bundle)
+    if not validation["report_valid"]:
+        raise typer.BadParameter("review report is contract-invalid; retry the review instead")
+    template = build_adjudication(report)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(template, ensure_ascii=False, indent=1), encoding="utf-8")
+    _support.output({
+        "draft": str(draft), "review": str(report_path), "out": str(target),
+        "findings": len(template["findings"]),
+        "materiality_test": template["materiality_test"],
+        "blocking_categories": sorted(BLOCKING_CATEGORIES),
+        "next": "Set decision, category, and reason for every finding; do not ask an LLM.",
+    }, command="wiki-prepare-adjudication",
+       fmt=_support.chosen_format(output_format, json_flag))
+
+
 @_support.wiki_app.command("review-draft")
 def wiki_review_draft(
     draft: Path = typer.Argument(..., help="Draft Markdown written by wiki-draft."),
@@ -378,10 +426,10 @@ def wiki_review_draft(
         None, "--sensitivity-review",
         help="Human redaction rulings; auto-detected for workspace drafts."),
     prompt: Optional[Path] = typer.Option(None, "--prompt", help="Override the review prompt."),
-    passes: int = typer.Option(3, "--passes",
-        help="Independent audits to merge. One pass misses findings it does not contradict."),
+    passes: int = typer.Option(1, "--passes", min=1,
+        help="Review calls to run. One valid pass is the normal acceptance path."),
     fresh: bool = typer.Option(False, "--fresh",
-        help="Discard the existing review instead of adding these passes to it."),
+        help="With --passes >1, do not add to a prior report. One-pass runs are always fresh."),
     max_tokens: int = typer.Option(64000, "--max-tokens"),
     json_flag: bool = typer.Option(False, "--json", "--agent", help="Output JSON envelope."),
     output_format: str = typer.Option("text", "--output", "-o", help="text, json, quiet"),
@@ -402,12 +450,10 @@ def wiki_review_draft(
     bundle_target.write_text(json.dumps(compiled, ensure_ascii=False, indent=1), encoding="utf-8")
     template = prompt.read_text(encoding="utf-8") if prompt else default_prompt("wiki-review")
     target = out or Path(str(draft.with_suffix("")) + ".review.json")
-    # Auditing the same text again buys coverage rather than a re-roll: one
-    # unchanged article returned 5 findings on one pass and 19 on another, so
-    # replacing the old report would discard real findings and look like an
-    # update. A changed article makes the old report describe sentences that no
-    # longer exist, and the hash catches that on its own.
-    prior = None if fresh else load_prior_review(
+    # The normal path is exactly one fresh pass. Multi-pass accumulation stays
+    # available as an explicit diagnostic mode for old workflows; acceptance
+    # never requires it.
+    prior = None if fresh or passes == 1 else load_prior_review(
         target, compiled["article_sha256"], compiled["review_bundle_sha256"])
     if prior:
         _support.console.print(f"adding {passes} pass(es) to the existing {prior['passes']} "
@@ -430,6 +476,7 @@ def wiki_review_draft(
         "report_valid": validation["report_valid"],
         "per_pass": validation["per_pass"],
         "agent_review_required": True,
+        "next": f"memline wiki prepare-adjudication {draft}",
         "provenance": report.get("review_provenance"),
     }, command="wiki-review-draft", fmt=_support.chosen_format(output_format, json_flag))
 

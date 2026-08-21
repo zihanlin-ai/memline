@@ -7,6 +7,20 @@ unforgivable failure of this pipeline.
 
 ## Publish, after the user approves
 
+Before moving any file, rerun the draft gate against the version the user saw:
+
+```
+memline wiki check-draft drafts/<slug>.md \
+  --review drafts/<slug>.review.json \
+  --adjudication drafts/<slug>.adjudication.json --strict
+```
+
+Proceed only when it exits zero: deterministic checks are clean, at least one
+review pass is contract-valid, every finding has an Agent ruling, and no
+blocking finding remains. Non-blocking findings do not require correction or
+another LLM call. This machine result is necessary but not permission; the
+user's explicit approval of this exact reviewed version is still required.
+
 1. Move the draft into `content/`. A Blog filename and `date` use the **newest
    cited memory's date** — the article is dated by when the work happened;
    `published_on` records the write-up day and `evidence_span` the range.
@@ -16,6 +30,11 @@ unforgivable failure of this pipeline.
    sources still exist and retain their publication-time hashes but does not
    flag a memory merely because it later gained a new head. `content/docs/**`
    represents current guidance and therefore requires active memory heads.
+   A Docs page may cite a superseded memory only as explicit correction history:
+   mark that source entry `historical: true`. The checker still requires the
+   memory to exist and retain its publication-time hash, but does not mistake
+   that declared historical citation for current guidance. Never use this flag
+   to excuse a current claim whose support was superseded.
 3. Carry the reviewed claims sidecar's `summary` and the accepted topic's
    `topic_key` into the frontmatter. A useful approved-topic `value` may seed
    the summary, but it is not copied blindly: the card must describe the final
