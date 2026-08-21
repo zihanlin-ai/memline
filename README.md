@@ -31,7 +31,7 @@ Everything a fresh workspace needs, in order. `<ws>` is the workspace root.
 
 ```bash
 # 0. The checkout. The standard location is inside the workspace:
-git clone https://github.com/linzihan-tech/memline.git <ws>/.agent-memory/projects/memline
+git clone https://github.com/zihanlin-ai/memline.git <ws>/.agent-memory/projects/memline
 
 # 1. The store venv. Vendored mem0ai FIRST -- the official PyPI mem0ai will
 #    not work (this package depends on the modifications in vendor/mem0ai).
